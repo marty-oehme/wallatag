@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from wallatag.cli import cmd_manual
 from wallatag.config import Config, StoreConfig, WallabagConfig
-from wallatag.manual import run_manual
+from wallatag.manual import run_manual, summary_line
 from wallatag.store import Store
 from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError
@@ -163,8 +163,8 @@ class ManualBase(unittest.TestCase):
         return summary, out.getvalue()
 
 
-class AcceptFlowTest(ManualBase):
-    def test_accept_keeps_suggestions_and_records(self):
+class NextFlowTest(ManualBase):
+    def test_next_on_untouched_suggestions_applies(self):
         client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
@@ -172,28 +172,62 @@ class AcceptFlowTest(ManualBase):
             try:
                 summary, _ = self.run_manual(
                     client,
-                    ["k", "", "q"],
+                    [""],  # enter = next
                     tagger=make_tagger(existing_tags=["Pomodoro"]),
                     store=store,
                 )
             finally:
                 store.close()
 
-            # add_tags called exactly once with the confirmed tag.
             self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
-            # decision logged as accept with the vocabulary source.
-            self.assertEqual(decision_rows(db), [("Pomodoro", "accept", "vocabulary")])
-            # entry marked seen (pick-up semantics).
+            self.assertEqual(
+                decision_rows(db), [("Pomodoro", "accept", "vocabulary")]
+            )
             with sqlite3.connect(db) as conn:
-                count = conn.execute(
+                seen = conn.execute(
                     "SELECT COUNT(*) FROM seen WHERE entry_id = 1"
                 ).fetchone()[0]
-            self.assertEqual(count, 1)
+            self.assertEqual(seen, 1)
         self.assertEqual((summary.tagged, summary.accepted), (1, 1))
 
 
-class RejectFlowTest(ManualBase):
-    def test_reject_records_and_skips_add_tags(self):
+class DropFlowTest(ManualBase):
+    def test_drop_numbers_redisplays_and_applies_remaining(self):
+        # Two suggestions; drop index 1, keep index 2, then next.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro productivity guide")],
+            tags=["Pomodoro", "productivity"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, out = self.run_manual(
+                    client,
+                    ["d", "1", ""],
+                    tagger=make_tagger(
+                        existing_tags=["Pomodoro", "productivity"]
+                    ),
+                    store=store,
+                )
+            finally:
+                store.close()
+
+            # The article was re-displayed after the drop (loop stayed).
+            self.assertGreaterEqual(out.count("pomodoro productivity guide"), 2)
+            self.assertEqual(client.add_calls, [(1, ["productivity"])])
+            self.assertEqual(
+                decision_rows(db),
+                [
+                    ("productivity", "accept", "vocabulary"),
+                    ("Pomodoro", "reject", "vocabulary"),
+                ],
+            )
+        self.assertEqual((summary.tagged, summary.dropped), (1, 1))
+
+
+class DropAllTest(ManualBase):
+    def test_drop_all_commits_nothing_but_records_rejects(self):
         client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
@@ -201,7 +235,7 @@ class RejectFlowTest(ManualBase):
             try:
                 summary, _ = self.run_manual(
                     client,
-                    ["r", "", "q"],
+                    ["d", "", ""],  # drop all, then next
                     tagger=make_tagger(existing_tags=["Pomodoro"]),
                     store=store,
                 )
@@ -209,12 +243,39 @@ class RejectFlowTest(ManualBase):
                 store.close()
 
             self.assertEqual(client.add_calls, [])
-            self.assertEqual(decision_rows(db), [("Pomodoro", "reject", "vocabulary")])
-        self.assertEqual((summary.tagged, summary.rejected), (0, 1))
+            self.assertEqual(
+                decision_rows(db), [("Pomodoro", "reject", "vocabulary")]
+            )
+        self.assertEqual((summary.tagged, summary.dropped), (0, 1))
 
 
 class AddFlowTest(ManualBase):
-    def test_add_custom_tags_recorded_as_manual(self):
+    def test_add_custom_tags_redisplays_and_applies(self):
+        client = FakeClient(entries=[entry(1, "soup recipe")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, out = self.run_manual(
+                    client,
+                    ["a", " cooking ,  dinner ", ""],
+                    store=store,
+                )
+            finally:
+                store.close()
+
+            # The article was re-displayed after the add (loop stayed).
+            self.assertGreaterEqual(out.count("soup recipe"), 2)
+            self.assertEqual(client.add_calls, [(1, ["cooking", "dinner"])])
+            self.assertEqual(
+                decision_rows(db),
+                [("cooking", "accept", "manual"), ("dinner", "accept", "manual")],
+            )
+        self.assertEqual(summary.added, 2)
+
+
+class AddDropCustomTest(ManualBase):
+    def test_added_then_dropped_custom_is_not_recorded(self):
         client = FakeClient(entries=[entry(1, "soup recipe")])
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
@@ -222,8 +283,79 @@ class AddFlowTest(ManualBase):
             try:
                 summary, _ = self.run_manual(
                     client,
-                    ["a", " cooking ,  dinner ", "q"],
+                    ["a", "cooking", "d", "1", ""],
                     store=store,
+                )
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [])
+            self.assertEqual(decision_rows(db), [])
+        self.assertEqual(summary.added, 0)
+
+
+class SkipTest(ManualBase):
+    def test_skip_applies_and_records_nothing(self):
+        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, out = self.run_manual(client, ["s", "q"], store=store)
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [])
+            self.assertEqual(decision_rows(db), [])
+            self.assertEqual(summary.tagged, 0)
+            # The second article was still presented (loop continued).
+            self.assertIn("second", out)
+
+
+class SubPromptQuitTest(ManualBase):
+    def test_q_at_add_prompt_aborts_back_to_menu(self):
+        client = FakeClient(entries=[entry(1, "soup")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(client, ["a", "q", "q"], store=store)
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [])
+            self.assertEqual(decision_rows(db), [])
+        self.assertEqual(summary.added, 0)
+
+    def test_q_at_drop_prompt_aborts_back_to_menu(self):
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client,
+                    ["d", "q", "q"],
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                )
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [])
+            self.assertEqual(decision_rows(db), [])
+        self.assertEqual(summary.dropped, 0)
+
+
+class AddDedupTest(ManualBase):
+    def test_add_dedups_duplicate_tags(self):
+        client = FakeClient(entries=[entry(1, "soup")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client, ["a", "cooking, cooking, dinner", ""], store=store
                 )
             finally:
                 store.close()
@@ -234,6 +366,81 @@ class AddFlowTest(ManualBase):
                 [("cooking", "accept", "manual"), ("dinner", "accept", "manual")],
             )
         self.assertEqual(summary.added, 2)
+
+
+class DryRunTest(ManualBase):
+    def test_dry_run_makes_no_writes(self):
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, out = self.run_manual(
+                    client,
+                    ["d", "1", "a", "cooking", ""],
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    dry_run=True,
+                )
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [])
+            self.assertEqual(decision_rows(db), [])
+            with sqlite3.connect(db) as conn:
+                seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+            self.assertEqual(seen, 0)
+            self.assertIn("(dry run) would apply: cooking", out)
+            self.assertIn("(dry run) would reject: Pomodoro", out)
+        self.assertEqual((summary.tagged, summary.dropped), (1, 1))
+
+
+class ZeroTagsArticleTest(ManualBase):
+    def test_zero_tag_article_next_commits_nothing(self):
+        # First article has no matching tags (empty working list); next with an
+        # empty list applies nothing; then skip the second article.
+        client = FakeClient(
+            entries=[entry(1, "unrelated soup"), entry(2, "pomodoro focus")],
+            tags=["Pomodoro"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, out = self.run_manual(
+                    client,
+                    ["", "s"],
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                )
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [])
+            self.assertEqual(decision_rows(db), [])
+            self.assertIn("(no tags)", out)
+            # Loop continued: the second article was presented.
+            self.assertIn("pomodoro focus", out)
+
+
+class SummaryWordingTest(ManualBase):
+    def test_summary_reflects_new_counts(self):
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        summary, _ = self.run_manual(
+            client,
+            ["a", "cooking", ""],
+            tagger=make_tagger(existing_tags=["Pomodoro"]),
+            store=Store(None),
+        )
+
+        self.assertEqual(
+            summary_line(summary),
+            "tagged 1 articles, accepted 1 tags, dropped 0, added 1 custom",
+        )
+        self.assertEqual(
+            summary_line(summary, dry_run=True),
+            "dry run: would tag 1 articles, accept 1 tags, drop 0, add 1 custom",
+        )
 
 
 class QuitTest(ManualBase):
@@ -249,77 +456,6 @@ class QuitTest(ManualBase):
         self.assertTrue(client.closed)
         # Only the first article was presented; the second never appears.
         self.assertNotIn("second", out.getvalue())
-
-
-class SkipTest(ManualBase):
-    def test_skip_records_nothing_and_continues(self):
-        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "s.db")
-            store = Store(db)
-            try:
-                summary, out = self.run_manual(client, ["", "q"], store=store)
-            finally:
-                store.close()
-
-            self.assertEqual(client.add_calls, [])
-            self.assertEqual(decision_rows(db), [])
-            self.assertEqual(summary.tagged, 0)
-            # The second article was still presented (loop continued).
-            self.assertIn("second", out)
-
-
-class DryRunTest(ManualBase):
-    def test_dry_run_makes_no_writes(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "s.db")
-            store = Store(db)
-            try:
-                summary, out = self.run_manual(
-                    client,
-                    ["k", "", "q"],
-                    tagger=make_tagger(existing_tags=["Pomodoro"]),
-                    store=store,
-                    dry_run=True,
-                )
-            finally:
-                store.close()
-
-            self.assertEqual(client.add_calls, [])
-            self.assertEqual(decision_rows(db), [])
-            with sqlite3.connect(db) as conn:
-                seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
-            self.assertEqual(seen, 0)
-            self.assertIn("would apply: Pomodoro", out)
-        self.assertEqual(summary.tagged, 1)
-
-
-class ZeroTagsArticleTest(ManualBase):
-    def test_zero_tag_article_skips_without_writes(self):
-        # First article has no matching tags at all; user skips it.
-        client = FakeClient(
-            entries=[entry(1, "unrelated soup"), entry(2, "pomodoro focus")],
-            tags=["Pomodoro"],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "s.db")
-            store = Store(db)
-            try:
-                summary, out = self.run_manual(
-                    client,
-                    ["", "q"],
-                    tagger=make_tagger(existing_tags=["Pomodoro"]),
-                    store=store,
-                )
-            finally:
-                store.close()
-
-            self.assertEqual(client.add_calls, [])
-            self.assertEqual(decision_rows(db), [])
-            self.assertIn("(no suggestions)", out)
-            # Loop continued: the second article was presented.
-            self.assertIn("pomodoro focus", out)
 
 
 class SeenDedupeTest(ManualBase):
@@ -360,7 +496,7 @@ class AddTagsErrorTest(ManualBase):
             fail_on_add=WallabagError("boom"),
         )
         out = io.StringIO()
-        with patch("builtins.input", side_effect=["k", "", "q"]), \
+        with patch("builtins.input", side_effect=["", "q"]), \
              contextlib.redirect_stdout(out):
             summary = run_manual(
                 client, make_tagger(existing_tags=["Pomodoro"]), Store(None), Config()
@@ -430,65 +566,6 @@ class FeedFetchErrorTest(ManualBase):
         self.assertEqual(summary.presented, 2)
         self.assertIn("error fetching entries", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
-
-
-class AddPromptQuitTest(ManualBase):
-    def test_q_at_add_prompt_aborts_to_menu(self):
-        # 'q' at the add-tags prompt is NOT a tag: it aborts back to the menu.
-        client = FakeClient(entries=[entry(1, "soup")])
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "s.db")
-            store = Store(db)
-            try:
-                summary, _ = self.run_manual(client, ["a", "q", "q"], store=store)
-            finally:
-                store.close()
-
-            self.assertEqual(client.add_calls, [])
-            self.assertEqual(decision_rows(db), [])
-        self.assertEqual(summary.added, 0)
-
-
-class IndexPromptQuitTest(ManualBase):
-    def test_q_at_index_prompt_aborts_without_applying(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "s.db")
-            store = Store(db)
-            try:
-                summary, _ = self.run_manual(
-                    client,
-                    ["k", "q", "q"],
-                    tagger=make_tagger(existing_tags=["Pomodoro"]),
-                    store=store,
-                )
-            finally:
-                store.close()
-
-            self.assertEqual(client.add_calls, [])
-            self.assertEqual(decision_rows(db), [])
-        self.assertEqual(summary.accepted, 0)
-
-
-class AddDedupTest(ManualBase):
-    def test_add_dedups_duplicate_tags(self):
-        client = FakeClient(entries=[entry(1, "soup")])
-        with tempfile.TemporaryDirectory() as tmp:
-            db = os.path.join(tmp, "s.db")
-            store = Store(db)
-            try:
-                summary, _ = self.run_manual(
-                    client, ["a", "cooking, cooking, dinner", "q"], store=store
-                )
-            finally:
-                store.close()
-
-            self.assertEqual(client.add_calls, [(1, ["cooking", "dinner"])])
-            self.assertEqual(
-                decision_rows(db),
-                [("cooking", "accept", "manual"), ("dinner", "accept", "manual")],
-            )
-        self.assertEqual(summary.added, 2)
 
 
 class EofExitTest(ManualBase):

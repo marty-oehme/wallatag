@@ -1,11 +1,12 @@
 """Interactive review loop for the ``manual`` subcommand.
 
-Plain terminal prompts (no TUI). Presents one untagged article at a time,
-shows tagger suggestions, and lets the user keep/reject/add/skip/quit. Confirmed
+Plain terminal prompts (no TUI). Presents one untagged article at a time and
+lets the user build a per-article WORKING TAG LIST, pre-seeded with the
+tagger's suggestions. The user edits it freely: add custom tags, drop entries,
+then commits with "next" or leaves the article untouched with "skip". Confirmed
 tags hit the wallabag API immediately; accept/reject decisions are logged to
-the optional SQLite store. In dry-run mode (--no-apply) nothing is written:
-no mark_seen, no record_decision, no add_tags.
-"""
+the optional SQLite store. In dry-run mode (--no-apply) nothing is written: no
+mark_seen, no record_decision, no add_tags. """
 
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 import requests
 
 from wallatag.config import Config
+from wallatag.tagger import TagSuggestion
 from wallatag.wallabag import WallabagError
 
 _SNIPPET_LENGTH = 200
@@ -37,7 +39,7 @@ class ManualSummary:
     presented: int = 0
     tagged: int = 0
     accepted: int = 0
-    rejected: int = 0
+    dropped: int = 0
     added: int = 0
     feed_error: bool = False
 
@@ -56,12 +58,12 @@ def summary_line(summary: ManualSummary, *, dry_run: bool = False) -> str:
     if dry_run:
         return (
             f"dry run: would tag {summary.tagged} articles, accept "
-            f"{summary.accepted} tags, reject {summary.rejected}, "
+            f"{summary.accepted} tags, drop {summary.dropped}, "
             f"add {summary.added} custom"
         )
     return (
         f"tagged {summary.tagged} articles, accepted {summary.accepted} tags, "
-        f"rejected {summary.rejected}, added {summary.added} custom"
+        f"dropped {summary.dropped}, added {summary.added} custom"
     )
 
 
@@ -89,15 +91,14 @@ def run_manual(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> 
                 store.mark_seen(entry_id)  # pick-up: dedupe concurrent runs
             summary.presented += 1
 
-            _present_article(entry)
             suggestions = tagger.suggest(entry)
-            _show_suggestions(suggestions)
-
             try:
-                kept, rejected, added = _interact(suggestions)
+                action, working = _edit_working_list(entry, suggestions)
             except _Quit:
                 break
-            _apply(client, store, entry_id, kept, rejected, added, dry_run, summary)
+            if action == "next":
+                _apply(client, store, entry_id, suggestions, working, dry_run, summary)
+            # "skip" applies and records nothing.
     except (WallabagError, requests.RequestException) as exc:
         # The feed fetch died (e.g. network failure while paginating): report
         # and finish with what we have instead of dumping a traceback. The
@@ -119,49 +120,66 @@ def _present_article(entry: dict) -> None:
         print(f"snippet: {snippet}")
 
 
-def _show_suggestions(suggestions: list) -> None:
-    if not suggestions:
-        print("  (no suggestions)")
+def _show_working_list(working: list) -> None:
+    if not working:
+        print("  (no tags)")
         return
-    for i, suggestion in enumerate(suggestions, 1):
-        print(
-            f"  [{i}] {suggestion.tag}  "
-            f"(source={suggestion.source}, confidence={suggestion.confidence})"
-        )
+    for i, item in enumerate(working, 1):
+        if item.source == "manual":
+            print(f"  [{i}] {item.tag}  (source=manual)")
+        else:
+            print(
+                f"  [{i}] {item.tag}  "
+                f"(source={item.source}, confidence={item.confidence})"
+            )
 
 
-def _interact(suggestions: list):
-    """Loop the action menu; returns (kept, rejected, added). Raises _Quit."""
+def _redisplay(entry: dict, working: list) -> None:
+    """Article header plus the current numbered working tag list."""
+    _present_article(entry)
+    _show_working_list(working)
+
+
+def _edit_working_list(entry: dict, original_suggestions: list):
+    """Loop the per-article edit menu.
+
+    Returns ``("next", working)`` to commit the list or ``("skip", working)``
+    to leave the article untouched; raises ``_Quit`` to end the session.
+    """
+    working = list(original_suggestions)
     while True:
+        _redisplay(entry, working)
         choice = input(
-            "keep [k] | add [a] | reject [r] | skip [enter] | quit [q] > "
+            "add [a] | drop [d] | next [enter] | skip [s] | quit [q] > "
         ).strip().lower()
         if choice == "":
-            return [], [], []
+            return "next", working
         if choice == "q":
             raise _Quit()
-        if choice == "k":
-            try:
-                indices = _pick_indices(len(suggestions))
-            except _Abort:
-                continue  # 'q' at the sub-prompt: back to the action menu
-            return [suggestions[i] for i in indices], [], []
+        if choice == "s":
+            return "skip", working
         if choice == "a":
             try:
-                tags = _ask_tags()
+                new_tags = _ask_tags([item.tag for item in working])
             except _Abort:
-                continue
-            return [], [], tags
-        if choice == "r":
+                continue  # 'q' at the sub-prompt: back to the action menu
+            working.extend(
+                TagSuggestion(tag=tag, source="manual", confidence=1.0)
+                for tag in new_tags
+            )
+            continue  # re-display the article + updated list
+        if choice == "d":
             try:
-                indices = _pick_indices(len(suggestions), verb="reject")
+                indices = _pick_indices(len(working), verb="drop")
             except _Abort:
                 continue
-            return [], [suggestions[i] for i in indices], []
-        print("invalid choice; enter k, a, r, q or press enter to skip")
+            remove = set(indices)
+            working = [item for i, item in enumerate(working) if i not in remove]
+            continue  # re-display the article + updated list
+        print("invalid choice; enter a, d, enter for next, s to skip, q to quit")
 
 
-def _pick_indices(count: int, *, verb: str = "accept") -> list[int]:
+def _pick_indices(count: int, *, verb: str = "drop") -> list[int]:
     """Ask for comma-separated 1-based numbers; empty = all.
 
     Typing 'q' aborts the sub-prompt (raises _Abort) — it is never treated as
@@ -181,66 +199,80 @@ def _pick_indices(count: int, *, verb: str = "accept") -> list[int]:
         except ValueError:
             print("  invalid selection")
             continue
-        if not numbers or any(n < 1 or n > count for n in numbers):
+        valid = sorted({n - 1 for n in numbers if 1 <= n <= count})
+        if not valid:
             print("  invalid selection")
             continue
-        return sorted({n - 1 for n in numbers})
+        return valid
 
 
-def _ask_tags() -> list[str]:
+def _ask_tags(existing: list[str]) -> list[str]:
     """Ask for comma-separated extra tags (deduped, order preserved).
 
-    Typing 'q' aborts the sub-prompt (raises _Abort) — it is never treated as a
-    tag. Re-prompts until a non-empty, deduplicated list is entered.
+    Tags already present in the working list are skipped; typing 'q' aborts
+    the sub-prompt (raises _Abort). Re-prompts until a non-empty list is given.
     """
+    existing_folded = {tag.casefold() for tag in existing}
     while True:
         raw = input("  extra tags (comma-separated): ").strip()
         if raw.lower() == "q":
             raise _Abort()
         tags = []
         for tag in (part.strip() for part in raw.split(",")):
-            if tag and tag not in tags:
+            if tag and tag.casefold() not in existing_folded and tag not in tags:
                 tags.append(tag)
         if tags:
             return tags
         print("  no tags entered")
 
 
+def _tally(summary: ManualSummary, working: list, dropped: list) -> None:
+    """Accumulate summary counts for a settled article."""
+    summary.accepted += sum(1 for item in working if item.source != "manual")
+    summary.added += sum(1 for item in working if item.source == "manual")
+    summary.dropped += len(dropped)
+
+
 def _apply(
     client,
     store,
     entry_id: int,
-    kept: list,
-    rejected: list,
-    added: list[str],
+    original_suggestions: list,
+    working: list,
     dry_run: bool,
     summary: ManualSummary,
 ) -> None:
-    """Apply accepted tags and record decisions for a settled article."""
-    union = sorted({suggestion.tag for suggestion in kept} | set(added))
+    """Commit a settled article: apply the working list and record decisions."""
+    tags = sorted({item.tag for item in working})
+    working_folded = {item.tag.casefold() for item in working}
+    dropped = [
+        suggestion
+        for suggestion in original_suggestions
+        if suggestion.tag.casefold() not in working_folded
+    ]
+
     if dry_run:
-        if union:
-            print(f"  (dry run) would apply: {', '.join(union)}")
+        if tags:
+            print(f"  (dry run) would apply: {', '.join(tags)}")
             summary.tagged += 1
-        summary.accepted += len(kept)
-        summary.rejected += len(rejected)
-        summary.added += len(added)
+        if dropped:
+            print(
+                f"  (dry run) would reject: "
+                f"{', '.join(sorted({suggestion.tag for suggestion in dropped}))}"
+            )
+        _tally(summary, working, dropped)
         return
 
-    if union:
+    if tags:
         try:
-            client.add_tags(entry_id, union)
+            client.add_tags(entry_id, tags)
         except (WallabagError, requests.RequestException) as exc:
             print(f"  error tagging entry {entry_id}: {exc}")
             return
         summary.tagged += 1
-    summary.accepted += len(kept)
-    summary.rejected += len(rejected)
-    summary.added += len(added)
+    _tally(summary, working, dropped)
 
-    for suggestion in kept:
-        store.record_decision(entry_id, suggestion.tag, "accept", suggestion.source)
-    for suggestion in rejected:
+    for item in working:
+        store.record_decision(entry_id, item.tag, "accept", item.source)
+    for suggestion in dropped:
         store.record_decision(entry_id, suggestion.tag, "reject", suggestion.source)
-    for tag in added:
-        store.record_decision(entry_id, tag, "accept", "manual")
