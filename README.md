@@ -90,6 +90,64 @@ wallatag covers the gaps:
 `--no-history` disables the decision log for a run; `--no-apply` is a dry run
 that changes nothing.
 
+## Deployment (Dokku)
+
+wallatag is hosted on a Dokku server purely so the code and config live somewhere
+persistent. A `worker` process keeps the container alive (`sleep infinity`);
+there is no web process. Prefect: not this container: schedules runs.
+
+Requirements: Dokku with the current default Python buildpack
+(heroku-buildpack-python ≥ v286, i.e. uv support) and `dokku run` support.
+
+One-time setup, run on the Dokku host:
+
+```sh
+dokku apps:create wallatag
+dokku config:set wallatag WALLATAG_URL=https://your-wallabag.example WALLATAG_CLIENT_ID=... WALLATAG_CLIENT_SECRET=... WALLATAG_USERNAME=... WALLATAG_PASSWORD=... WALLATAG_DB=/data/wallatag.db
+dokku storage:ensure-directory wallatag
+dokku storage:mount wallatag /var/lib/dokku/data/storage/wallatag:/data
+dokku ps:scale wallatag worker=1
+```
+
+All secrets go via env, never in git: `wallatag.toml` is gitignored and not
+used here. `dokku storage:ensure-directory` creates the host directory and
+chowns it to the container user (uid 32767), so the bind mount at `/data` works
+and keeps `/data/wallatag.db` across redeploys.
+
+Deploy, from your local machine:
+
+```sh
+git remote add dokku dokku@your-host:wallatag
+git push dokku main
+```
+
+Verify:
+
+- Deploy output ends with success and no errors.
+- `dokku ps` shows the `worker` process running (e.g. `wallatag.worker.1 running`).
+- `dokku run wallatag wallatag status` prints the config summary (proves the
+  package and env vars work in-container). Note it exits 0 even with everything
+  unset, so only treat env vars as working if the output shows the
+  URL/username populated.
+- `dokku run wallatag wallatag run --max 1 --no-apply` performs a real dry-run
+  against the wallabag API (proves network and credentials).
+- Redeploy (or `dokku ps:restart wallatag`) and confirm the worker comes back up.
+
+Notes / troubleshooting:
+
+- The Python buildpack must support uv (v286+, May 2025). If `git push` fails
+  while installing dependencies / detecting the package manager, the host
+  buildpack is too old: update Dokku/herokuish on the host and redeploy. Do NOT
+  add `requirements.txt` next to `uv.lock`: current buildpacks error on multiple
+  package-manager files.
+- `WALLATAG_URL` must be reachable from the container. If wallabag runs on the
+  same host, use its public/trusted address, not `localhost`.
+- Interactive use is possible too: `dokku run wallatag wallatag manual --max 10`
+  starts the manual tag review loop on demand (wallatag is still hosting-only;
+  Prefect normally schedules the headless `run`). Note `dokku run` executes its
+  command verbatim, so the second `wallatag` is the installed console script:
+  there is no `web` process type.
+
 ## Development
 
 ```sh
