@@ -19,7 +19,7 @@ cp wallatag.toml.example wallatag.toml     # then edit url/client_id/client_secr
 uv run python -m wallatag --help
 uv run python -m wallatag status
 uv run python -m wallatag run --no-apply   # dry run
-uv run python -m wallatag manual           # interactive review loop (later)
+uv run python -m wallatag manual           # interactive review loop
 ```
 
 Installed as a console script too: `uv run wallatag run` (used e.g. by
@@ -84,8 +84,8 @@ wallatag covers the gaps:
 | Command | Purpose                                              | Status   |
 | ------- | ---------------------------------------------------- | -------- |
 | `status`| Print a non-secret configuration summary            | MVP      |
-| `run`   | Headless batch tagging                               | stub     |
-| `manual`| Interactive review loop                              | stub     |
+| `run`   | Headless one-shot batch tagging                      | MVP      |
+| `manual`| Interactive tag review loop                          | MVP      |
 
 `--no-history` disables the decision log for a run; `--no-apply` is a dry run
 that changes nothing.

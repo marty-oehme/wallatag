@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import io
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,30 +58,38 @@ class VersionTest(unittest.TestCase):
 
 
 class RunStubTest(unittest.TestCase):
-    """(c) run with all flags returns 0 and does not raise."""
+    """(c) run is headless batch tagging; an empty config fails cleanly."""
 
-    def test_run_stub(self):
+    def test_run_without_config_exits_2(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "wallatag.toml"
             config_path.write_text("", encoding="utf-8")
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                code = main(
-                    [
-                        "run",
-                        "--config",
-                        str(config_path),
-                        "--max",
-                        "10",
-                        "--tag-policy",
-                        "all",
-                        "--no-history",
-                        "--no-apply",
-                        "--verbose",
-                    ]
-                )
-        self.assertEqual(code, 0)
-        self.assertIn("not implemented yet", out.getvalue())
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), \
+                     contextlib.redirect_stderr(err):
+                    code = main(
+                        [
+                            "run",
+                            "--config",
+                            str(config_path),
+                            "--max",
+                            "10",
+                            "--tag-policy",
+                            "all",
+                            "--no-history",
+                            "--no-apply",
+                            "--verbose",
+                        ]
+                    )
+            finally:
+                # cmd_run configures root logging against the redirected
+                # stdout; drop those handlers so other tests are unaffected.
+                for handler in list(logging.getLogger().handlers):
+                    logging.getLogger().removeHandler(handler)
+        self.assertEqual(code, 2)
+        self.assertIn("url is not configured", err.getvalue())
 
 
 class FlagOverrideTest(unittest.TestCase):
