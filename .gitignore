@@ -4,3 +4,4 @@ __pycache__/
 wallatag.toml
 .venv/
 /data/
+*.egg-info/

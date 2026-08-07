@@ -9,16 +9,20 @@ No web endpoint, no framework, plain terminal prompts (no TUI).
 
 ## Quick start
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/); the lockfile
+`uv.lock` is committed and is the source of truth. `pyproject.toml` declares
+the project metadata and the `requests` dependency.
+
 ```sh
-pip install -r requirements.txt            # or: pip install .
+uv sync                              # create .venv and install dependencies
 cp wallatag.toml.example wallatag.toml     # then edit url/client_id/client_secret
-python -m wallatag --help
-python -m wallatag status
-python -m wallatag run --no-apply          # dry run
-python -m wallatag manual                  # interactive review loop (later)
+uv run python -m wallatag --help
+uv run python -m wallatag status
+uv run python -m wallatag run --no-apply   # dry run
+uv run python -m wallatag manual           # interactive review loop (later)
 ```
 
-Installed as a console script too: `wallatag run` (used e.g. by
+Installed as a console script too: `uv run wallatag run` (used e.g. by
 `dokku run wallatag ...`).
 
 ## Configuration layering
@@ -87,7 +91,7 @@ that changes nothing.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 Scheduling is handled exclusively by Prefect (see `prefect_flows.py`); wallatag
