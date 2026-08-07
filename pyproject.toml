@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wallatag"
+version = "0.1.0"
+description = "AI-assisted auto-tagger for wallabag"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31,<3"]
+
+[project.scripts]
+wallatag = "wallatag.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["wallatag*"]

@@ -1,0 +1,167 @@
+"""Command-line interface for wallatag."""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import sys
+
+from wallatag import __version__
+from wallatag.config import (
+    VALID_TAG_POLICIES,
+    Config,
+    ConfigError,
+    StoreConfig,
+    load_config,
+)
+
+
+def _non_negative_max(value: str) -> int:
+    """argparse type for --max: a non-negative integer or argparse errors."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return n
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="wallatag",
+        description="AI-assisted auto-tagger for wallabag",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"wallatag {__version__}",
+    )
+
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", metavar="PATH", help="path to configuration file")
+    common.add_argument(
+        "--max",
+        type=_non_negative_max,
+        metavar="N",
+        help="max articles per run (default: unlimited)",
+    )
+    common.add_argument("--focus", metavar="NAME", help="activate one focus group")
+    common.add_argument(
+        "--tag-policy",
+        choices=VALID_TAG_POLICIES,
+        help="how to combine existing and suggested tags",
+    )
+    common.add_argument(
+        "--no-history",
+        action="store_true",
+        help="disable the SQLite decision log for this run",
+    )
+    common.add_argument(
+        "--no-apply",
+        action="store_true",
+        help="dry run: do not apply any changes",
+    )
+    common.add_argument(
+        "--verbose",
+        action="store_true",
+        help="enable verbose logging",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "manual",
+        parents=[common],
+        help="interactive review loop",
+    )
+    subparsers.add_parser(
+        "run",
+        parents=[common],
+        help="headless batch tagging",
+    )
+    subparsers.add_parser(
+        "status",
+        parents=[common],
+        help="show configuration summary",
+    )
+    return parser
+
+
+def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
+    """Apply CLI flag overrides on top of a loaded config (flags win)."""
+    if args.max is not None:
+        if args.max < 0:
+            raise ConfigError("--max must be a non-negative integer")
+        # Runtime run limit only: never touches [tagger] max_suggestions.
+        config = dataclasses.replace(config, max_articles=args.max)
+    if args.tag_policy is not None:
+        config = dataclasses.replace(
+            config, tagger=dataclasses.replace(config.tagger, tag_policy=args.tag_policy)
+        )
+    if args.no_history:
+        config = dataclasses.replace(config, store=StoreConfig(path=None))
+    if getattr(args, "verbose", False):
+        config = dataclasses.replace(config, verbose=True)
+    focus = getattr(args, "focus", None)
+    if focus is not None:
+        selected = config.tagger.focus_groups.get(focus)
+        if selected is None:
+            available = ", ".join(config.tagger.focus_groups) or "(none configured)"
+            raise ConfigError(
+                f"unknown focus group {focus!r}; available focus groups: {available}"
+            )
+        config = dataclasses.replace(
+            config,
+            tagger=dataclasses.replace(config.tagger, focus_groups={focus: selected}),
+        )
+    return config
+
+
+def cmd_manual(config: Config, args: argparse.Namespace) -> int:
+    """Interactive review loop — stub."""
+    print("not implemented yet — interactive review loop (git-bug issue bc89eb0)")
+    return 0
+
+
+def cmd_run(config: Config, args: argparse.Namespace) -> int:
+    """Headless batch tagging — stub."""
+    print("not implemented yet — headless batch (git-bug issue 370b13a)")
+    return 0
+
+
+def cmd_status(config: Config, args: argparse.Namespace) -> int:
+    """Print a non-secret summary of the effective configuration."""
+    url = config.wallabag.url or "(not configured)"
+    store = config.store.path or "history-less"
+    tagger = config.tagger
+    print(f"wallatag {__version__}")
+    print(f"wallabag: {url}")
+    print(f"store: {store}")
+    print(f"tagger: policy={tagger.tag_policy} max_suggestions={tagger.max_suggestions}")
+    if config.max_articles is not None:
+        print(f"run limit: {config.max_articles} articles (from --max)")
+    groups = ", ".join(
+        f"{name} ({len(group.keywords)} keywords, {len(group.tags)} tags)"
+        for name, group in tagger.focus_groups.items()
+    )
+    print(f"focus groups: {groups or '(none)'}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        config = load_config(config_path=args.config)
+        config = apply_flag_overrides(config, args)
+    except ConfigError as exc:
+        print(f"wallatag: error: {exc}", file=sys.stderr)
+        return 2
+
+    dispatch = {
+        "manual": cmd_manual,
+        "run": cmd_run,
+        "status": cmd_status,
+    }
+    return dispatch[args.command](config, args)

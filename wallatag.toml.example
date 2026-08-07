@@ -1,0 +1,31 @@
+# wallatag configuration. Copy to wallatag.toml (gitignored) and fill in.
+# Every key here can be overridden by environment variables (see README).
+
+[wallabag]
+url = "https://wallabag.example.com"
+client_id = "your_api_client_id"      # create in wallabag UI: Developer > Create your own client
+client_secret = "your_api_client_secret"
+
+[store]
+# Path to the SQLite decision log. Leave empty/omit for history-less mode
+# (no database at all: untagged articles may be re-presented, no learning data).
+path = "/data/wallatag.db"
+
+[tagger]
+max_suggestions = 5
+tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
+
+# Named rule groups ("focus" areas). --focus NAME activates one; default = all.
+[focus.methods]
+keywords = ["pomodoro", "gtd", "zettelkasten"]
+tags = ["productivity", "method"]
+
+[focus.languages]
+keywords = ["python", "rust", "golang"]
+tags = ["programming"]
+
+# Reserved for phase 2 (LLM tagger). Ignored by the MVP.
+[ai]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "qwen2.5:3b"
