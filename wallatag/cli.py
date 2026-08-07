@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import sqlite3
 import sys
 
 from wallatag import __version__
@@ -14,6 +15,10 @@ from wallatag.config import (
     StoreConfig,
     load_config,
 )
+from wallatag.manual import run_manual, summary_line
+from wallatag.store import Store
+from wallatag.tagger import KeywordTagger
+from wallatag.wallabag import WallabagClient, WallabagError
 
 
 def _non_negative_max(value: str) -> int:
@@ -118,8 +123,66 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
 
 
 def cmd_manual(config: Config, args: argparse.Namespace) -> int:
-    """Interactive review loop — stub."""
-    print("not implemented yet — interactive review loop (git-bug issue bc89eb0)")
+    """Interactive review loop."""
+    if config.max_articles == 0:
+        return 0
+    if not config.wallabag.url:
+        print(
+            "wallatag: error: wallabag url is not configured; "
+            "set [wallabag] url or WALLATAG_URL",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        client = WallabagClient(
+            config.wallabag.url,
+            config.wallabag.client_id,
+            config.wallabag.client_secret,
+            username=config.wallabag.username,
+            password=config.wallabag.password,
+        )
+    except ValueError as exc:
+        print(f"wallatag: error: {exc}", file=sys.stderr)
+        return 2
+    try:
+        existing_tags = [tag["label"] for tag in client.get_tags()]
+    except WallabagError as exc:
+        print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
+        client.close()
+        return 2
+    tagger = KeywordTagger(
+        config.tagger.focus_groups,
+        max_suggestions=config.tagger.max_suggestions,
+        tag_policy=config.tagger.tag_policy,
+        existing_tags=existing_tags,
+    )
+    # Store creation is guarded so a sqlite failure (e.g. unwritable path)
+    # reports cleanly and never leaks the client connection.
+    store = None
+    try:
+        store = Store(config.store.path)
+    except sqlite3.Error as exc:
+        print(f"wallatag: error: could not open store: {exc}", file=sys.stderr)
+        client.close()
+        return 2
+    try:
+        summary = run_manual(client, tagger, store, config, dry_run=args.no_apply)
+    except KeyboardInterrupt:
+        # Clean exit on Ctrl-C: exit 130, close resources via finally.
+        print("interrupted: exiting", file=sys.stderr)
+        return 130
+    except EOFError:
+        # Ctrl-D at a prompt is a clean early exit: code 0.
+        print("no input: exiting", file=sys.stderr)
+        return 0
+    finally:
+        store.close()
+        client.close()
+    print(summary_line(summary, dry_run=args.no_apply))
+    # Total feed failure (nothing presented) must look like a failure to a
+    # scheduler/cron caller; a partial run still exits 0.
+    if summary.feed_error and summary.presented == 0:
+        return 2
     return 0
 
 
