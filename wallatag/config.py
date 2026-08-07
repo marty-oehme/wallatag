@@ -18,6 +18,8 @@ VALID_TAG_POLICIES = ("only-existing", "prefer-existing", "all")
 _ENV_URL = "WALLATAG_URL"
 _ENV_CLIENT_ID = "WALLATAG_CLIENT_ID"
 _ENV_CLIENT_SECRET = "WALLATAG_CLIENT_SECRET"
+_ENV_USERNAME = "WALLATAG_USERNAME"
+_ENV_PASSWORD = "WALLATAG_PASSWORD"
 _ENV_DB = "WALLATAG_DB"
 _ENV_CONFIG = "WALLATAG_CONFIG"
 
@@ -39,6 +41,8 @@ class WallabagConfig:
     url: str = ""
     client_id: str = ""
     client_secret: str = ""
+    username: str = ""
+    password: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,8 @@ def _parse_toml_config(raw: dict) -> Config:
             url=str(wallabag_raw.get("url", "") or ""),
             client_id=str(wallabag_raw.get("client_id", "") or ""),
             client_secret=str(wallabag_raw.get("client_secret", "") or ""),
+            username=str(wallabag_raw.get("username", "") or ""),
+            password=str(wallabag_raw.get("password", "") or ""),
         ),
         store=StoreConfig(path=str(store_raw.get("path") or "") or None),
         tagger=TaggerConfig(
@@ -187,12 +193,18 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
     url = env.get(_ENV_URL)
     client_id = env.get(_ENV_CLIENT_ID)
     client_secret = env.get(_ENV_CLIENT_SECRET)
+    username = env.get(_ENV_USERNAME)
+    password = env.get(_ENV_PASSWORD)
     if url is not None:
         wallabag = replace(wallabag, url=url)
     if client_id is not None:
         wallabag = replace(wallabag, client_id=client_id)
     if client_secret is not None:
         wallabag = replace(wallabag, client_secret=client_secret)
+    if username is not None:
+        wallabag = replace(wallabag, username=username)
+    if password is not None:
+        wallabag = replace(wallabag, password=password)
 
     store = config.store
     db = env.get(_ENV_DB)

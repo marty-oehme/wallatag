@@ -222,6 +222,8 @@ class StatusOutputTest(unittest.TestCase):
                     'url = "https://wallabag.example.com"\n'
                     'client_id = "cid"\n'
                     'client_secret = "super-secret-value"\n'
+                    'username = "alice"\n'
+                    'password = "super-secret-password"\n'
                 ),
                 encoding="utf-8",
             )
@@ -237,8 +239,27 @@ class StatusOutputTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("wallatag", text)
         self.assertIn("https://wallabag.example.com", text)
+        # The username is shown (non-secret)...
+        self.assertIn("auth: username=alice", text)
+        # ...but neither the client_secret nor the password ever appear.
         self.assertNotIn("super-secret-value", text)
+        self.assertNotIn("super-secret-password", text)
         self.assertNotIn("cid", text)
+
+    def test_status_username_not_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                '[wallabag]\nurl = "https://wallabag.example.com"\n',
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("wallabag: https://wallabag.example.com", text)
+        self.assertIn("auth: username=(not configured)", text)
 
     def test_status_via_main_shows_url(self):
         with tempfile.TemporaryDirectory() as tmp:

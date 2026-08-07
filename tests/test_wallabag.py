@@ -13,7 +13,13 @@ import requests
 from wallatag.wallabag import WallabagClient, WallabagError
 
 BASE_URL = "https://wallabag.example.com"
-TOKEN_PAYLOAD = {"access_token": "tok123", "expires_in": 3600}
+TOKEN_PAYLOAD = {
+    "access_token": "tok123",
+    "expires_in": 3600,
+    "refresh_token": "refresh123",
+    "token_type": "bearer",
+    "scope": "",
+}
 
 
 class FakeResponse:
@@ -97,12 +103,14 @@ def entries_payload(items, total=None, page=1, pages=1):
     }
 
 
-def make_client(session):
+def make_client(session, username="alice", password="wonderland"):
     # Trailing slash in base_url must be normalized away.
     return WallabagClient(
         base_url=BASE_URL + "/",
         client_id="cid",
         client_secret="secret",
+        username=username,
+        password=password,
         session=session,
     )
 
@@ -138,14 +146,19 @@ class TokenFlowTest(WallabagClientTestCase):
         token_call = self.session.calls[0]
         self.assertEqual(token_call["method"], "POST")
         self.assertEqual(token_call["url"], f"{BASE_URL}/oauth/v2/token")
+        # wallabag uses the OAuth2 password grant, not client_credentials.
         self.assertEqual(
             token_call["data"],
             {
-                "grant_type": "client_credentials",
+                "grant_type": "password",
                 "client_id": "cid",
                 "client_secret": "secret",
+                "username": "alice",
+                "password": "wonderland",
             },
         )
+        # The refresh_token from the password response is stored for later.
+        self.assertEqual(self.client._refresh_token, "refresh123")
         api_call = self.session.calls[1]
         self.assertEqual(api_call["url"], f"{BASE_URL}/api/entries.json")
         self.assertEqual(api_call["headers"]["Authorization"], "Bearer tok123")
@@ -161,7 +174,7 @@ class TokenFlowTest(WallabagClientTestCase):
         self.client.get_entries()
         self.assertEqual(len(self.token_calls()), 1)
 
-    def test_expired_token_refetched(self):
+    def test_expired_token_refreshed_with_stored_refresh_token(self):
         page_payload = entries_payload([entry(1, [])])
         self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload))
         self.client.get_entries()
@@ -172,22 +185,35 @@ class TokenFlowTest(WallabagClientTestCase):
         self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload))
         self.client.get_entries()
 
-        self.assertEqual(len(self.token_calls()), 2)
+        calls = self.token_calls()
+        self.assertEqual(len(calls), 2)
+        # The next token call uses the refresh grant with the stored token.
+        self.assertEqual(calls[1]["data"]["grant_type"], "refresh_token")
+        self.assertEqual(calls[1]["data"]["refresh_token"], "refresh123")
 
 
 class RetryTest(WallabagClientTestCase):
-    def test_401_retries_with_refreshed_token(self):
+    def test_401_retries_via_fresh_password_fetch(self):
+        # A mid-request 401 invalidates the cached token; the retry re-auths
+        # with a fresh password grant (not a refresh) exactly once.
+        page_payload = entries_payload([entry(1, [])])
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload))
+        self.client.get_entries()  # cache a token first
+
         self.queue(
-            FakeResponse(200, TOKEN_PAYLOAD),
             FakeResponse(401, text="unauthorized"),
             FakeResponse(200, TOKEN_PAYLOAD),
-            FakeResponse(200, entries_payload([entry(1, [])])),
+            FakeResponse(200, page_payload),
         )
         page = self.client.get_entries()
 
         self.assertEqual([e["id"] for e in page.items], [1])
-        self.assertEqual(len(self.token_calls()), 2)
-        self.assertEqual(len(self.api_calls("/api/entries.json")), 2)
+        calls = self.token_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["data"]["grant_type"], "password")
+        self.assertEqual(calls[1]["data"]["grant_type"], "password")
+        # 1 priming call + the 401 attempt and its retry.
+        self.assertEqual(len(self.api_calls("/api/entries.json")), 3)
 
     def test_persistent_401_raises(self):
         self.queue(
@@ -200,6 +226,96 @@ class RetryTest(WallabagClientTestCase):
             self.client.get_entries()
         self.assertEqual(ctx.exception.status, 401)
         self.assertEqual(len(self.token_calls()), 2)
+
+
+class RefreshTest(WallabagClientTestCase):
+    def _prime_token(self):
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.client.get_entries()
+        self.client._token_expires_at = time.monotonic() - 10
+
+    def test_refresh_failure_falls_back_to_password_fetch(self):
+        self._prime_token()
+        self.queue(
+            FakeResponse(400, text="invalid_grant"),  # refresh is rejected
+            FakeResponse(200, TOKEN_PAYLOAD),          # password-grant fallback
+            FakeResponse(200, entries_payload([entry(1, [])])),
+        )
+        page = self.client.get_entries()
+        self.assertEqual([e["id"] for e in page.items], [1])
+
+        calls = self.token_calls()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            [c["data"]["grant_type"] for c in calls],
+            ["password", "refresh_token", "password"],
+        )
+
+    def test_refresh_and_password_fallback_both_fail_raises_password_error(self):
+        # Double failure: refresh grant is rejected AND the password-grant
+        # fallback is also rejected -> the password error surfaces (status
+        # 400), it is not swallowed.
+        self._prime_token()
+        self.queue(
+            FakeResponse(400, text="invalid_grant"),   # refresh is rejected
+            FakeResponse(400, text="invalid_client"),  # fallback also fails
+        )
+        with self.assertRaises(WallabagError) as ctx:
+            self.client.get_entries()
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn("invalid_client", str(ctx.exception))
+
+        calls = self.token_calls()
+        self.assertEqual(len(calls), 3)  # prime + refresh + password fallback
+        self.assertEqual(
+            [c["data"]["grant_type"] for c in calls],
+            ["password", "refresh_token", "password"],
+        )
+
+    def test_refresh_rotates_stored_refresh_token(self):
+        self._prime_token()
+        self.assertEqual(self.client._refresh_token, "refresh123")
+        rotated = dict(TOKEN_PAYLOAD, access_token="tok456", refresh_token="refresh456")
+        self.queue(FakeResponse(200, rotated), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.client.get_entries()
+        self.assertEqual(self.client._refresh_token, "refresh456")
+
+    def test_refresh_keeps_existing_refresh_token_when_absent(self):
+        self._prime_token()
+        no_refresh = {k: v for k, v in TOKEN_PAYLOAD.items() if k != "refresh_token"}
+        self.queue(FakeResponse(200, no_refresh), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.client.get_entries()
+        self.assertEqual(self.client._refresh_token, "refresh123")
+
+    def test_no_refresh_token_available_falls_back_to_password_fetch(self):
+        # Password response without a refresh_token: on expiry, refresh is
+        # unavailable, so the client falls back to a fresh password fetch.
+        no_refresh = {k: v for k, v in TOKEN_PAYLOAD.items() if k != "refresh_token"}
+        self.queue(FakeResponse(200, no_refresh), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.client.get_entries()
+        self.assertIsNone(self.client._refresh_token)
+        self.client._token_expires_at = time.monotonic() - 10
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.client.get_entries()
+        calls = self.token_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([c["data"]["grant_type"] for c in calls], ["password", "password"])
+
+
+class ConstructionValidationTest(unittest.TestCase):
+    def test_empty_username_raises(self):
+        with self.assertRaises(ValueError):
+            WallabagClient(
+                BASE_URL, "cid", "secret", username="", password="wonderland",
+                session=FakeSession(),
+            )
+
+    def test_empty_password_raises(self):
+        with self.assertRaises(ValueError):
+            WallabagClient(
+                BASE_URL, "cid", "secret", username="alice", password="",
+                session=FakeSession(),
+            )
 
 
 class EntriesTest(WallabagClientTestCase):
@@ -253,6 +369,22 @@ class EntriesTest(WallabagClientTestCase):
         with self.assertRaises(ValueError):
             self.client.get_entries(per_page=31)
         self.assertEqual(self.session.calls, [])
+
+    def test_iter_untagged_terminates_when_pages_is_null(self):
+        # Server returning pages=null must not cause a TypeError in the loop.
+        payload = {
+            "_embedded": {"items": [entry(1, []), entry(2, ["x"])]},
+            "total": 2,
+            "page": 1,
+            "pages": None,
+            "limit": 30,
+        }
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        entries = list(self.client.iter_untagged(per_page=30))
+
+        self.assertEqual([e["id"] for e in entries], [1])
+        self.assertEqual(len(self.api_calls("/api/entries.json")), 1)
 
 
 class TagsTest(WallabagClientTestCase):

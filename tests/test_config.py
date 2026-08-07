@@ -32,6 +32,8 @@ class NoConfigFileDefaultsTest(unittest.TestCase):
         self.assertEqual(config.wallabag.url, "")
         self.assertEqual(config.wallabag.client_id, "")
         self.assertEqual(config.wallabag.client_secret, "")
+        self.assertEqual(config.wallabag.username, "")
+        self.assertEqual(config.wallabag.password, "")
         self.assertIsNone(config.store.path)
         self.assertEqual(config.tagger.max_suggestions, 5)
         self.assertEqual(config.tagger.tag_policy, "prefer-existing")
@@ -52,6 +54,8 @@ class TomlParsingTest(unittest.TestCase):
 url = "https://wallabag.example.com"
 client_id = "cid"
 client_secret = "secret"
+username = "alice"
+password = "wonderland"
 
 [store]
 path = "/data/wallatag.db"
@@ -78,6 +82,8 @@ model = "qwen2.5:3b"
         self.assertEqual(config.wallabag.url, "https://wallabag.example.com")
         self.assertEqual(config.wallabag.client_id, "cid")
         self.assertEqual(config.wallabag.client_secret, "secret")
+        self.assertEqual(config.wallabag.username, "alice")
+        self.assertEqual(config.wallabag.password, "wonderland")
         self.assertEqual(config.store.path, "/data/wallatag.db")
         self.assertEqual(config.tagger.max_suggestions, 9)
         self.assertEqual(config.tagger.tag_policy, "all")
@@ -215,6 +221,8 @@ class EnvOverridesTest(unittest.TestCase):
 url = "https://from-toml.example.com"
 client_id = "toml-cid"
 client_secret = "toml-secret"
+username = "toml-user"
+password = "toml-pass"
 
 [store]
 path = "/data/from-toml.db"
@@ -226,6 +234,8 @@ path = "/data/from-toml.db"
                     "WALLATAG_URL": "https://from-env.example.com",
                     "WALLATAG_CLIENT_ID": "env-cid",
                     "WALLATAG_DB": "/x.db",
+                    "WALLATAG_USERNAME": "env-user",
+                    "WALLATAG_PASSWORD": "env-pass",
                 },
             )
 
@@ -233,6 +243,9 @@ path = "/data/from-toml.db"
         self.assertEqual(config.wallabag.client_id, "env-cid")
         # Not overridden -> falls back to TOML value.
         self.assertEqual(config.wallabag.client_secret, "toml-secret")
+        # Overridden by WALLATAG_USERNAME / WALLATAG_PASSWORD.
+        self.assertEqual(config.wallabag.username, "env-user")
+        self.assertEqual(config.wallabag.password, "env-pass")
         self.assertEqual(config.store.path, "/x.db")
 
     def test_env_empty_db_is_history_less(self):

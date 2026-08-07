@@ -1,9 +1,9 @@
 """Thin requests-based client for the wallabag v2 REST API.
 
 Targets wallabag 2.x (endpoints verified against a 2.6.14 instance). Implements
-the OAuth2 client-credentials token flow and the entries/tags endpoints used by
-wallatag. There is no maintained external SDK; this client depends only on
-``requests``.
+the OAuth2 password grant (with refresh_token) and the entries/tags endpoints
+used by wallatag. There is no maintained external SDK; this client depends only
+on ``requests``.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class EntryPage:
 
 
 class WallabagClient:
-    """OAuth2 client-credentials client for the wallabag REST API.
+    """OAuth2 password-grant client for the wallabag REST API.
 
     ``session`` is normally created internally; injecting one is how tests mock
     HTTP. ``timeout`` is applied to every request.
@@ -57,32 +57,48 @@ class WallabagClient:
         client_id: str,
         client_secret: str,
         *,
+        username: str = "",
+        password: str = "",
         timeout: float = 30.0,
         session: requests.Session | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.timeout = timeout
-        self.session = session if session is not None else requests.Session()
+        if not username or not password:
+            raise ValueError(
+                "wallabag username and password are required (OAuth2 password " +
+                "grant); set them via config or WALLATAG_USERNAME/" +
+                "WALLATAG_PASSWORD"
+            )
+        self.base_url: str = base_url.rstrip("/")
+        self.client_id: str = client_id
+        self.client_secret: str = client_secret
+        self.username: str = username
+        self.password: str = password
+        self.timeout: float = timeout
+        self.session: requests.Session = (
+            session if session is not None else requests.Session()
+        )
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0  # deadline on time.monotonic()
+        self._refresh_token: str | None = None
 
     # -- token handling --------------------------------------------------
 
     def _ensure_token(self) -> str:
-        if self._access_token is None or time.monotonic() >= self._token_expires_at:
+        if self._access_token is None:
             self._fetch_token()
+        elif time.monotonic() >= self._token_expires_at:
+            try:
+                self._refresh_access_token()
+            except WallabagError:
+                # Refresh failed (e.g. refresh_token rejected or absent):
+                # fall back to a fresh password-grant fetch.
+                self._fetch_token()
         assert self._access_token is not None
         return self._access_token
 
-    def _fetch_token(self) -> None:
+    def _post_token(self, data: dict) -> dict:
+        """POST the token endpoint and return the parsed, valid payload."""
         url = f"{self.base_url}{TOKEN_ENDPOINT}"
-        data = {
-            "grant_type": "client_credentials",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-        }
         try:
             resp = self.session.post(url, data=data, timeout=self.timeout)
         except requests.RequestException as exc:
@@ -98,20 +114,55 @@ class WallabagClient:
                 f"token response is not JSON: {resp.text[:200]!r}",
                 status=resp.status_code,
             ) from exc
-        access_token = payload.get("access_token") if isinstance(payload, dict) else None
+        access_token = (
+            payload.get("access_token") if isinstance(payload, dict) else None
+        )
         if not access_token:
             raise WallabagError(
                 f"token response missing access_token: {resp.text[:200]!r}",
                 status=resp.status_code,
             )
+        return payload
+
+    def _set_expiry(self, payload: dict) -> None:
         try:
             expires_in = float(payload.get("expires_in", 3600))
         except (TypeError, ValueError):
             expires_in = 3600.0
-        self._access_token = access_token
         self._token_expires_at = time.monotonic() + max(
-            expires_in - _TOKEN_SAFETY_MARGIN, 0.0
+            expires_in - _TOKEN_SAFETY_MARGIN, 5.0
         )
+
+    def _fetch_token(self) -> None:
+        payload = self._post_token(
+            {
+                "grant_type": "password",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "username": self.username,
+                "password": self.password,
+            }
+        )
+        self._access_token = payload["access_token"]
+        self._set_expiry(payload)
+        self._refresh_token = payload.get("refresh_token")  # may be None
+
+    def _refresh_access_token(self) -> None:
+        if not self._refresh_token:
+            raise WallabagError("no refresh token available")
+        payload = self._post_token(
+            {
+                "grant_type": "refresh_token",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "refresh_token": self._refresh_token,
+            }
+        )
+        self._access_token = payload["access_token"]
+        self._set_expiry(payload)
+        new_refresh = payload.get("refresh_token")
+        if new_refresh:
+            self._refresh_token = new_refresh
 
     # -- low-level request -----------------------------------------------
 
@@ -163,7 +214,9 @@ class WallabagClient:
 
     # -- entries ---------------------------------------------------------
 
-    def get_entries(self, page: int = 1, per_page: int = 30, **filters: Any) -> EntryPage:
+    def get_entries(
+        self, page: int = 1, per_page: int = 30, **filters: Any
+    ) -> EntryPage:
         if page < 1:
             raise ValueError("page must be >= 1")
         if not 1 <= per_page <= _MAX_PER_PAGE:
@@ -199,7 +252,7 @@ class WallabagClient:
         while True:
             page = self.untagged_entries(page=page_num, per_page=per_page)
             yield from page.items
-            if page.pages == 0 or page_num >= page.pages:
+            if not page.pages or page_num >= page.pages:
                 return
             page_num += 1
 

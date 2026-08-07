@@ -136,6 +136,8 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
     tagger = config.tagger
     print(f"wallatag {__version__}")
     print(f"wallabag: {url}")
+    username = config.wallabag.username or "(not configured)"
+    print(f"auth: username={username}")
     print(f"store: {store}")
     print(f"tagger: policy={tagger.tag_policy} max_suggestions={tagger.max_suggestions}")
     if config.max_articles is not None:

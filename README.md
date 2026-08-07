@@ -15,7 +15,7 @@ the project metadata and the `requests` dependency.
 
 ```sh
 uv sync                              # create .venv and install dependencies
-cp wallatag.toml.example wallatag.toml     # then edit url/client_id/client_secret
+cp wallatag.toml.example wallatag.toml     # then edit url/client_id/client_secret/username/password
 uv run python -m wallatag --help
 uv run python -m wallatag status
 uv run python -m wallatag run --no-apply   # dry run
@@ -39,6 +39,8 @@ Values are merged from lowest to highest precedence: later sources win:
 | wallabag URL             | `[wallabag] url`            | `WALLATAG_URL`                |
 | API client id            | `[wallabag] client_id`      | `WALLATAG_CLIENT_ID`          |
 | API client secret        | `[wallabag] client_secret`  | `WALLATAG_CLIENT_SECRET`      |
+| wallabag username        | `[wallabag] username`       | `WALLATAG_USERNAME`           |
+| wallabag password        | `[wallabag] password`       | `WALLATAG_PASSWORD`           |
 | SQLite decision log path | `[store] path`              | `WALLATAG_DB`                 |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`             |
 

@@ -5,6 +5,8 @@
 url = "https://wallabag.example.com"
 client_id = "your_api_client_id"      # create in wallabag UI: Developer > Create your own client
 client_secret = "your_api_client_secret"
+username = "your_wallabag_username"   # the wallabag API authenticates via OAuth2 password grant (client + user credentials)
+password = "your_wallabag_password"
 
 [store]
 # Path to the SQLite decision log. Leave empty/omit for history-less mode
