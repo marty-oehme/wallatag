@@ -17,10 +17,18 @@ from unittest.mock import patch
 
 from wallatag.cli import cmd_manual
 from wallatag.config import Config, StoreConfig, WallabagConfig
+from wallatag.llm import LLMError
 from wallatag.manual import run_manual, summary_line
 from wallatag.store import Store
 from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError
+
+
+class RaisingTagger:
+    """Tagger stub whose suggest() always raises LLMError (model down)."""
+
+    def suggest(self, entry):
+        raise LLMError("model unavailable", status=500)
 
 
 def entry(eid, title, url="https://example.com/x", domain="example.com",
@@ -565,6 +573,27 @@ class FeedFetchErrorTest(ManualBase):
 
         self.assertEqual(summary.presented, 2)
         self.assertIn("error fetching entries", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+
+class LLMErrorTest(ManualBase):
+    def test_llm_error_skips_entry_and_session_continues(self):
+        # The tagger is a constructor arg to run_manual: inject a stub whose
+        # suggest() raises LLMError for every entry. Both articles are skipped
+        # without ever reaching the input loop.
+        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("builtins.input", side_effect=["q"]), \
+             contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            summary = run_manual(client, RaisingTagger(), Store(None), Config())
+
+        self.assertEqual((summary.presented, summary.tagged), (2, 0))
+        self.assertEqual(client.add_calls, [])
+        self.assertFalse(summary.feed_error)
+        self.assertIn("LLM tagging failed 1", err.getvalue())
+        self.assertIn("LLM tagging failed 2", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
 

@@ -19,9 +19,17 @@ from unittest.mock import patch
 from wallatag.auto import AutoSummary, run_auto, summary_line
 from wallatag.cli import cmd_run
 from wallatag.config import Config, FocusGroup, StoreConfig, WallabagConfig
+from wallatag.llm import LLMError
 from wallatag.store import Store
 from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError
+
+
+class RaisingTagger:
+    """Tagger stub whose suggest() always raises LLMError (model down)."""
+
+    def suggest(self, entry):
+        raise LLMError("model unavailable", status=500)
 
 
 def entry(eid, title, url="https://example.com/x", domain="example.com",
@@ -311,6 +319,21 @@ class SkipTest(AutoBase):
         self.assertEqual(client.add_calls, [])
         self.assertEqual((summary.presented, summary.tagged, summary.skipped), (1, 0, 1))
         self.assertTrue(any("no suggestions: 1" in m for m in messages))
+
+
+class LLMErrorTest(AutoBase):
+    def test_llm_error_skips_entry_and_run_continues(self):
+        # The tagger is a constructor arg to run_auto: inject a stub whose
+        # suggest() raises LLMError for every entry.
+        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
+        summary, messages = self.run_auto(client, tagger=RaisingTagger())
+
+        self.assertEqual((summary.presented, summary.tagged, summary.skipped), (2, 0, 2))
+        self.assertEqual(client.add_calls, [])
+        # An LLM failure is an article-level skip, NOT a feed error.
+        self.assertFalse(summary.feed_error)
+        self.assertTrue(any("LLM tagging failed 1" in m for m in messages))
+        self.assertTrue(any("LLM tagging failed 2" in m for m in messages))
 
 
 class DecisionsTest(AutoBase):

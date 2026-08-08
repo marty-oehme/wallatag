@@ -26,8 +26,11 @@ tags = ["productivity", "method"]
 keywords = ["python", "rust", "golang"]
 tags = ["programming"]
 
-# Reserved for phase 2 (LLM tagger). Ignored by the MVP.
+# LLM auto-tagger: active when provider is set (ollama | openai-compatible).
+# For ollama, base_url is the bare server (no /v1); for openai-compatible
+# gateways include the version prefix, e.g. https://api.example.com/v1.
 [ai]
 provider = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
+confidence_threshold = 0.7        # only apply tags the model rates above this (0, 1]

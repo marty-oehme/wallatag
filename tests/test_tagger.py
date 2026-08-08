@@ -1,9 +1,10 @@
-"""Tests for wallatag.tagger: the KeywordTagger suggestion engine."""
+"""Tests for wallatag.tagger: the KeywordTagger and LLMTagger engines."""
 
 import unittest
 
 from wallatag.config import FocusGroup
-from wallatag.tagger import KeywordTagger, TagSuggestion
+from wallatag.llm import LLMError
+from wallatag.tagger import KeywordTagger, LLMTagger, TagSuggestion
 
 
 def make_tagger(
@@ -273,6 +274,355 @@ class ValidationTest(unittest.TestCase):
         # bool is an int subclass; a non-negative int check must reject it.
         with self.assertRaises(ValueError):
             make_tagger({}, max_suggestions=True)
+
+
+class FakeLLMClient:
+    """Stub LLMClientLike: returns canned JSON and records the prompts."""
+
+    def __init__(self, body):
+        self.body = body
+        self.system_prompts = []
+        self.user_prompts = []
+        self.calls = 0
+
+    def complete(self, system_prompt, user_prompt):
+        self.calls += 1
+        self.system_prompts.append(system_prompt)
+        self.user_prompts.append(user_prompt)
+        return self.body
+
+
+class RaisingLLMClient:
+    """Stub whose complete() always raises LLMError (model down)."""
+
+    def complete(self, system_prompt, user_prompt):
+        raise LLMError("model unavailable", status=500)
+
+
+def make_llm_tagger(
+    client,
+    groups=None,
+    max_suggestions=10,
+    tag_policy="prefer-existing",
+    existing_tags=(),
+    confidence_threshold=0.7,
+):
+    return LLMTagger(
+        client,
+        focus_groups=groups or {},
+        max_suggestions=max_suggestions,
+        tag_policy=tag_policy,
+        existing_tags=existing_tags,
+        confidence_threshold=confidence_threshold,
+    )
+
+
+class LLMTaggerSuggestTest(unittest.TestCase):
+    """suggest(): parsing, threshold, policy, dedup, cap, error propagation."""
+
+    def test_happy_path_parses_tags_and_confidences(self):
+        client = FakeLLMClient(
+            '[{"tag": "python", "confidence": 0.9}, '
+            '{"tag": "rust", "confidence": 0.8}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="python and rust"))
+
+        self.assertEqual([s.tag for s in result], ["python", "rust"])
+        self.assertEqual([s.source for s in result], ["llm", "llm"])
+        self.assertEqual([s.confidence for s in result], [0.9, 0.8])
+
+    def test_below_threshold_filtered_out(self):
+        client = FakeLLMClient(
+            '[{"tag": "low", "confidence": 0.5}, '
+            '{"tag": "high", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["high"])
+
+    def test_confidence_clamped_to_unit_range(self):
+        # White-box: _parse_response clamps confidence into [0, 1]. A clamped
+        # 0.0 can never survive suggest() (any valid threshold is > 0), so the
+        # clamp itself is asserted here, not via the filtered output.
+        tagger = make_llm_tagger(FakeLLMClient("[]"))
+        parsed = tagger._parse_response(
+            '[{"tag": "too-high", "confidence": 1.5}, '
+            '{"tag": "negative", "confidence": -0.5}]'
+        )
+        self.assertEqual(
+            [(item["tag"], item["confidence"]) for item in parsed],
+            [("too-high", 1.0), ("negative", 0.0)],
+        )
+
+    def test_overconfident_tag_survives_threshold_at_clamped_value(self):
+        client = FakeLLMClient('[{"tag": "too-high", "confidence": 1.5}]')
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["too-high"])
+        self.assertEqual(result[0].confidence, 1.0)
+
+    def test_only_existing_drops_non_vocabulary_tags(self):
+        client = FakeLLMClient(
+            '[{"tag": "python", "confidence": 0.9}, '
+            '{"tag": "invented", "confidence": 0.9}]'
+        )
+        tagger = make_llm_tagger(
+            client, tag_policy="only-existing", existing_tags=["python"]
+        )
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["python"])
+
+    def test_prefer_existing_keeps_all_above_threshold(self):
+        client = FakeLLMClient(
+            '[{"tag": "python", "confidence": 0.9}, '
+            '{"tag": "newone", "confidence": 0.8}]'
+        )
+        tagger = make_llm_tagger(
+            client, tag_policy="prefer-existing", existing_tags=["python"]
+        )
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["python", "newone"])
+
+    def test_all_policy_keeps_all_above_threshold(self):
+        client = FakeLLMClient(
+            '[{"tag": "python", "confidence": 0.9}, '
+            '{"tag": "newone", "confidence": 0.8}]'
+        )
+        tagger = make_llm_tagger(client, tag_policy="all", existing_tags=["python"])
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["python", "newone"])
+
+    def test_only_existing_case_insensitive_vocabulary(self):
+        client = FakeLLMClient(
+            '[{"tag": "Python", "confidence": 0.9}, '
+            '{"tag": "rust", "confidence": 0.9}]'
+        )
+        tagger = make_llm_tagger(
+            client, tag_policy="only-existing", existing_tags=["python"]
+        )
+        result = tagger.suggest(entry(title="x"))
+
+        # Casefolded "python" is in the vocabulary, "rust" is not.
+        self.assertEqual([s.tag for s in result], ["Python"])
+
+    def test_case_insensitive_dedup_keeps_first(self):
+        client = FakeLLMClient(
+            '[{"tag": "Python", "confidence": 0.9}, '
+            '{"tag": "python", "confidence": 0.8}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["Python"])
+        self.assertEqual(result[0].confidence, 0.9)
+
+    def test_max_suggestions_caps_output(self):
+        client = FakeLLMClient(
+            '[{"tag": "a", "confidence": 0.9}, '
+            '{"tag": "b", "confidence": 0.9}, '
+            '{"tag": "c", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(client, max_suggestions=2).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["a", "b"])
+
+    def test_model_output_order_kept(self):
+        client = FakeLLMClient(
+            '[{"tag": "zeta", "confidence": 0.9}, '
+            '{"tag": "alpha", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["zeta", "alpha"])
+
+    def test_empty_result_yields_no_suggestions(self):
+        result = make_llm_tagger(FakeLLMClient("[]")).suggest(entry(title="x"))
+        self.assertEqual(result, [])
+
+    def test_llm_error_propagates(self):
+        tagger = make_llm_tagger(RaisingLLMClient())
+        with self.assertRaises(LLMError):
+            tagger.suggest(entry(title="x"))
+
+    def test_llm_error_carries_status(self):
+        with self.assertRaises(LLMError) as ctx:
+            make_llm_tagger(RaisingLLMClient()).suggest(entry(title="x"))
+        self.assertEqual(ctx.exception.status, 500)
+
+    def test_whitespace_padded_tag_stripped(self):
+        # The model returned "  python  "; the suggestion must carry the
+        # normalized tag so wallabag never receives padded labels.
+        client = FakeLLMClient('[{"tag": "  python  ", "confidence": 0.9}]')
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["python"])
+
+    def test_threshold_boundary_keeps_equal_drops_below(self):
+        # confidence == threshold is KEPT (>=), one epsilon below is dropped.
+        client = FakeLLMClient(
+            '[{"tag": "exact", "confidence": 0.7}, '
+            '{"tag": "below", "confidence": 0.6999999}]'
+        )
+        result = make_llm_tagger(client, confidence_threshold=0.7).suggest(
+            entry(title="x")
+        )
+
+        self.assertEqual([s.tag for s in result], ["exact"])
+
+    def test_only_existing_tolerates_non_string_vocabulary(self):
+        # A non-string element in existing_tags must not crash the
+        # only-existing gate (it is filtered defensively) and the gate still
+        # applies to the string vocabulary.
+        client = FakeLLMClient(
+            '[{"tag": "Python", "confidence": 0.9}, '
+            '{"tag": "invented", "confidence": 0.9}]'
+        )
+        tagger = make_llm_tagger(
+            client,
+            tag_policy="only-existing",
+            existing_tags=[123, "python"],
+        )
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["Python"])
+
+
+class LLMTaggerMalformedResponseTest(unittest.TestCase):
+    def test_invalid_json_raises_llm_error(self):
+        client = FakeLLMClient("not json at all")
+        with self.assertRaises(LLMError):
+            make_llm_tagger(client).suggest(entry(title="x"))
+
+    def test_non_array_json_raises_llm_error(self):
+        client = FakeLLMClient('{"tag": "solo", "confidence": 0.9}')
+        with self.assertRaises(LLMError) as ctx:
+            make_llm_tagger(client).suggest(entry(title="x"))
+        self.assertIn("not a JSON array", str(ctx.exception))
+
+    def test_entries_with_missing_fields_skipped(self):
+        client = FakeLLMClient(
+            '[{"confidence": 0.9}, '          # missing tag
+            '{"tag": 123, "confidence": 0.8},'  # non-string tag
+            '{"tag": "ok", "confidence": 0.7},'  # valid
+            '{"tag": "badconf", "confidence": "high"},'  # non-numeric confidence
+            '{"tag": "   ", "confidence": 0.9},'  # blank tag
+            '{"tag": "boolconf", "confidence": true}]'  # bool confidence
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["ok"])
+
+    def test_non_dict_entries_skipped(self):
+        client = FakeLLMClient(
+            '[42, "python", {"tag": "ok", "confidence": 0.8}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["ok"])
+
+
+class LLMTaggerPromptTest(unittest.TestCase):
+    """The prompts sent to the client must carry vocabulary, focus, policy."""
+
+    def test_system_prompt_contains_vocabulary_rule_verbatim(self):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client).suggest(entry(title="x"))
+
+        prompt = client.system_prompts[0]
+        self.assertIn(
+            "prefer the same tags that already exist; only add new ones if they "
+            "really don't fit and are an important part of the text",
+            prompt,
+        )
+
+    def test_system_prompt_contains_focus_areas_and_vocabulary(self):
+        groups = {
+            "langs": FocusGroup(keywords=("python",), tags=("programming",)),
+            "methods": FocusGroup(keywords=("gtd",), tags=("method",)),
+        }
+        client = FakeLLMClient("[]")
+        make_llm_tagger(
+            client, groups=groups, existing_tags=["rust", "python"]
+        ).suggest(entry(title="x"))
+
+        prompt = client.system_prompts[0]
+        self.assertIn("programming", prompt)
+        self.assertIn("method", prompt)
+        self.assertIn("rust", prompt)
+        self.assertIn("python", prompt)
+
+    def test_system_prompt_mentions_none_when_empty(self):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client).suggest(entry(title="x"))
+
+        prompt = client.system_prompts[0]
+        self.assertIn("Existing tag vocabulary: none", prompt)
+        self.assertIn("Focus areas: none", prompt)
+
+    def test_system_prompt_only_existing_instructs_vocabulary_only(self):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(
+            client, tag_policy="only-existing", existing_tags=["python"]
+        ).suggest(entry(title="x"))
+
+        prompt = client.system_prompts[0]
+        self.assertIn("ONLY choose from the provided existing tag vocabulary", prompt)
+
+    def test_user_prompt_contains_cleaned_content_and_metadata(self):
+        client = FakeLLMClient("[]")
+        e = entry(
+            title="A title",
+            url="https://example.com/article",
+            domain_name="example.com",
+            content="<p>hello <b>world</b></p>",
+        )
+        make_llm_tagger(client).suggest(e)
+
+        prompt = client.user_prompts[0]
+        self.assertIn("Title: A title", prompt)
+        self.assertIn("URL: https://example.com/article", prompt)
+        self.assertIn("Domain: example.com", prompt)
+        self.assertIn("Language: en", prompt)
+        self.assertIn("Reading time: 1 minutes", prompt)
+        # HTML stripped and whitespace collapsed.
+        self.assertIn("Content: hello world", prompt)
+
+    def test_user_prompt_content_truncated(self):
+        client = FakeLLMClient("[]")
+        e = entry(title="t", content="<p>" + "word " * 2000 + "</p>")
+        make_llm_tagger(client).suggest(e)
+
+        prompt = client.user_prompts[0]
+        # 2000 words * ~5 chars > 6000-char cap -> truncated.
+        self.assertLess(len(prompt), 7000)
+
+
+class LLMTaggerValidationTest(unittest.TestCase):
+    def test_invalid_tag_policy_raises(self):
+        with self.assertRaises(ValueError):
+            make_llm_tagger(FakeLLMClient("[]"), tag_policy="nonsense")
+
+    def test_negative_max_suggestions_raises(self):
+        with self.assertRaises(ValueError):
+            make_llm_tagger(FakeLLMClient("[]"), max_suggestions=-1)
+
+    def test_bool_max_suggestions_raises(self):
+        with self.assertRaises(ValueError):
+            make_llm_tagger(FakeLLMClient("[]"), max_suggestions=True)
+
+    def test_bad_confidence_thresholds_raise(self):
+        for bad in (0, 1.5, -0.1, True):
+            with self.assertRaises(ValueError):
+                make_llm_tagger(FakeLLMClient("[]"), confidence_threshold=bad)
+
+    def test_boundary_thresholds_accepted(self):
+        client = FakeLLMClient('[{"tag": "t", "confidence": 1.0}]')
+        result = make_llm_tagger(client, confidence_threshold=1.0).suggest(
+            entry(title="x")
+        )
+        self.assertEqual([s.tag for s in result], ["t"])
 
 
 if __name__ == "__main__":

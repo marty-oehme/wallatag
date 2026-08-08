@@ -18,8 +18,9 @@ from wallatag.config import (
     load_config,
 )
 from wallatag.manual import run_manual, summary_line
+from wallatag.llm import LLMClient
 from wallatag.store import Store
-from wallatag.tagger import KeywordTagger
+from wallatag.tagger import KeywordTagger, LLMTagger
 from wallatag.wallabag import WallabagClient, WallabagError
 
 
@@ -124,6 +125,40 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
     return config
 
 
+def _build_tagger(
+    config: Config, existing_tags: list[str]
+) -> tuple[KeywordTagger | LLMTagger, LLMClient | None]:
+    """Build the tagger selected by config; returns (tagger, llm_client).
+
+    The LLM tagger is active iff ``config.ai.provider`` is non-empty (config
+    parsing guarantees the trio is complete then); otherwise KeywordTagger is
+    used. The returned ``llm_client`` (when not None) owns a session and MUST
+    be closed by the caller alongside the wallabag client and store.
+    """
+    if config.ai.provider:
+        llm_client = LLMClient(
+            config.ai.provider,
+            config.ai.base_url,
+            config.ai.model,
+        )
+        tagger = LLMTagger(
+            llm_client,
+            focus_groups=config.tagger.focus_groups,
+            max_suggestions=config.tagger.max_suggestions,
+            tag_policy=config.tagger.tag_policy,
+            existing_tags=existing_tags,
+            confidence_threshold=config.ai.confidence_threshold,
+        )
+        return tagger, llm_client
+    tagger = KeywordTagger(
+        config.tagger.focus_groups,
+        max_suggestions=config.tagger.max_suggestions,
+        tag_policy=config.tagger.tag_policy,
+        existing_tags=existing_tags,
+    )
+    return tagger, None
+
+
 def cmd_manual(config: Config, args: argparse.Namespace) -> int:
     """Interactive review loop."""
     if config.max_articles == 0:
@@ -152,12 +187,7 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
         print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
         client.close()
         return 2
-    tagger = KeywordTagger(
-        config.tagger.focus_groups,
-        max_suggestions=config.tagger.max_suggestions,
-        tag_policy=config.tagger.tag_policy,
-        existing_tags=existing_tags,
-    )
+    tagger, llm_client = _build_tagger(config, existing_tags)
     # Store creation is guarded so a sqlite failure (e.g. unwritable path)
     # reports cleanly and never leaks the client connection.
     store = None
@@ -166,6 +196,8 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
     except sqlite3.Error as exc:
         print(f"wallatag: error: could not open store: {exc}", file=sys.stderr)
         client.close()
+        if llm_client is not None:
+            llm_client.close()
         return 2
     try:
         summary = run_manual(client, tagger, store, config, dry_run=args.no_apply)
@@ -180,6 +212,8 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
     finally:
         store.close()
         client.close()
+        if llm_client is not None:
+            llm_client.close()
     print(summary_line(summary, dry_run=args.no_apply))
     # Total feed failure (nothing presented) must look like a failure to a
     # scheduler/cron caller; a partial run still exits 0.
@@ -221,12 +255,7 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
         print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
         client.close()
         return 2
-    tagger = KeywordTagger(
-        config.tagger.focus_groups,
-        max_suggestions=config.tagger.max_suggestions,
-        tag_policy=config.tagger.tag_policy,
-        existing_tags=existing_tags,
-    )
+    tagger, llm_client = _build_tagger(config, existing_tags)
     # Store creation is guarded so a sqlite failure (e.g. unwritable path)
     # reports cleanly and never leaks the client connection.
     store = None
@@ -235,6 +264,8 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
     except sqlite3.Error as exc:
         print(f"wallatag: error: could not open store: {exc}", file=sys.stderr)
         client.close()
+        if llm_client is not None:
+            llm_client.close()
         return 2
     try:
         summary = run_auto(client, tagger, store, config, dry_run=args.no_apply)
@@ -245,6 +276,8 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
     finally:
         store.close()
         client.close()
+        if llm_client is not None:
+            llm_client.close()
     logging.info(auto_summary_line(summary, dry_run=args.no_apply))
     # Total feed failure (nothing presented) must look like a failure to a
     # scheduler/cron caller; a partial run still exits 0.
@@ -264,6 +297,14 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
     print(f"auth: username={username}")
     print(f"store: {store}")
     print(f"tagger: policy={tagger.tag_policy} max_suggestions={tagger.max_suggestions}")
+    ai = config.ai
+    if ai.provider:
+        print(
+            f"ai: provider={ai.provider} model={ai.model} "
+            f"(confidence_threshold={ai.confidence_threshold})"
+        )
+    else:
+        print("ai: not configured")
     if config.max_articles is not None:
         print(f"run limit: {config.max_articles} articles (from --max)")
     groups = ", ".join(

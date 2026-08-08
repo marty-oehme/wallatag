@@ -2,19 +2,32 @@
 
 import argparse
 import contextlib
+import dataclasses
 import io
 import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from wallatag.cli import (
+    _build_tagger,
     apply_flag_overrides,
     build_parser,
+    cmd_run,
     cmd_status,
     main,
 )
-from wallatag.config import Config, ConfigError, load_config
+from wallatag.config import (
+    AiConfig,
+    Config,
+    ConfigError,
+    FocusGroup,
+    TaggerConfig,
+    WallabagConfig,
+    load_config,
+)
+from wallatag.tagger import KeywordTagger, LLMTagger
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -284,6 +297,210 @@ class StatusOutputTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("wallabag: https://wallabag.example.com", text)
         self.assertIn("store: history-less", text)
+
+
+class FakeClient:
+    """Minimal wallabag client fake for the cmd_run integration test."""
+
+    def __init__(self, entries=(), tags=()):
+        self.entries = list(entries)
+        self.tags = list(tags)
+        self.add_calls = []
+        self.closed = False
+
+    def iter_untagged(self, per_page=30):
+        for item in self.entries:
+            yield dict(item)
+
+    def get_tags(self):
+        return [{"label": t, "slug": t, "nbEntries": 0} for t in self.tags]
+
+    def add_tags(self, entry_id, tags):
+        self.add_calls.append((entry_id, sorted(tags)))
+
+    def close(self):
+        self.closed = True
+
+
+def _entry(eid, title):
+    return {
+        "id": eid,
+        "title": title,
+        "url": "https://example.com/x",
+        "domain_name": "example.com",
+        "content": "",
+        "reading_time": 5,
+        "language": "en",
+        "tags": [],
+    }
+
+
+def _ai_cfg(provider="ollama", base_url="http://localhost:11434", model="qwen2.5:3b",
+            threshold=0.7):
+    return dataclasses.replace(
+        Config(),
+        wallabag=WallabagConfig(
+            url="https://wallabag.example.com",
+            client_id="cid",
+            client_secret="secret",
+            username="alice",
+            password="wonderland",
+        ),
+        ai=AiConfig(
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            confidence_threshold=threshold,
+        ),
+    )
+
+
+def config_focus_group():
+    return FocusGroup(keywords=("python",), tags=("programming",))
+
+
+class BuildTaggerTest(unittest.TestCase):
+    """_build_tagger picks LLMTagger iff [ai] provider is configured."""
+
+    def test_ai_configured_selects_llm_tagger(self):
+        config = dataclasses.replace(
+            _ai_cfg(threshold=0.8),
+            tagger=TaggerConfig(
+                max_suggestions=3,
+                tag_policy="only-existing",
+                focus_groups={"a": config_focus_group()},
+            ),
+        )
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client = _build_tagger(config, ["python", "rust"])
+
+        client_cls.assert_called_once_with(
+            "ollama", "http://localhost:11434", "qwen2.5:3b"
+        )
+        self.assertIs(llm_client, client_cls.return_value)
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertEqual(tagger.confidence_threshold, 0.8)
+        self.assertEqual(tagger.max_suggestions, 3)
+        self.assertEqual(tagger.tag_policy, "only-existing")
+        self.assertEqual(tagger.existing_tags, ["python", "rust"])
+
+    def test_no_ai_selects_keyword_tagger(self):
+        config = Config()
+        tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+
+    def test_ai_provider_empty_with_partial_ai_still_keyword(self):
+        # Threshold-only [ai]: provider is empty -> keyword tagger, no client.
+        config = dataclasses.replace(Config(), ai=AiConfig(confidence_threshold=0.9))
+        tagger, llm_client = _build_tagger(config, [])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+
+
+class CmdRunAiSelectionTest(unittest.TestCase):
+    """cmd_run wires the LLM tagger when [ai] is configured (and not otherwise)."""
+
+    def setUp(self):
+        # cmd_run configures root logging against the redirected stdout; drop
+        # those handlers so other tests are unaffected.
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+
+    def test_cmd_run_with_ai_uses_llm_tagger(self):
+        client = FakeClient(entries=[_entry(1, "python article")], tags=["python"])
+        created = []
+
+        class FakeLLM:
+            def __init__(self, provider, base_url, model):
+                self.provider = provider
+                self.base_url = base_url
+                self.model = model
+                self.closed = False
+                created.append(self)
+
+            def complete(self, system_prompt, user_prompt):
+                return '[{"tag": "python", "confidence": 0.95}]'
+
+            def close(self):
+                self.closed = True
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("wallatag.cli.WallabagClient", return_value=client), \
+             patch("wallatag.cli.LLMClient", side_effect=FakeLLM), \
+             contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            code = cmd_run(_ai_cfg(), _args())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].provider, "ollama")
+        self.assertEqual(created[0].base_url, "http://localhost:11434")
+        self.assertEqual(created[0].model, "qwen2.5:3b")
+        self.assertTrue(created[0].closed)  # closed in cmd_run's finally
+        # The LLM tagger's suggestion was applied: proves LLMTagger was used.
+        self.assertEqual(client.add_calls, [(1, ["python"])])
+
+    def test_cmd_run_without_ai_skips_llm_client(self):
+        client = FakeClient(entries=[_entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        out = io.StringIO()
+        err = io.StringIO()
+        cfg = dataclasses.replace(
+            Config(),
+            wallabag=WallabagConfig(
+                url="https://wallabag.example.com",
+                client_id="cid",
+                client_secret="secret",
+                username="alice",
+                password="wonderland",
+            ),
+        )
+        with patch("wallatag.cli.WallabagClient", return_value=client), \
+             patch("wallatag.cli.LLMClient") as llm_cls, \
+             contextlib.redirect_stdout(out), \
+             contextlib.redirect_stderr(err):
+            code = cmd_run(cfg, _args())
+
+        self.assertEqual(code, 0)
+        llm_cls.assert_not_called()
+        # KeywordTagger's vocabulary suggestion was applied.
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+
+
+class StatusAiLineTest(unittest.TestCase):
+    def test_status_shows_ai_line_when_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    '[ai]\n'
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                    'confidence_threshold = 0.8\n'
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ai: provider=ollama model=qwen2.5:3b", text)
+        self.assertIn("(confidence_threshold=0.8)", text)
+
+    def test_status_ai_not_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text("", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ai: not configured", text)
 
 
 if __name__ == "__main__":

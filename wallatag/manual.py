@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import requests
 
 from wallatag.config import Config
+from wallatag.llm import LLMError
 from wallatag.tagger import TagSuggestion
 from wallatag.wallabag import WallabagError
 
@@ -91,7 +92,12 @@ def run_manual(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> 
                 store.mark_seen(entry_id)  # pick-up: dedupe concurrent runs
             summary.presented += 1
 
-            suggestions = tagger.suggest(entry)
+            try:
+                suggestions = tagger.suggest(entry)
+            except LLMError as exc:
+                # A model failure skips the article; the session keeps going.
+                print(f"LLM tagging failed {entry_id}: {exc}", file=sys.stderr)
+                continue
             try:
                 action, working = _edit_working_list(entry, suggestions)
             except _Quit:

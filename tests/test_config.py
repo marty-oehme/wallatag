@@ -42,7 +42,7 @@ class NoConfigFileDefaultsTest(unittest.TestCase):
 
 
 class TomlParsingTest(unittest.TestCase):
-    """(b) TOML values are parsed, [ai] is ignored, focus groups tolerate gaps."""
+    """(b) TOML values are parsed, [ai] is parsed, focus groups tolerate gaps."""
 
     def test_toml_values_parsed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -74,6 +74,7 @@ tags = ["programming"]
 
 [ai]
 provider = "ollama"
+base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
 """,
             )
@@ -92,8 +93,11 @@ model = "qwen2.5:3b"
         )
         self.assertEqual(config.tagger.focus_groups["methods"].tags, ("productivity",))
         self.assertEqual(config.tagger.focus_groups["languages"].tags, ("programming",))
+        self.assertEqual(config.ai.provider, "ollama")
+        self.assertEqual(config.ai.base_url, "http://localhost:11434")
+        self.assertEqual(config.ai.model, "qwen2.5:3b")
 
-    def test_missing_keywords_tolerated_and_ai_ignored(self):
+    def test_missing_keywords_tolerated_and_ai_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             write_toml(
@@ -103,7 +107,6 @@ model = "qwen2.5:3b"
 tags = ["productivity"]
 
 [ai]
-provider = "ollama"
 """,
             )
             config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
@@ -111,12 +114,15 @@ provider = "ollama"
         group = config.tagger.focus_groups["methods"]
         self.assertEqual(group.keywords, ())
         self.assertEqual(group.tags, ("productivity",))
-        # [ai] silently ignored: no config surface for it.
-        self.assertFalse(hasattr(config, "ai"))
+        # An empty [ai] table stays at the defaults: LLM tagger disabled.
+        self.assertEqual(config.ai.provider, "")
+        self.assertEqual(config.ai.base_url, "")
+        self.assertEqual(config.ai.model, "")
+        self.assertEqual(config.ai.confidence_threshold, 0.7)
 
-    def test_ai_non_table_ignored_without_error(self):
-        # The [ai] section is reserved for phase 2 and must be ignored
-        # unconditionally, even when it is present but not a table.
+    def test_ai_non_table_raises(self):
+        # [ai] present but not a table (ai = "foo") must fail loudly now that
+        # the section is actually parsed.
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             write_toml(
@@ -128,10 +134,29 @@ ai = "foo"
 url = "https://wallabag.example.com"
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
 
-        self.assertEqual(config.wallabag.url, "https://wallabag.example.com")
-        self.assertFalse(hasattr(config, "ai"))
+        self.assertIn("[ai]", str(ctx.exception))
+        self.assertIn("table", str(ctx.exception))
+
+    def test_ai_empty_string_non_table_raises(self):
+        # Falsy non-tables must NOT be masked by `or {}` normalization.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, 'ai = ""\n')
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+        self.assertIn("section [ai] must be a table", str(ctx.exception))
+
+    def test_ai_empty_array_non_table_raises(self):
+        # A falsy [] is still a non-table: it must raise, not parse as empty.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, "ai = []\n")
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+        self.assertIn("section [ai] must be a table", str(ctx.exception))
 
 
 class FocusGroupValidationTest(unittest.TestCase):
@@ -206,6 +231,163 @@ tags = ["productivity"]
         group = config.tagger.focus_groups["methods"]
         self.assertEqual(group.keywords, ("pomodoro", "gtd"))
         self.assertEqual(group.tags, ("productivity",))
+
+
+class AiConfigTomlTest(unittest.TestCase):
+    """[ai] is parsed into config.ai; the trio is atomic; threshold validated."""
+
+    def _load(self, toml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_full_ai_block_parsed(self):
+        config = self._load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n'
+            'confidence_threshold = 0.8\n'
+        )
+        self.assertEqual(config.ai.provider, "ollama")
+        self.assertEqual(config.ai.base_url, "http://localhost:11434")
+        self.assertEqual(config.ai.model, "qwen2.5:3b")
+        self.assertEqual(config.ai.confidence_threshold, 0.8)
+
+    def test_default_confidence_threshold(self):
+        config = self._load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n'
+        )
+        self.assertEqual(config.ai.confidence_threshold, 0.7)
+
+    def test_confidence_threshold_only_disables_llm(self):
+        # Only a threshold set: valid config, but no provider -> LLM disabled.
+        config = self._load("[ai]\nconfidence_threshold = 0.9\n")
+        self.assertEqual(config.ai.confidence_threshold, 0.9)
+        self.assertEqual(config.ai.provider, "")
+        self.assertEqual(config.ai.base_url, "")
+        self.assertEqual(config.ai.model, "")
+
+    def test_missing_model_with_provider_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load(
+                '[ai]\n'
+                'provider = "ollama"\n'
+                'base_url = "http://localhost:11434"\n'
+            )
+        self.assertIn("provider", str(ctx.exception))
+        self.assertIn("model", str(ctx.exception))
+
+    def test_missing_base_url_with_provider_raises(self):
+        with self.assertRaises(ConfigError):
+            self._load(
+                '[ai]\nprovider = "ollama"\nmodel = "qwen2.5:3b"\n'
+            )
+
+    def test_bad_provider_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load(
+                '[ai]\n'
+                'provider = "openai"\n'
+                'base_url = "http://localhost:11434"\n'
+                'model = "gpt-4o"\n'
+            )
+        self.assertIn("ollama", str(ctx.exception))
+        self.assertIn("openai-compatible", str(ctx.exception))
+
+    def test_confidence_threshold_bad_values_raise(self):
+        for bad in ("0", "-0.5", "1.5"):
+            with self.assertRaises(ConfigError):
+                self._load(f"[ai]\nconfidence_threshold = {bad}\n")
+
+    def test_confidence_threshold_bool_raises(self):
+        # bool is a float subclass; it must not be accepted as a threshold.
+        with self.assertRaises(ConfigError):
+            self._load("[ai]\nconfidence_threshold = true\n")
+
+    def test_confidence_threshold_non_number_raises(self):
+        with self.assertRaises(ConfigError):
+            self._load('[ai]\nconfidence_threshold = "high"\n')
+
+    def test_absent_ai_section_disabled(self):
+        config = self._load("[tagger]\nmax_suggestions = 3\n")
+        self.assertEqual(config.ai.provider, "")
+        self.assertEqual(config.ai.confidence_threshold, 0.7)
+
+
+class AiConfigEnvTest(unittest.TestCase):
+    """WALLATAG_AI_* env vars overlay TOML with the same atomic trio rule."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_overrides_all_ai_fields(self):
+        config = self._env_load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n'
+            'confidence_threshold = 0.7\n',
+            {
+                "WALLATAG_AI_PROVIDER": "openai-compatible",
+                "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
+                "WALLATAG_AI_MODEL": "gpt-4o-mini",
+                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.95",
+            },
+        )
+        self.assertEqual(config.ai.provider, "openai-compatible")
+        self.assertEqual(config.ai.base_url, "https://api.example.com/v1")
+        self.assertEqual(config.ai.model, "gpt-4o-mini")
+        self.assertEqual(config.ai.confidence_threshold, 0.95)
+
+    def test_env_partial_trio_completes_from_toml(self):
+        # Env sets only the provider; base_url/model come from TOML.
+        config = self._env_load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n',
+            {"WALLATAG_AI_PROVIDER": "openai-compatible"},
+        )
+        self.assertEqual(config.ai.provider, "openai-compatible")
+        self.assertEqual(config.ai.base_url, "http://localhost:11434")
+        self.assertEqual(config.ai.model, "qwen2.5:3b")
+
+    def test_env_provider_alone_without_toml_raises(self):
+        with self.assertRaises(ConfigError):
+            self._env_load(
+                "[tagger]\nmax_suggestions = 1\n",
+                {"WALLATAG_AI_PROVIDER": "ollama"},
+            )
+
+    def test_env_bad_provider_raises(self):
+        with self.assertRaises(ConfigError):
+            self._env_load(
+                "",
+                {
+                    "WALLATAG_AI_PROVIDER": "openai",
+                    "WALLATAG_AI_BASE_URL": "http://x",
+                    "WALLATAG_AI_MODEL": "gpt-4o",
+                },
+            )
+
+    def test_env_invalid_confidence_threshold_raises(self):
+        with self.assertRaises(ConfigError):
+            self._env_load("", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "abc"})
+        with self.assertRaises(ConfigError):
+            self._env_load("", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "2"})
+
+    def test_env_threshold_only_disables_llm(self):
+        config = self._env_load("", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.8"})
+        self.assertEqual(config.ai.confidence_threshold, 0.8)
+        self.assertEqual(config.ai.provider, "")
 
 
 class EnvOverridesTest(unittest.TestCase):

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Mapping
 
 VALID_TAG_POLICIES = ("only-existing", "prefer-existing", "all")
+VALID_AI_PROVIDERS = ("ollama", "openai-compatible")
 
 # Environment variable -> config field mapping.
 _ENV_URL = "WALLATAG_URL"
@@ -22,6 +23,10 @@ _ENV_USERNAME = "WALLATAG_USERNAME"
 _ENV_PASSWORD = "WALLATAG_PASSWORD"
 _ENV_DB = "WALLATAG_DB"
 _ENV_CONFIG = "WALLATAG_CONFIG"
+_ENV_AI_PROVIDER = "WALLATAG_AI_PROVIDER"
+_ENV_AI_BASE_URL = "WALLATAG_AI_BASE_URL"
+_ENV_AI_MODEL = "WALLATAG_AI_MODEL"
+_ENV_AI_CONFIDENCE_THRESHOLD = "WALLATAG_AI_CONFIDENCE_THRESHOLD"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
 
@@ -58,10 +63,26 @@ class TaggerConfig:
 
 
 @dataclass(frozen=True)
+class AiConfig:
+    """LLM tagger configuration.
+
+    The LLM tagger is active iff ``provider`` is non-empty; a fully default
+    ``AiConfig()`` (or a config that leaves all three of provider/base_url/
+    model unset) means the LLM tagger is disabled and KeywordTagger is used.
+    """
+
+    provider: str = ""
+    base_url: str = ""
+    model: str = ""
+    confidence_threshold: float = 0.7
+
+
+@dataclass(frozen=True)
 class Config:
     wallabag: WallabagConfig = field(default_factory=WallabagConfig)
     store: StoreConfig = field(default_factory=StoreConfig)
     tagger: TaggerConfig = field(default_factory=TaggerConfig)
+    ai: AiConfig = field(default_factory=AiConfig)
     verbose: bool = False
     # Runtime-only: sourced solely from the --max flag (max articles per run).
     # Never read from TOML: that is `[tagger] max_suggestions` instead.
@@ -144,6 +165,56 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
     return groups
 
 
+def _parse_ai(raw: dict) -> AiConfig:
+    """Parse and validate the [ai] section into an AiConfig.
+
+    The LLM tagger is active iff ``provider`` is non-empty, so an absent or
+    empty [ai] table yields defaults (LLM disabled). provider, base_url and
+    model are an atomic trio: setting ANY one of them requires all three to be
+    non-empty, and the provider must be a known value. confidence_threshold
+    defaults to 0.7 and must be a number in (0, 1]; the bool-is-number trap is
+    explicitly rejected (``confidence_threshold = true`` is not a threshold).
+    """
+    # The isinstance check runs on the RAW value BEFORE any `or {}`
+    # normalization: falsy non-tables (`ai = ""`, `ai = []`) must raise, not
+    # silently parse as an empty table. Only a dict value is normalized.
+    ai_value = raw.get("ai", {})
+    if not isinstance(ai_value, dict):
+        raise ConfigError("section [ai] must be a table")
+    ai_raw = ai_value or {}
+
+    provider = ai_raw.get("provider", "") or ""
+    base_url = ai_raw.get("base_url", "") or ""
+    model = ai_raw.get("model", "") or ""
+
+    confidence = ai_raw.get("confidence_threshold", 0.7)
+    if (
+        not isinstance(confidence, (int, float))
+        or isinstance(confidence, bool)
+        or not 0 < float(confidence) <= 1
+    ):
+        raise ConfigError("confidence_threshold must be a number in the range (0, 1]")
+    confidence = float(confidence)
+
+    if provider or base_url or model:
+        if not provider or not base_url or not model:
+            raise ConfigError(
+                "section [ai]: provider, base_url and model must all be set together"
+            )
+        if provider not in VALID_AI_PROVIDERS:
+            raise ConfigError(
+                "invalid ai provider %r; valid choices: %s"
+                % (provider, ", ".join(VALID_AI_PROVIDERS))
+            )
+
+    return AiConfig(
+        provider=str(provider),
+        base_url=str(base_url),
+        model=str(model),
+        confidence_threshold=confidence,
+    )
+
+
 def _parse_toml_config(raw: dict) -> Config:
     wallabag_raw = raw.get("wallabag", {}) or {}
     store_raw = raw.get("store", {}) or {}
@@ -151,9 +222,6 @@ def _parse_toml_config(raw: dict) -> Config:
 
     if not isinstance(wallabag_raw, dict) or not isinstance(store_raw, dict) or not isinstance(tagger_raw, dict):
         raise ConfigError("sections [wallabag], [store], [tagger] must be tables")
-
-    # [ai] is reserved for phase 2 and is ignored unconditionally: even if it
-    # is present but not a table, it never raises.
 
     tag_policy = tagger_raw.get("tag_policy", "prefer-existing")
     if tag_policy not in VALID_TAG_POLICIES:
@@ -183,6 +251,7 @@ def _parse_toml_config(raw: dict) -> Config:
             tag_policy=tag_policy,
             focus_groups=_parse_focus_groups(focus_raw),
         ),
+        ai=_parse_ai(raw),
         verbose=False,
     )
 
@@ -211,9 +280,51 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
     if db is not None:
         store = replace(store, path=db or None)  # empty string -> history-less
 
-    if wallabag is config.wallabag and store is config.store:
+    ai = config.ai
+    provider = env.get(_ENV_AI_PROVIDER)
+    base_url = env.get(_ENV_AI_BASE_URL)
+    model = env.get(_ENV_AI_MODEL)
+    threshold_raw = env.get(_ENV_AI_CONFIDENCE_THRESHOLD)
+    if threshold_raw is not None:
+        try:
+            confidence = float(threshold_raw)
+        except ValueError:
+            raise ConfigError(
+                f"WALLATAG_AI_CONFIDENCE_THRESHOLD must be a number in the "
+                f"range (0, 1], got {threshold_raw!r}"
+            ) from None
+        if not 0 < confidence <= 1:
+            raise ConfigError(
+                f"WALLATAG_AI_CONFIDENCE_THRESHOLD must be in the range "
+                f"(0, 1], got {threshold_raw!r}"
+            )
+        ai = replace(ai, confidence_threshold=confidence)
+    if provider is not None or base_url is not None or model is not None:
+        # Each set env var wins over the TOML value, but the trio must still
+        # end up complete and the provider valid (same rule as the TOML
+        # parser): WALLATAG_AI_PROVIDER alone with no [ai] config is an error.
+        provider = provider if provider is not None else ai.provider
+        base_url = base_url if base_url is not None else ai.base_url
+        model = model if model is not None else ai.model
+        if not provider or not base_url or not model:
+            raise ConfigError(
+                "WALLATAG_AI_PROVIDER, WALLATAG_AI_BASE_URL and WALLATAG_AI_MODEL "
+                "must all be set together"
+            )
+        if provider not in VALID_AI_PROVIDERS:
+            raise ConfigError(
+                "invalid ai provider %r; valid choices: %s"
+                % (provider, ", ".join(VALID_AI_PROVIDERS))
+            )
+        ai = replace(ai, provider=provider, base_url=base_url, model=model)
+
+    if (
+        wallabag is config.wallabag
+        and store is config.store
+        and ai is config.ai
+    ):
         return config
-    return replace(config, wallabag=wallabag, store=store)
+    return replace(config, wallabag=wallabag, store=store, ai=ai)
 
 
 def load_config(

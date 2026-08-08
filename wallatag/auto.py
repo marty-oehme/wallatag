@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import requests
 
 from wallatag.config import Config
+from wallatag.llm import LLMError
 from wallatag.wallabag import WallabagError
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,14 @@ def run_auto(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> Au
                 store.mark_seen(entry_id)  # pick-up: dedupe concurrent runs
             summary.presented += 1
 
-            suggestions = tagger.suggest(entry)
+            try:
+                suggestions = tagger.suggest(entry)
+            except LLMError as exc:
+                # A model failure is an article-level skip, not a feed failure:
+                # keep going with the rest of the run.
+                logger.error("LLM tagging failed %s: %s", entry_id, exc)
+                summary.skipped += 1
+                continue
             tags = sorted({suggestion.tag for suggestion in suggestions})
             logger.debug(
                 "entry %s: %s", entry_id, ", ".join(tags) or "(no suggestions)"
