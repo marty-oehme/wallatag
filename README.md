@@ -120,6 +120,21 @@ dokku storage:mount wallatag /var/lib/dokku/data/storage/wallatag:/data
 dokku ps:scale wallatag worker=1
 ```
 
+The release phase auto-creates the `wallatag-llm` credentials block on every
+push (deploy/release.py): on first creation it is seeded from the
+`WALLATAG_AI_*` container env vars when `WALLATAG_AI_PROVIDER`,
+`WALLATAG_AI_BASE_URL` and `WALLATAG_AI_MODEL` are all set, otherwise it is
+created empty. Fill or edit it in the Prefect UI (Blocks > Wallatag LLM
+Credentials) to configure the LLM for scheduled runs without redeploying.
+
+For scheduled runs, the flow reads the block each run and passes its non-empty
+fields to the wallatag CLI as `WALLATAG_AI_*` env vars; empty block fields
+fall back to the TOML config / container env. Block values apply to
+Prefect-scheduled runs only — `dokku run wallatag ...` (manual/status) reads
+config/env only and never sees the block, so keep the `WALLATAG_AI_*` vars in
+the `config:set` above if you also run the LLM tagger manually. No secrets end
+up in git either way.
+
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.
 
@@ -140,17 +155,18 @@ git push dokku main
 ```
 
 The Procfile `release:` process type registers the deployment (running
-`prefect deploy --all`) and creates the `wallatag-pool` work pool if it is
-missing, automatically on every push — before the worker starts. No manual
-`prefect deploy` step is needed.
+`prefect deploy --all`) and creates the `wallatag-pool` work pool and the
+`wallatag-llm` credentials block if they are missing, automatically on every
+push: before the worker starts. No manual `prefect deploy` step is needed.
 
 Verify:
 
 - Deploy output ends with success and no errors.
 - `dokku ps` shows the `worker` process running (e.g. `wallatag.worker.1 running`).
-- On the incus host: the release phase creates `wallatag-pool` on first deploy;
-  `prefect work-pool inspect wallatag-pool` shows it Ready once the worker
-  heartbeats, and `prefect worker ls` lists the worker.
+- On the incus host: the release phase creates `wallatag-pool` and the
+  `wallatag-llm` block on first deploy; `prefect work-pool inspect
+  wallatag-pool` shows it Ready once the worker heartbeats, and
+  `prefect worker ls` lists the worker.
 - In the Prefect UI, the `wallatag-batch` deployment shows scheduled runs, and
   each run's state (Completed/Failed) appears as it executes.
 - `dokku run wallatag wallatag status` prints the config summary (proves the

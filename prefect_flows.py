@@ -8,10 +8,12 @@ wallatag is installed and configured (git-bug issue 3d0b22f).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
 
+from blocks import BLOCK_NAME, LLMCredentials
 from prefect import flow
 
 if TYPE_CHECKING:
@@ -32,6 +34,24 @@ def build_wallatag_command(
     return cmd
 
 
+def llm_env_from_block() -> dict[str, str]:
+    """Return WALLATAG_AI_* overrides from the wallatag-llm block, if any.
+
+    Fail-open: any error (no Prefect server, missing block, network) logs a
+    warning and returns {}, so scheduled runs fall back to the container env /
+    wallatag.toml.
+    """
+    try:
+        return LLMCredentials.load(BLOCK_NAME).llm_env()
+    except Exception as exc:
+        print(
+            f"LLM credentials block {BLOCK_NAME!r} not available, "
+            f"falling back to config/env: {exc}",
+            flush=True,
+        )
+        return {}
+
+
 @flow(log_prints=True)
 def wallatag_batch(
     max_articles: int = 50,
@@ -42,6 +62,8 @@ def wallatag_batch(
 
     The flow executes inside the Dokku container, so it shells out to the
     installed `wallatag` console script (which reads WALLATAG_* env vars).
+    Scheduled runs may get WALLATAG_AI_* overrides from the auto-created
+    wallatag-llm block (blocks.py); empty block fields fall back to TOML/env.
     Returns the captured stdout on success. Raises on a non-zero exit so
     Prefect marks the run Failed and can notify on problems.
     """
@@ -49,12 +71,14 @@ def wallatag_batch(
         raise RuntimeError(
             "wallatag console script not found on PATH; is the package installed?"
         )
+    env = {**os.environ, **llm_env_from_block()}
     try:
         completed = subprocess.run(
             build_wallatag_command(max_articles, tag_policy, focus),
             capture_output=True,
             text=True,
             timeout=1800,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("wallatag run timed out after 1800s") from exc

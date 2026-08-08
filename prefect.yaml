@@ -10,6 +10,19 @@
 # every push: deploy/release.py first ensures the `wallatag-pool` work pool
 # exists, then runs `prefect deploy --all`. Requires PREFECT_API_URL (and
 # PREFECT_API_KEY if the server enforces auth) via `dokku config:set`.
+#
+# The LLM URL/credentials for Prefect-scheduled runs come from the
+# `WallatagLLMCredentials` block (document name `wallatag-llm`, defined in
+# blocks.py). The release phase auto-creates it (deploy/release.py): on first
+# creation it is seeded from the WALLATAG_AI_* container env when
+# WALLATAG_AI_PROVIDER + WALLATAG_AI_BASE_URL + WALLATAG_AI_MODEL are all set,
+# otherwise it is created empty. Either way it can be filled/edited in the
+# Prefect UI (Blocks > Wallatag LLM Credentials) without redeploying.
+#
+# The flow (prefect_flows.py) reads the block on every run and passes its
+# non-empty fields to the wallatag CLI as WALLATAG_AI_* env vars, so empty
+# block fields fall back to the TOML config / container env. No secrets land
+# in git either way.
 
 build: null
 push: null
