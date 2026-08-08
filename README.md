@@ -93,7 +93,7 @@ that changes nothing.
 ## Deployment (Dokku)
 
 wallatag is hosted on a Dokku server and runs its own Prefect worker there. The
-`prefect` process keeps the container alive and joins the `wallatag-pool` work
+`worker` process keeps the container alive and joins the `wallatag-pool` work
 pool; there is no web process. The Prefect **server** (on your incus host)
 schedules runs, stores results, and can notify you on failures; the worker in
 this container executes them by running the installed `wallatag run` against
@@ -109,8 +109,11 @@ dokku apps:create wallatag
 dokku config:set wallatag WALLATAG_URL=https://your-wallabag.example WALLATAG_CLIENT_ID=... WALLATAG_CLIENT_SECRET=... WALLATAG_USERNAME=... WALLATAG_PASSWORD=... WALLATAG_DB=/data/wallatag.db PREFECT_API_URL=http://<prefect-server>:4200/api
 dokku storage:ensure-directory wallatag
 dokku storage:mount wallatag /var/lib/dokku/data/storage/wallatag:/data
-dokku ps:scale wallatag prefect=1
+dokku ps:scale wallatag worker=1
 ```
+
+Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
+deploy gets the right formation even before scaling is set by hand.
 
 All secrets go via env, never in git: `wallatag.toml` is gitignored and not
 used here. `dokku storage:ensure-directory` creates the host directory and
@@ -128,19 +131,18 @@ git remote add dokku dokku@your-host:wallatag
 git push dokku main
 ```
 
-Register the deployment (from the deployed container, so the entrypoint
-resolves against the code in /app):
-
-```sh
-dokku run wallatag prefect deploy
-```
+The Procfile `release:` process type registers the deployment (running
+`prefect deploy --all`) and creates the `wallatag-pool` work pool if it is
+missing, automatically on every push — before the worker starts. No manual
+`prefect deploy` step is needed.
 
 Verify:
 
 - Deploy output ends with success and no errors.
-- `dokku ps` shows the `prefect` process running (e.g. `wallatag.prefect.1 running`).
-- On the incus host: `prefect work-pool inspect wallatag-pool` shows the pool
-  Ready (a worker is heartbeating) and `prefect worker ls` lists the worker.
+- `dokku ps` shows the `worker` process running (e.g. `wallatag.worker.1 running`).
+- On the incus host: the release phase creates `wallatag-pool` on first deploy;
+  `prefect work-pool inspect wallatag-pool` shows it Ready once the worker
+  heartbeats, and `prefect worker ls` lists the worker.
 - In the Prefect UI, the `wallatag-batch` deployment shows scheduled runs, and
   each run's state (Completed/Failed) appears as it executes.
 - `dokku run wallatag wallatag status` prints the config summary (proves the
@@ -156,6 +158,9 @@ Notes / troubleshooting:
 - prefect is an optional dependency group; `bin/post_compile` installs it on
   Dokku builds only, so local installs stay lean (`uv sync` without
   `--group prefect`).
+- The release phase needs `PREFECT_API_URL` (and `PREFECT_API_KEY` if the
+  server enforces auth) to be set on the app BEFORE the first push, otherwise
+  the deploy fails loudly: set config first, then push.
 - The Python buildpack must support uv (v286+, May 2025). If `git push` fails
   while installing dependencies / detecting the package manager, the host
   buildpack is too old: update Dokku/herokuish on the host and redeploy. Do NOT

@@ -6,12 +6,10 @@
 # container (/app). The worker itself is a Procfile process that joins the
 # `wallatag-pool` work pool.
 #
-# Register the deployment from the deployed container so entrypoint paths
-# resolve against /app:
-#   dokku run wallatag prefect deploy
-#
-# Requires PREFECT_API_URL (and PREFECT_API_KEY if the server enforces auth)
-# to be set on the app via `dokku config:set`.
+# The Dokku release phase (Procfile `release:`) registers this deployment on
+# every push: deploy/release.py first ensures the `wallatag-pool` work pool
+# exists, then runs `prefect deploy --all`. Requires PREFECT_API_URL (and
+# PREFECT_API_KEY if the server enforces auth) via `dokku config:set`.
 
 build: null
 push: null
