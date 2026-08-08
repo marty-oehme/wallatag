@@ -375,7 +375,7 @@ class BuildTaggerTest(unittest.TestCase):
             tagger, llm_client = _build_tagger(config, ["python", "rust"])
 
         client_cls.assert_called_once_with(
-            "ollama", "http://localhost:11434", "qwen2.5:3b"
+            "ollama", "http://localhost:11434", "qwen2.5:3b", api_key=""
         )
         self.assertIs(llm_client, client_cls.return_value)
         self.assertIsInstance(tagger, LLMTagger)
@@ -383,6 +383,29 @@ class BuildTaggerTest(unittest.TestCase):
         self.assertEqual(tagger.max_suggestions, 3)
         self.assertEqual(tagger.tag_policy, "only-existing")
         self.assertEqual(tagger.existing_tags, ["python", "rust"])
+
+    def test_ai_configured_passes_api_key_to_client(self):
+        config = dataclasses.replace(
+            _ai_cfg(
+                provider="openai-compatible",
+                base_url="https://api.example.com/v1",
+                model="gpt-4o-mini",
+            ),
+            ai=AiConfig(
+                provider="openai-compatible",
+                base_url="https://api.example.com/v1",
+                model="gpt-4o-mini",
+                api_key="sk-test-key",
+            ),
+        )
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            _build_tagger(config, ["python"])
+        client_cls.assert_called_once_with(
+            "openai-compatible",
+            "https://api.example.com/v1",
+            "gpt-4o-mini",
+            api_key="sk-test-key",
+        )
 
     def test_no_ai_selects_keyword_tagger(self):
         config = Config()
@@ -413,10 +436,11 @@ class CmdRunAiSelectionTest(unittest.TestCase):
         created = []
 
         class FakeLLM:
-            def __init__(self, provider, base_url, model):
+            def __init__(self, provider, base_url, model, api_key=""):
                 self.provider = provider
                 self.base_url = base_url
                 self.model = model
+                self.api_key = api_key
                 self.closed = False
                 created.append(self)
 
@@ -501,6 +525,46 @@ class StatusAiLineTest(unittest.TestCase):
             text = out.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("ai: not configured", text)
+
+    def test_status_never_leaks_api_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    '[ai]\n'
+                    'provider = "openai-compatible"\n'
+                    'base_url = "https://api.example.com/v1"\n'
+                    'model = "gpt-4o-mini"\n'
+                    'api_key = "sk-super-secret-api-key"\n'
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ai: provider=openai-compatible", text)
+        self.assertNotIn("sk-super-secret-api-key", text)
+
+    def test_status_never_leaks_api_key_via_cmd_status(self):
+        # Direct cmd_status with an AiConfig that has api_key set.
+        config = dataclasses.replace(
+            Config(),
+            ai=AiConfig(
+                provider="openai-compatible",
+                base_url="https://api.example.com/v1",
+                model="gpt-4o-mini",
+                api_key="sk-direct-secret",
+            ),
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cmd_status(config, _args())
+        text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ai: provider=openai-compatible", text)
+        self.assertNotIn("sk-direct-secret", text)
 
 
 if __name__ == "__main__":

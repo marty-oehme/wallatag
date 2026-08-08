@@ -140,6 +140,7 @@ def _build_tagger(
             config.ai.provider,
             config.ai.base_url,
             config.ai.model,
+            api_key=config.ai.api_key,
         )
         tagger = LLMTagger(
             llm_client,

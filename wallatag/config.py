@@ -27,6 +27,7 @@ _ENV_AI_PROVIDER = "WALLATAG_AI_PROVIDER"
 _ENV_AI_BASE_URL = "WALLATAG_AI_BASE_URL"
 _ENV_AI_MODEL = "WALLATAG_AI_MODEL"
 _ENV_AI_CONFIDENCE_THRESHOLD = "WALLATAG_AI_CONFIDENCE_THRESHOLD"
+_ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
 
@@ -69,12 +70,20 @@ class AiConfig:
     The LLM tagger is active iff ``provider`` is non-empty; a fully default
     ``AiConfig()`` (or a config that leaves all three of provider/base_url/
     model unset) means the LLM tagger is disabled and KeywordTagger is used.
+
+    ``api_key`` is optional: when set (non-empty) the LLM client sends it as a
+    bearer token (``Authorization: Bearer <api_key>``) on every request for
+    openai-compatible providers that require auth; empty/unset means no
+    Authorization header. It is NOT part of the atomic provider/base_url/model
+    trio, so a config with only the trio (or only api_key) is valid. Like all
+    config, the key must never be printed or logged.
     """
 
     provider: str = ""
     base_url: str = ""
     model: str = ""
     confidence_threshold: float = 0.7
+    api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -174,6 +183,8 @@ def _parse_ai(raw: dict) -> AiConfig:
     non-empty, and the provider must be a known value. confidence_threshold
     defaults to 0.7 and must be a number in (0, 1]; the bool-is-number trap is
     explicitly rejected (``confidence_threshold = true`` is not a threshold).
+    ``api_key`` is optional and independent of the trio: it is str()-coerced
+    like the other string fields and empty/unset simply means no auth header.
     """
     # The isinstance check runs on the RAW value BEFORE any `or {}`
     # normalization: falsy non-tables (`ai = ""`, `ai = []`) must raise, not
@@ -186,6 +197,7 @@ def _parse_ai(raw: dict) -> AiConfig:
     provider = ai_raw.get("provider", "") or ""
     base_url = ai_raw.get("base_url", "") or ""
     model = ai_raw.get("model", "") or ""
+    api_key = ai_raw.get("api_key", "") or ""
 
     confidence = ai_raw.get("confidence_threshold", 0.7)
     if (
@@ -212,6 +224,7 @@ def _parse_ai(raw: dict) -> AiConfig:
         base_url=str(base_url),
         model=str(model),
         confidence_threshold=confidence,
+        api_key=str(api_key),
     )
 
 
@@ -317,6 +330,12 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 % (provider, ", ".join(VALID_AI_PROVIDERS))
             )
         ai = replace(ai, provider=provider, base_url=base_url, model=model)
+
+    api_key = env.get(_ENV_AI_API_KEY)
+    if api_key is not None:
+        # A present-but-empty WALLATAG_AI_API_KEY clears the TOML value,
+        # matching the WALLATAG_DB="" pattern.
+        ai = replace(ai, api_key=api_key)
 
     if (
         wallabag is config.wallabag

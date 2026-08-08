@@ -46,6 +46,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | AI base URL              | `[ai] base_url`             | `WALLATAG_AI_BASE_URL`             |
 | AI model                 | `[ai] model`                | `WALLATAG_AI_MODEL`                |
 | AI confidence threshold  | `[ai] confidence_threshold` | `WALLATAG_AI_CONFIDENCE_THRESHOLD` |
+| AI API key               | `[ai] api_key`              | `WALLATAG_AI_API_KEY`              |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
 `WALLATAG_DB` set to an empty string means history-less mode (no database at
@@ -69,7 +70,10 @@ activates one group; the default is all groups.
   `base_url`, and `model`; it is active iff `provider` is set, otherwise the
   keyword tagger is used. `confidence_threshold` (default 0.7) gates headless
   apply, further limited by `--tag-policy`. LLM suggestions carry source `llm`
-  and are recorded in the SQLite decision log.
+  and are recorded in the SQLite decision log. `api_key` is optional: when set
+  it is sent as an `Authorization: Bearer <api_key>` header on every LLM
+  request, which is only needed for keyed openai-compatible providers (OpenAI,
+  OpenRouter, ...); unset or empty means no auth header.
 
 ## Note on wallabag's native regex tagging rules
 
@@ -120,12 +124,22 @@ dokku storage:mount wallatag /var/lib/dokku/data/storage/wallatag:/data
 dokku ps:scale wallatag worker=1
 ```
 
+`WALLATAG_AI_API_KEY` is not in the `config:set` above: it is optional and only
+needed for keyed openai-compatible gateways (OpenAI, OpenRouter, ...). If you
+use one, add `WALLATAG_AI_API_KEY=<key>` to the command (or set it via
+`dokku config:set wallatag WALLATAG_AI_API_KEY=<key>` separately); for keyless
+setups (e.g. local ollama) leave it unset.
+
 The release phase auto-creates the `wallatag-llm` credentials block on every
 push (deploy/release.py): on first creation it is seeded from the
 `WALLATAG_AI_*` container env vars when `WALLATAG_AI_PROVIDER`,
-`WALLATAG_AI_BASE_URL` and `WALLATAG_AI_MODEL` are all set, otherwise it is
-created empty. Fill or edit it in the Prefect UI (Blocks > Wallatag LLM
-Credentials) to configure the LLM for scheduled runs without redeploying.
+`WALLATAG_AI_BASE_URL` and `WALLATAG_AI_MODEL` are all set (the
+`WALLATAG_AI_API_KEY` env var is folded in too when present), otherwise it is
+created empty. The block's fields are provider, base_url, model,
+confidence_threshold, and an OPTIONAL `api_key` (needed only for keyed
+openai-compatible providers). Fill or edit it in the Prefect UI (Blocks >
+Wallatag LLM Credentials) to configure the LLM for scheduled runs without
+redeploying.
 
 For scheduled runs, the flow reads the block each run and passes its non-empty
 fields to the wallatag CLI as `WALLATAG_AI_*` env vars; empty block fields

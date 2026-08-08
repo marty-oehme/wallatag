@@ -34,3 +34,4 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
 confidence_threshold = 0.7        # only apply tags the model rates above this (0, 1]
+api_key = ""                      # optional: bearer token for openai-compatible providers that require auth

@@ -1,7 +1,7 @@
 """Tests for wallatag.llm: LLMClient URL building, payload shape and errors.
 
 HTTP is faked with a small FakeSession that records ``post(url, json,
-timeout)`` calls and returns a canned FakeResponse.
+headers, timeout)`` calls and returns a canned FakeResponse.
 """
 
 import json
@@ -36,8 +36,15 @@ class FakeSession:
         self.posts = []
         self.closed = False
 
-    def post(self, url, json=None, timeout=None, **kwargs):
-        self.posts.append({"url": url, "json": json, "timeout": timeout})
+    def post(self, url, json=None, timeout=None, headers=None, **kwargs):
+        self.posts.append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
         if self.error is not None:
             raise self.error
         return self.response
@@ -115,13 +122,82 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(client.complete(SYSTEM, USER), "a tag")
 
 
+class AuthHeaderTest(unittest.TestCase):
+    """api_key controls the Authorization header (and nothing else)."""
+
+    def test_api_key_sends_bearer_header(self):
+        client, session = client_for(
+            ok_response(),
+            provider="openai-compatible",
+            base_url="https://api.example.com/v1",
+            api_key="sk-secret-key-123",
+        )
+        client.complete(SYSTEM, USER)
+        headers = session.posts[0]["headers"]
+        self.assertIsNotNone(headers)
+        self.assertEqual(headers["Authorization"], "Bearer sk-secret-key-123")
+
+    def test_no_api_key_sends_no_authorization_header(self):
+        client, session = client_for(ok_response())
+        client.complete(SYSTEM, USER)
+        headers = session.posts[0]["headers"]
+        # Production always sends a headers dict (possibly empty); there is
+        # never a None, so assert unconditionally on the dict.
+        self.assertNotIn("Authorization", headers)
+
+    def test_empty_api_key_sends_no_authorization_header(self):
+        client, session = client_for(ok_response(), api_key="")
+        client.complete(SYSTEM, USER)
+        headers = session.posts[0]["headers"]
+        self.assertNotIn("Authorization", headers)
+
+    def test_api_key_stored_on_client(self):
+        client, _ = client_for(ok_response(), api_key="sk-abc")
+        self.assertEqual(client.api_key, "sk-abc")
+
+    def test_default_api_key_is_empty(self):
+        client, _ = client_for(ok_response())
+        self.assertEqual(client.api_key, "")
+
+    def test_401_error_does_not_leak_api_key(self):
+        # A hostile/misconfigured gateway echoes the bearer key back in the
+        # error body; it must be scrubbed before reaching the LLMError text
+        # (and from there logger.error / print output downstream).
+        key = "sk-super-secret-value"
+        client, _ = client_for(
+            FakeResponse(
+                status_code=401,
+                body={"error": f"invalid api key {key} for model x"},
+            ),
+            api_key=key,
+        )
+        with self.assertRaises(LLMError) as ctx:
+            client.complete(SYSTEM, USER)
+        self.assertEqual(ctx.exception.status, 401)
+        self.assertNotIn(key, str(ctx.exception))
+        self.assertIn("***", str(ctx.exception))
+
+    def test_connection_error_does_not_leak_api_key(self):
+        client, _ = client_for(
+            None, error=requests.ConnectionError("boom"), api_key="sk-secret-2"
+        )
+        with self.assertRaises(LLMError) as ctx:
+            client.complete(SYSTEM, USER)
+        self.assertNotIn("sk-secret-2", str(ctx.exception))
+
+
 class ErrorTest(unittest.TestCase):
     def test_http_error_raises_llm_error_with_status(self):
+        # Keyless client (default api_key=""): the error body must be
+        # preserved intact and never corrupted by a redaction pass (a bogus
+        # unconditional replace of an empty key would corrupt every message).
         client, _ = client_for(FakeResponse(status_code=500, body={"error": "boom"}))
         with self.assertRaises(LLMError) as ctx:
             client.complete(SYSTEM, USER)
         self.assertEqual(ctx.exception.status, 500)
         self.assertIn("500", str(ctx.exception))
+        self.assertIn("boom", str(ctx.exception))
+        self.assertNotIn("***", str(ctx.exception))
 
     def test_transport_error_raises_llm_error(self):
         client, _ = client_for(

@@ -264,6 +264,47 @@ class AiConfigTomlTest(unittest.TestCase):
         )
         self.assertEqual(config.ai.confidence_threshold, 0.7)
 
+    def test_api_key_parsed(self):
+        config = self._load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n'
+            'api_key = "sk-abc-123"\n'
+        )
+        self.assertEqual(config.ai.api_key, "sk-abc-123")
+
+    def test_api_key_optional_not_part_of_trio(self):
+        # provider/base_url/model without api_key stays valid.
+        config = self._load(
+            '[ai]\n'
+            'provider = "openai-compatible"\n'
+            'base_url = "https://api.example.com/v1"\n'
+            'model = "gpt-4o-mini"\n'
+        )
+        self.assertEqual(config.ai.provider, "openai-compatible")
+        self.assertEqual(config.ai.api_key, "")
+
+    def test_api_key_only_is_valid(self):
+        # api_key alone, without the trio, is a valid (LLM-disabled) config.
+        config = self._load('[ai]\napi_key = "sk-alone"\n')
+        self.assertEqual(config.ai.api_key, "sk-alone")
+        self.assertEqual(config.ai.provider, "")
+
+    def test_api_key_default_is_empty(self):
+        config = self._load("[ai]\nprovider = \"ollama\"\nbase_url = \"http://x\"\nmodel = \"m\"\n")
+        self.assertEqual(config.ai.api_key, "")
+
+    def test_api_key_missing_section_disabled(self):
+        config = self._load("")
+        self.assertEqual(config.ai.api_key, "")
+
+    def test_non_string_api_key_is_coerced_not_rejected(self):
+        # A non-string api_key (e.g. from a TOML number) is str()-coerced like
+        # the other string fields: it must NOT raise.
+        config = self._load("[ai]\napi_key = 42\n")
+        self.assertEqual(config.ai.api_key, "42")
+
     def test_confidence_threshold_only_disables_llm(self):
         # Only a threshold set: valid config, but no provider -> LLM disabled.
         config = self._load("[ai]\nconfidence_threshold = 0.9\n")
@@ -388,6 +429,47 @@ class AiConfigEnvTest(unittest.TestCase):
         config = self._env_load("", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.8"})
         self.assertEqual(config.ai.confidence_threshold, 0.8)
         self.assertEqual(config.ai.provider, "")
+
+    def test_env_api_key_overrides_toml(self):
+        config = self._env_load(
+            '[ai]\n'
+            'provider = "openai-compatible"\n'
+            'base_url = "https://api.example.com/v1"\n'
+            'model = "gpt-4o-mini"\n'
+            'api_key = "sk-from-toml"\n',
+            {"WALLATAG_AI_API_KEY": "sk-from-env"},
+        )
+        self.assertEqual(config.ai.api_key, "sk-from-env")
+
+    def test_env_api_key_empty_clears_toml(self):
+        # A present-but-empty WALLATAG_AI_API_KEY clears the TOML value,
+        # matching the WALLATAG_DB="" pattern.
+        config = self._env_load(
+            '[ai]\n'
+            'provider = "openai-compatible"\n'
+            'base_url = "https://api.example.com/v1"\n'
+            'model = "gpt-4o-mini"\n'
+            'api_key = "sk-from-toml"\n',
+            {"WALLATAG_AI_API_KEY": ""},
+        )
+        self.assertEqual(config.ai.api_key, "")
+
+    def test_env_api_key_only_without_toml(self):
+        # api_key alone via env (no trio) is valid: LLM stays disabled.
+        config = self._env_load("", {"WALLATAG_AI_API_KEY": "sk-env-only"})
+        self.assertEqual(config.ai.api_key, "sk-env-only")
+        self.assertEqual(config.ai.provider, "")
+
+    def test_env_trio_rule_unaffected_by_api_key(self):
+        # Env trio incomplete still raises even when api_key is present.
+        with self.assertRaises(ConfigError):
+            self._env_load(
+                "",
+                {
+                    "WALLATAG_AI_PROVIDER": "ollama",
+                    "WALLATAG_AI_API_KEY": "sk-x",
+                },
+            )
 
 
 class EnvOverridesTest(unittest.TestCase):
