@@ -1,2 +1,2 @@
-# dokku hosts the app only; Prefect is the sole scheduler: no loops here.
-worker: sleep infinity
+# Dokku hosts the app AND its Prefect worker; the Prefect server schedules runs.
+prefect: prefect worker start -p wallatag-pool

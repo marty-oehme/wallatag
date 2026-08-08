@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Install the optional prefect dependency group into the app environment.
+#
+# The Heroku Python buildpack installs only the default dependency group
+# (`uv sync --locked --no-default-groups`), so the `prefect` group required by
+# the `prefect` Procfile process is installed here instead. Runs on every
+# Dokku build; harmless on Heroku CI (which installs all groups already).
+set -euo pipefail
+uv sync --group prefect --locked

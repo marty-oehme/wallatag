@@ -1,0 +1,34 @@
+# Prefect deployment definitions for wallatag.
+#
+# Prefect is the sole scheduler for wallatag. The code and the deployment live
+# in the same repo and are deployed to the same Dokku app, so there is no pull
+# step: the worker runs the flow from the code already deployed in the
+# container (/app). The worker itself is a Procfile process that joins the
+# `wallatag-pool` work pool.
+#
+# Register the deployment from the deployed container so entrypoint paths
+# resolve against /app:
+#   dokku run wallatag prefect deploy
+#
+# Requires PREFECT_API_URL (and PREFECT_API_KEY if the server enforces auth)
+# to be set on the app via `dokku config:set`.
+
+build: null
+push: null
+
+pull:
+- prefect.deployments.steps.set_working_directory:
+    directory: /app
+
+deployments:
+- name: wallatag-batch
+  entrypoint: prefect_flows.py:wallatag_batch
+  parameters:
+    max_articles: 50
+  schedule:
+    cron: "0 5,17 * * *"
+    timezone: UTC
+  work_pool:
+    name: wallatag-pool
+  tags:
+  - wallatag

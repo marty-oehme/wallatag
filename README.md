@@ -92,9 +92,12 @@ that changes nothing.
 
 ## Deployment (Dokku)
 
-wallatag is hosted on a Dokku server purely so the code and config live somewhere
-persistent. A `worker` process keeps the container alive (`sleep infinity`);
-there is no web process. Prefect: not this container: schedules runs.
+wallatag is hosted on a Dokku server and runs its own Prefect worker there. The
+`prefect` process keeps the container alive and joins the `wallatag-pool` work
+pool; there is no web process. The Prefect **server** (on your incus host)
+schedules runs, stores results, and can notify you on failures; the worker in
+this container executes them by running the installed `wallatag run` against
+the wallabag API. A `git push dokku main` deploys the app and the flow together.
 
 Requirements: Dokku with the current default Python buildpack
 (heroku-buildpack-python ≥ v286, i.e. uv support) and `dokku run` support.
@@ -103,16 +106,20 @@ One-time setup, run on the Dokku host:
 
 ```sh
 dokku apps:create wallatag
-dokku config:set wallatag WALLATAG_URL=https://your-wallabag.example WALLATAG_CLIENT_ID=... WALLATAG_CLIENT_SECRET=... WALLATAG_USERNAME=... WALLATAG_PASSWORD=... WALLATAG_DB=/data/wallatag.db
+dokku config:set wallatag WALLATAG_URL=https://your-wallabag.example WALLATAG_CLIENT_ID=... WALLATAG_CLIENT_SECRET=... WALLATAG_USERNAME=... WALLATAG_PASSWORD=... WALLATAG_DB=/data/wallatag.db PREFECT_API_URL=http://<prefect-server>:4200/api
 dokku storage:ensure-directory wallatag
 dokku storage:mount wallatag /var/lib/dokku/data/storage/wallatag:/data
-dokku ps:scale wallatag worker=1
+dokku ps:scale wallatag prefect=1
 ```
 
 All secrets go via env, never in git: `wallatag.toml` is gitignored and not
 used here. `dokku storage:ensure-directory` creates the host directory and
 chowns it to the container user (uid 32767), so the bind mount at `/data` works
 and keeps `/data/wallatag.db` across redeploys.
+
+`PREFECT_API_URL` points at your self-hosted Prefect server; the container
+reaches it outbound (no inbound port needed on Dokku: the worker polls). Set
+`PREFECT_API_KEY` too only if the server enforces auth.
 
 Deploy, from your local machine:
 
@@ -121,10 +128,21 @@ git remote add dokku dokku@your-host:wallatag
 git push dokku main
 ```
 
+Register the deployment (from the deployed container, so the entrypoint
+resolves against the code in /app):
+
+```sh
+dokku run wallatag prefect deploy
+```
+
 Verify:
 
 - Deploy output ends with success and no errors.
-- `dokku ps` shows the `worker` process running (e.g. `wallatag.worker.1 running`).
+- `dokku ps` shows the `prefect` process running (e.g. `wallatag.prefect.1 running`).
+- On the incus host: `prefect work-pool inspect wallatag-pool` shows the pool
+  Ready (a worker is heartbeating) and `prefect worker ls` lists the worker.
+- In the Prefect UI, the `wallatag-batch` deployment shows scheduled runs, and
+  each run's state (Completed/Failed) appears as it executes.
 - `dokku run wallatag wallatag status` prints the config summary (proves the
   package and env vars work in-container). Note it exits 0 even with everything
   unset, so only treat env vars as working if the output shows the
@@ -135,6 +153,9 @@ Verify:
 
 Notes / troubleshooting:
 
+- prefect is an optional dependency group; `bin/post_compile` installs it on
+  Dokku builds only, so local installs stay lean (`uv sync` without
+  `--group prefect`).
 - The Python buildpack must support uv (v286+, May 2025). If `git push` fails
   while installing dependencies / detecting the package manager, the host
   buildpack is too old: update Dokku/herokuish on the host and redeploy. Do NOT
@@ -155,5 +176,6 @@ uv run python -m unittest discover -s tests -v
 ```
 
 Scheduling is handled exclusively by Prefect (see `prefect_flows.py`); wallatag
-itself has zero Prefect dependency. `Procfile` only keeps the dokku container
-alive: no worker loops here.
+itself has zero Prefect dependency. `prefect` is installed via the optional
+`prefect` dependency group (`uv sync --group prefect`): needed only when
+developing flows or rebuilding the Dokku image (see `bin/post_compile`).
