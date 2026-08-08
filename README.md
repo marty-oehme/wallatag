@@ -34,15 +34,19 @@ Values are merged from lowest to highest precedence: later sources win:
 3. Environment variables
 4. CLI flags
 
-| Setting                  | TOML                        | Environment variable          |
-| ------------------------ | --------------------------- | ----------------------------- |
-| wallabag URL             | `[wallabag] url`            | `WALLATAG_URL`                |
-| API client id            | `[wallabag] client_id`      | `WALLATAG_CLIENT_ID`          |
-| API client secret        | `[wallabag] client_secret`  | `WALLATAG_CLIENT_SECRET`      |
-| wallabag username        | `[wallabag] username`       | `WALLATAG_USERNAME`           |
-| wallabag password        | `[wallabag] password`       | `WALLATAG_PASSWORD`           |
-| SQLite decision log path | `[store] path`              | `WALLATAG_DB`                 |
-| Config file location     | `--config PATH`             | `WALLATAG_CONFIG`             |
+| Setting                  | TOML                        | Environment variable               |
+| ------------------------ | --------------------------- | ---------------------------------- |
+| wallabag URL             | `[wallabag] url`            | `WALLATAG_URL`                     |
+| API client id            | `[wallabag] client_id`      | `WALLATAG_CLIENT_ID`               |
+| API client secret        | `[wallabag] client_secret`  | `WALLATAG_CLIENT_SECRET`           |
+| wallabag username        | `[wallabag] username`       | `WALLATAG_USERNAME`                |
+| wallabag password        | `[wallabag] password`       | `WALLATAG_PASSWORD`                |
+| SQLite decision log path | `[store] path`              | `WALLATAG_DB`                      |
+| AI provider              | `[ai] provider`             | `WALLATAG_AI_PROVIDER`             |
+| AI base URL              | `[ai] base_url`             | `WALLATAG_AI_BASE_URL`             |
+| AI model                 | `[ai] model`                | `WALLATAG_AI_MODEL`                |
+| AI confidence threshold  | `[ai] confidence_threshold` | `WALLATAG_AI_CONFIDENCE_THRESHOLD` |
+| Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
 `WALLATAG_DB` set to an empty string means history-less mode (no database at
 all). `wallatag.toml` contains secrets and is gitignored; only
@@ -61,7 +65,11 @@ activates one group; the default is all groups.
   `max_suggestions`.
 - `[tagger] tag_policy`: `only-existing` | `prefer-existing` | `all`
   (default `prefer-existing`). Override with `--tag-policy`.
-- `[ai]` is reserved for phase 2 (LLM tagger) and ignored by the MVP.
+- `[ai]` enables the LLM tagger: `provider` (`ollama` or `openai-compatible`),
+  `base_url`, and `model`; it is active iff `provider` is set, otherwise the
+  keyword tagger is used. `confidence_threshold` (default 0.7) gates headless
+  apply, further limited by `--tag-policy`. LLM suggestions carry source `llm`
+  and are recorded in the SQLite decision log.
 
 ## Note on wallabag's native regex tagging rules
 
@@ -77,7 +85,7 @@ wallatag covers the gaps:
   and focus groups.
 - **Interactive review**: human-in-the-loop confirmation before tags are
   applied (`manual`).
-- **AI tagging**: LLM-based suggestion (phase 2).
+- **AI tagging**: LLM-based suggestion.
 
 ## Commands
 
@@ -106,7 +114,7 @@ One-time setup, run on the Dokku host:
 
 ```sh
 dokku apps:create wallatag
-dokku config:set wallatag WALLATAG_URL=https://your-wallabag.example WALLATAG_CLIENT_ID=... WALLATAG_CLIENT_SECRET=... WALLATAG_USERNAME=... WALLATAG_PASSWORD=... WALLATAG_DB=/data/wallatag.db PREFECT_API_URL=http://<prefect-server>:4200/api
+dokku config:set wallatag WALLATAG_URL=https://your-wallabag.example WALLATAG_CLIENT_ID=... WALLATAG_CLIENT_SECRET=... WALLATAG_USERNAME=... WALLATAG_PASSWORD=... WALLATAG_DB=/data/wallatag.db PREFECT_API_URL=http://<prefect-server>:4200/api WALLATAG_AI_PROVIDER=ollama WALLATAG_AI_BASE_URL=http://<dokku-host-address>:11434 WALLATAG_AI_MODEL=<model>
 dokku storage:ensure-directory wallatag
 dokku storage:mount wallatag /var/lib/dokku/data/storage/wallatag:/data
 dokku ps:scale wallatag worker=1
@@ -168,6 +176,9 @@ Notes / troubleshooting:
   package-manager files.
 - `WALLATAG_URL` must be reachable from the container. If wallabag runs on the
   same host, use its public/trusted address, not `localhost`.
+- The AI `base_url` must be reachable from inside the container: `localhost`
+  refers to the container itself, so it only works if ollama runs on the same
+  host as the Dokku worker (use the host's address instead).
 - Interactive use is possible too: `dokku run wallatag wallatag manual --max 10`
   starts the manual tag review loop on demand (wallatag is still hosting-only;
   Prefect normally schedules the headless `run`). Note `dokku run` executes its
