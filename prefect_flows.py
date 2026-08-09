@@ -43,10 +43,10 @@ def llm_env_from_block() -> dict[str, str]:
     """
     try:
         return LLMCredentials.load(BLOCK_NAME).llm_env()
-    except Exception as exc:
+    except Exception:
         print(
             f"LLM credentials block {BLOCK_NAME!r} not available, "
-            f"falling back to config/env: {exc}",
+            f"falling back to config/env",
             flush=True,
         )
         return {}
