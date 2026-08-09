@@ -86,7 +86,12 @@ class LLMClient:
         if self.provider == "ollama":
             # Ollama's OpenAI-compatible shim lives under /v1; base_url like
             # http://localhost:11434 must NOT be expected to carry a prefix.
-            return f"{self.base_url}/v1/chat/completions"
+            # Docs commonly give http://host:11434/v1 as the OpenAI-compatible
+            # base_url, so strip that trailing /v1 before appending it again.
+            base = self.base_url
+            if base.endswith("/v1"):
+                base = base[: -len("/v1")]
+            return f"{base}/v1/chat/completions"
         # openai-compatible: base_url already includes the /v1 prefix.
         return f"{self.base_url}/chat/completions"
 

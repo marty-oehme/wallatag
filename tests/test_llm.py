@@ -98,6 +98,31 @@ class UrlTest(unittest.TestCase):
             session.posts[0]["url"], "http://localhost:11434/v1/chat/completions"
         )
 
+    def test_ollama_base_url_with_v1_prefix_no_double_prefix(self):
+        # Ollama docs commonly give http://host:11434/v1 as the
+        # OpenAI-compatible base_url; the client must not double the /v1.
+        client, session = client_for(ok_response(), base_url="http://host:11434/v1")
+        client.complete(SYSTEM, USER)
+        self.assertEqual(
+            session.posts[0]["url"], "http://host:11434/v1/chat/completions"
+        )
+
+    def test_ollama_base_url_with_v1_prefix_and_trailing_slash(self):
+        # The /v1/ form survives __init__ rstrip as /v1 and is then de-duped.
+        client, session = client_for(ok_response(), base_url="http://host:11434/v1/")
+        client.complete(SYSTEM, USER)
+        self.assertEqual(
+            session.posts[0]["url"], "http://host:11434/v1/chat/completions"
+        )
+
+    def test_ollama_bare_host_still_gets_v1_prefix(self):
+        # Bare-host form must keep its documented behavior.
+        client, session = client_for(ok_response(), base_url="http://host:11434")
+        client.complete(SYSTEM, USER)
+        self.assertEqual(
+            session.posts[0]["url"], "http://host:11434/v1/chat/completions"
+        )
+
 
 class PayloadTest(unittest.TestCase):
     def test_body_shape(self):
