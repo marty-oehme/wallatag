@@ -2,30 +2,32 @@
 #
 # Prefect is the sole scheduler for wallatag. The code and the deployment live
 # in the same repo and are deployed to the same Dokku app, so there is no pull
-# step: the worker runs the flow from the code already deployed in the
-# container (/app). The worker itself is a Procfile process that joins the
-# `wallatag-pool` work pool.
+# step: the worker (a Procfile process joining the `wallatag-pool` work pool)
+# runs the flow from the code already deployed in /app.
 #
 # The Dokku release phase (Procfile `release:`) registers this deployment on
-# every push: deploy/release.py first ensures the `wallatag-pool` work pool
-# exists, then runs `prefect deploy --all`. Requires PREFECT_API_URL (and
+# every push: deploy/release.py ensures the `wallatag-pool` work pool exists,
+# then runs `prefect deploy --all`. Requires PREFECT_API_URL (and
 # PREFECT_API_KEY if the server enforces auth) via `dokku config:set`.
 #
-# The LLM URL/credentials for Prefect-scheduled runs come from the
-# `LLMCredentials` block (document name `wallatag-llm`, defined in blocks.py):
-# provider, base_url, model, confidence_threshold, and an OPTIONAL api_key.
-# The release phase auto-creates it (deploy/release.py): seeded on first
-# creation from the WALLATAG_AI_* container env when WALLATAG_AI_PROVIDER +
-# WALLATAG_AI_BASE_URL + WALLATAG_AI_MODEL are all set (api key too when
-# WALLATAG_AI_API_KEY is set), else created empty; it can always be
-# filled/edited in the Prefect UI (Blocks > Wallatag LLM Credentials) without
-# redeploying.
+# LLM settings for Prefect-scheduled runs come from the `LLMCredentials` block
+# (document `wallatag-llm`, blocks.py): provider, base_url, model,
+# confidence_threshold, and an OPTIONAL api_key. The release phase auto-creates
+# it (deploy/release.py): seeded from the WALLATAG_AI_* env vars when the
+# provider/base_url/model trio is set (api key too when present), else created
+# empty; it can be filled/edited in the Prefect UI without redeploying.
 #
-# The flow (prefect_flows.py) reads the block on every run and passes its
-# non-empty fields to the wallatag CLI as WALLATAG_AI_* env vars — including
-# WALLATAG_AI_API_KEY when the api key field is non-empty — so empty block
-# fields fall back to the TOML config / container env. No secrets land in git
-# either way.
+# The flow (prefect_flows.py) reads the block every run and passes its
+# non-empty fields to the wallatag CLI as WALLATAG_AI_* env vars. The block
+# provides DEFAULTS for scheduled runs; WALLATAG_AI_* container env vars
+# (dokku config:set) override them. Precedence, lowest to highest:
+# wallatag.toml defaults → LLM block fields → container env vars → CLI
+# options (none exist for AI config today). Empty block fields fall back to
+# TOML/config env. To CLEAR a block value, `dokku config:unset` it: do NOT
+# `config:set` it to "": a present-but-empty WALLATAG_AI_* var overrides the
+# block with "" and fails wallatag's config validation (ConfigError), except
+# WALLATAG_AI_API_KEY="" which intentionally clears the api key. No secrets
+# land in git either way.
 
 build: null
 push: null

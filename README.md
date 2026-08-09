@@ -142,12 +142,24 @@ Wallatag LLM Credentials) to configure the LLM for scheduled runs without
 redeploying.
 
 For scheduled runs, the flow reads the block each run and passes its non-empty
-fields to the wallatag CLI as `WALLATAG_AI_*` env vars; empty block fields
-fall back to the TOML config / container env. Block values apply to
-Prefect-scheduled runs only — `dokku run wallatag ...` (manual/status) reads
-config/env only and never sees the block, so keep the `WALLATAG_AI_*` vars in
-the `config:set` above if you also run the LLM tagger manually. No secrets end
-up in git either way.
+fields to the wallatag CLI as `WALLATAG_AI_*` env vars. Precedence for LLM
+settings, lowest to highest: `wallatag.toml` defaults → LLM credentials block
+(defaults for scheduled runs) → `WALLATAG_AI_*` env vars (`dokku config:set`)
+→ CLI options (none exist for AI config today). So container env vars
+**override** the block: rotate or override credentials with `dokku config:set
+wallatag WALLATAG_AI_...` and the change takes effect on scheduled runs
+without touching the block, while editing the block in the Prefect UI changes
+the default. To CLEAR a block value, use `dokku config:unset` (e.g. `dokku
+config:unset wallatag WALLATAG_AI_MODEL`): do NOT `config:set` it to an
+empty string: a present-but-empty `WALLATAG_AI_*` var overrides the block with
+`""` and fails wallatag's config validation (ConfigError) on every scheduled
+run. The one exception is `WALLATAG_AI_API_KEY=""`, which intentionally
+clears the api key (unset or empty means no auth header) instead of failing.
+Empty block fields fall back to the TOML config / container env.
+Block values apply to Prefect-scheduled runs only: `dokku run wallatag ...`
+(manual/status) reads config/env only and never sees the block, so keep the
+`WALLATAG_AI_*` vars in the `config:set` above if you also run the LLM tagger
+manually. No secrets end up in git either way.
 
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.

@@ -35,11 +35,12 @@ def build_wallatag_command(
 
 
 def llm_env_from_block() -> dict[str, str]:
-    """Return WALLATAG_AI_* overrides from the wallatag-llm block, if any.
+    """Return WALLATAG_AI_* defaults from the wallatag-llm block, if any.
 
-    Fail-open: any error (no Prefect server, missing block, network) logs a
-    warning and returns {}, so scheduled runs fall back to the container env /
-    wallatag.toml.
+    The block provides defaults for scheduled runs; container env vars (dokku
+    config:set) override them for the same variable. Fail-open: any error (no
+    Prefect server, missing block, network) logs a warning and returns {}, so
+    scheduled runs fall back to the container env / wallatag.toml.
     """
     try:
         return LLMCredentials.load(BLOCK_NAME).llm_env()
@@ -62,16 +63,20 @@ def wallatag_batch(
 
     The flow executes inside the Dokku container, so it shells out to the
     installed `wallatag` console script (which reads WALLATAG_* env vars).
-    Scheduled runs may get WALLATAG_AI_* overrides from the auto-created
-    wallatag-llm block (blocks.py); empty block fields fall back to TOML/env.
-    Returns the captured stdout on success. Raises on a non-zero exit so
-    Prefect marks the run Failed and can notify on problems.
+    LLM settings merge with the following precedence (lowest to highest):
+    wallatag.toml defaults → the auto-created wallatag-llm block (blocks.py),
+    which provides defaults for scheduled runs → container env vars (dokku
+    config:set) → CLI options (none exist for AI config today). So a
+    WALLATAG_AI_* env var overrides the block for that variable, and empty
+    block fields fall back to TOML/env. Returns the captured stdout on
+    success. Raises on a non-zero exit so Prefect marks the run Failed and can
+    notify on problems.
     """
     if shutil.which("wallatag") is None:
         raise RuntimeError(
             "wallatag console script not found on PATH; is the package installed?"
         )
-    env = {**os.environ, **llm_env_from_block()}
+    env = {**llm_env_from_block(), **os.environ}
     try:
         completed = subprocess.run(
             build_wallatag_command(max_articles, tag_policy, focus),

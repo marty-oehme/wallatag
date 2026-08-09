@@ -55,7 +55,7 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(env, {})
         self.assertIn("falling back to config/env", out.getvalue())
 
-    def test_flow_merges_block_env_into_subprocess_env(self) -> None:
+    def test_flow_env_overrides_block_env_for_same_var(self) -> None:
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="tagged 3 articles", stderr=""
         )
@@ -70,16 +70,84 @@ class PrefectFlowsTest(unittest.TestCase):
                  "prefect_flows.llm_env_from_block",
                  return_value={"WALLATAG_AI_PROVIDER": "openai-compatible"},
              ), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_AI_PROVIDER": "ollama"},
+                 clear=True,
+             ), \
              patch("prefect_flows.subprocess.run", side_effect=fake_run), \
              contextlib.redirect_stdout(io.StringIO()):
             self.prefect_flows.wallatag_batch.fn(max_articles=50)
 
+        # When both the block and os.environ define the same var, os.environ
+        # (container env) wins over the block value.
         self.assertEqual(
-            captured["env"]["WALLATAG_AI_PROVIDER"], "openai-compatible"
+            captured["env"], {"WALLATAG_AI_PROVIDER": "ollama"}
         )
-        # The rest of os.environ is passed through intact.
-        for key, value in os.environ.items():
-            self.assertEqual(captured["env"][key], value)
+
+    def test_flow_block_fills_env_gaps(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch(
+                 "prefect_flows.llm_env_from_block",
+                 return_value={
+                     "WALLATAG_AI_PROVIDER": "openai-compatible",
+                     "WALLATAG_AI_MODEL": "gpt-4o-mini",
+                     "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
+                 },
+             ), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # Block values fill in WALLATAG_AI_* vars that os.environ does not set.
+        self.assertEqual(
+            captured["env"],
+            {
+                "WALLATAG_AI_PROVIDER": "openai-compatible",
+                "WALLATAG_AI_MODEL": "gpt-4o-mini",
+                "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
+            },
+        )
+
+    def test_flow_passes_present_but_empty_env_var_through(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch(
+                 "prefect_flows.llm_env_from_block",
+                 return_value={"WALLATAG_AI_MODEL": "gpt-4o-mini"},
+             ), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_AI_MODEL": ""},
+                 clear=True,
+             ), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # A present-but-empty env var overrides the block with "" verbatim
+        # (documents the merge: wallatag's config validation then rejects it,
+        # which is why the docs say to `dokku config:unset` a block value
+        # rather than `config:set` it to an empty string).
+        self.assertEqual(captured["env"], {"WALLATAG_AI_MODEL": ""})
 
     def test_flow_falls_back_to_os_environ_when_block_unavailable(self) -> None:
         completed = subprocess.CompletedProcess(

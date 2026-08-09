@@ -2,8 +2,9 @@
 
 Nothing in this module is imported by the wallatag package, which keeps zero
 Prefect dependency and reads its config from TOML + env vars. The block below
-is an ADDITIONAL configuration source for Prefect-scheduled runs: non-empty
-block fields override the container env for scheduled runs only.
+is an ADDITIONAL configuration source for Prefect-scheduled runs: it provides
+WALLATAG_AI_* DEFAULTS, and container env vars (dokku config:set) take
+precedence over block fields for scheduled runs too.
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ class LLMCredentials(Block):
 
     Seeded from the ``WALLATAG_AI_*`` env vars on first release (see
     deploy/release.py); an empty block is valid so it can be filled in later
-    from the Prefect UI. The wallatag CLI keeps reading config/env; this block
-    only overrides non-empty fields.
+    from the Prefect UI. The wallatag CLI keeps reading config/env; non-empty
+    block fields are used as DEFAULTS for scheduled runs, and WALLATAG_AI_*
+    environment variables override them.
     """
 
     _block_type_name = "Wallatag LLM Credentials"
@@ -37,11 +39,11 @@ class LLMCredentials(Block):
     confidence_threshold: float | None = None
 
     def llm_env(self) -> dict[str, str]:
-        """Map non-empty fields to WALLATAG_AI_* env vars.
+        """Map non-empty fields to WALLATAG_AI_* env vars (defaults).
 
-        An empty block yields {} (nothing overridden), so scheduled runs fall
-        back to the TOML config / container env. Never logs or prints the api
-        key.
+        An empty block yields {} (no defaults provided), so scheduled runs
+        fall back to the TOML config / container env. Never logs or prints the
+        api key.
         """
         env: dict[str, str] = {}
         if self.provider:
@@ -69,7 +71,9 @@ def ensure_wallatag_llm_credentials_block(
     document already exists, do nothing. Otherwise seed it from the
     WALLATAG_AI_* env vars when the provider/base_url/model trio is set (also
     taking the api key and confidence threshold when present), else create an
-    empty block that can be filled in later from the Prefect UI. A save
+    empty block that can be filled in later from the Prefect UI. Seeding is a
+    one-time snapshot of the env: at run time the block only provides
+    defaults, and WALLATAG_AI_* env vars still override its fields. A save
     failure is logged as a warning and does not propagate: the release phase
     must not fail over a cosmetic block issue.
     """
