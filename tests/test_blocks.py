@@ -225,6 +225,32 @@ class EnsureBlockTest(unittest.TestCase):
             any("warning" in m and "not a number" in m for m in messages)
         )
 
+    def test_out_of_range_threshold_env_skipped_with_warning(self) -> None:
+        saved = {}
+        messages = []
+
+        def fake_save(self, name, overwrite=False, client=None):
+            saved["block"] = self
+
+        with patch.object(
+            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
+        ), patch.object(self.blocks.LLMCredentials, "save", fake_save), patch.dict(
+            os.environ,
+            {
+                "WALLATAG_AI_PROVIDER": "ollama",
+                "WALLATAG_AI_BASE_URL": "http://localhost:11434",
+                "WALLATAG_AI_MODEL": "qwen2.5:3b",
+                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "1.5",
+            },
+            clear=True,
+        ):
+            self.blocks.ensure_wallatag_llm_credentials_block(log=messages.append)
+
+        self.assertIsNone(saved["block"].confidence_threshold)
+        self.assertTrue(
+            any("warning" in m and "out of range" in m for m in messages)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

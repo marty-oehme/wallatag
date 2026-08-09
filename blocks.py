@@ -93,6 +93,13 @@ def ensure_wallatag_llm_credentials_block(
                         f"{threshold_raw!r} is not a number; leaving the "
                         f"threshold unset in the block"
                     )
+                if threshold is not None and not (0.0 < threshold <= 1.0):
+                    log(
+                        f"warning: WALLATAG_AI_CONFIDENCE_THRESHOLD "
+                        f"{threshold_raw!r} is out of range (0, 1]; leaving "
+                        f"the threshold unset in the block"
+                    )
+                    threshold = None
             block = LLMCredentials(
                 provider=provider,
                 base_url=base_url,
