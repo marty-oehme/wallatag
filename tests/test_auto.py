@@ -18,11 +18,11 @@ from unittest.mock import patch
 
 from wallatag.auto import AutoSummary, run_auto, summary_line
 from wallatag.cli import cmd_run
-from wallatag.config import Config, FocusGroup, StoreConfig, WallabagConfig
+from wallatag.config import Config, FocusGroup, StoreConfig, TaggerConfig, WallabagConfig
 from wallatag.llm import LLMError
 from wallatag.store import Store
 from wallatag.tagger import KeywordTagger
-from wallatag.wallabag import WallabagError
+from wallatag.wallabag import WallabagError, _should_fetch, _tag_labels
 
 
 class RaisingTagger:
@@ -33,7 +33,7 @@ class RaisingTagger:
 
 
 def entry(eid, title, url="https://example.com/x", domain="example.com",
-          content="", reading_time=5):
+          content="", reading_time=5, tags=()):
     return {
         "id": eid,
         "title": title,
@@ -42,7 +42,7 @@ def entry(eid, title, url="https://example.com/x", domain="example.com",
         "content": content,
         "reading_time": reading_time,
         "language": "en",
-        "tags": [],
+        "tags": list(tags),
     }
 
 
@@ -57,17 +57,24 @@ class FakeClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30):
+    def iter_untagged(self, per_page=30, ignored_tags=()):
         if self.feed_error is not None:
             raise self.feed_error
+        # Faithful to WallabagClient.iter_untagged: drop entries whose tags
+        # are non-empty and not all in the ignore-any list.
+        ignored = frozenset(t.casefold() for t in ignored_tags)
+        entries = [
+            dict(item)
+            for item in self.entries
+            if _should_fetch(_tag_labels(item.get("tags")), ignored)
+        ]
         if self.feed_fail_after is not None:
-            for i, item in enumerate(self.entries):
+            for i, item in enumerate(entries):
                 if i >= self.feed_fail_after:
                     raise WallabagError("network died")
-                yield dict(item)
+                yield item
             return
-        for item in self.entries:
-            yield dict(item)
+        yield from entries
 
     def get_tags(self):
         return [{"label": t, "slug": t, "nbEntries": 0} for t in self.tags]
@@ -234,6 +241,63 @@ class DryRunTest(AutoBase):
             self.assertTrue(summary.dry_run)
             self.assertEqual((summary.tagged, summary.tags_applied), (1, 1))
         self.assertTrue(any("would tag 1: Pomodoro" in m for m in messages))
+
+
+class IgnoredTagsTest(AutoBase):
+    """[tagger] ignore_tags flows through run_auto to the client filter."""
+
+    def _cfg(self, ignore_tags=()):
+        return dataclasses.replace(
+            Config(), tagger=TaggerConfig(ignore_tags=ignore_tags)
+        )
+
+    def test_ignored_tag_article_is_presented_and_tagged(self):
+        # ignore_tags=("fix",): an article tagged ["fix"] is still fetched
+        # (every one of its tags is in the ignore-any list).
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["fix"])],
+            tags=["Pomodoro"],
+        )
+        summary, _ = self.run_auto(
+            client,
+            tagger=make_tagger(existing_tags=["Pomodoro"]),
+            cfg=self._cfg(ignore_tags=("fix",)),
+        )
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertEqual((summary.presented, summary.tagged), (1, 1))
+
+    def test_mixed_tags_article_not_presented(self):
+        # A tag outside the ignore list disqualifies the article.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["fix", "something"])],
+            tags=["Pomodoro"],
+        )
+        # Direct run_auto: nothing is presented, so no logs are emitted
+        # (the assertLogs helper would fail on an empty log stream).
+        summary = run_auto(
+            client,
+            make_tagger(existing_tags=["Pomodoro"]),
+            Store(None),
+            self._cfg(ignore_tags=("fix",)),
+        )
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(summary.presented, 0)
+
+    def test_tagged_article_not_presented_with_default_ignore(self):
+        # Default empty ignore list: a ["fix"]-tagged article is NOT fetched,
+        # matching the real client contract.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["fix"])],
+            tags=["Pomodoro"],
+        )
+        summary = run_auto(
+            client,
+            make_tagger(existing_tags=["Pomodoro"]),
+            Store(None),
+            Config(),
+        )
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(summary.presented, 0)
 
 
 class TagPolicyTest(AutoBase):

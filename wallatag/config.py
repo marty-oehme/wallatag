@@ -61,6 +61,9 @@ class TaggerConfig:
     max_suggestions: int = 5
     tag_policy: str = "prefer-existing"
     focus_groups: dict[str, FocusGroup] = field(default_factory=dict)
+    # Tags treated as untagged: articles carrying ONLY these tags are still
+    # fetched. Empty default = only fully untagged articles are fetched.
+    ignore_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,16 +142,19 @@ def _parse_toml(path: Path) -> dict:
         raise ConfigError(f"cannot read config file {path}: {exc}") from exc
 
 
-def _parse_focus_string_list(group_name: str, key: str, value: object) -> tuple[str, ...]:
-    """Validate one focus-group keyword/tag list (list/tuple of strings)."""
+def _parse_string_list(context: str, key: str, value: object) -> tuple[str, ...]:
+    """Validate one list-of-strings key (list/tuple of str); return a tuple.
+
+    ``context`` names the owning section for error messages (e.g. a focus
+    group or ``[tagger]``). Raises ConfigError on a non-list value or any
+    non-string element.
+    """
     if not isinstance(value, (list, tuple)):
-        raise ConfigError(
-            f"focus group {group_name!r}: {key} must be a list of strings"
-        )
+        raise ConfigError(f"{context}: {key} must be a list of strings")
     for item in value:
         if not isinstance(item, str):
             raise ConfigError(
-                f"focus group {group_name!r}: {key} contains a non-string value {item!r}"
+                f"{context}: {key} contains a non-string value {item!r}"
             )
     return tuple(value)
 
@@ -161,12 +167,12 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
                 f"focus group {name!r} must be a table with keywords and tags"
             )
         keywords = (
-            _parse_focus_string_list(name, "keywords", section["keywords"])
+            _parse_string_list(f"focus group {name!r}", "keywords", section["keywords"])
             if "keywords" in section
             else ()
         )
         tags = (
-            _parse_focus_string_list(name, "tags", section["tags"])
+            _parse_string_list(f"focus group {name!r}", "tags", section["tags"])
             if "tags" in section
             else ()
         )
@@ -246,6 +252,15 @@ def _parse_toml_config(raw: dict) -> Config:
     if not isinstance(max_suggestions, int) or isinstance(max_suggestions, bool) or max_suggestions < 0:
         raise ConfigError("max_suggestions must be a non-negative integer")
 
+    # Absent key -> () (no-op); empty array -> () too. Any present value goes
+    # through the same list-of-strings validation as focus-group keywords/tags.
+    ignore_tags_raw = tagger_raw.get("ignore_tags")
+    ignore_tags = (
+        _parse_string_list("tagger", "ignore_tags", ignore_tags_raw)
+        if ignore_tags_raw is not None
+        else ()
+    )
+
     focus_raw = raw.get("focus", {}) or {}
     if not isinstance(focus_raw, dict):
         raise ConfigError("section [focus] must be a table")
@@ -263,6 +278,7 @@ def _parse_toml_config(raw: dict) -> Config:
             max_suggestions=max_suggestions,
             tag_policy=tag_policy,
             focus_groups=_parse_focus_groups(focus_raw),
+            ignore_tags=ignore_tags,
         ),
         ai=_parse_ai(raw),
         verbose=False,

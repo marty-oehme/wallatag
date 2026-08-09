@@ -66,6 +66,11 @@ activates one group; the default is all groups.
   `max_suggestions`.
 - `[tagger] tag_policy`: `only-existing` | `prefer-existing` | `all`
   (default `prefer-existing`). Override with `--tag-policy`.
+- `[tagger] ignore_tags`: list of tags treated as untagged. Articles carrying
+  ONLY those tags are still fetched (e.g. maintenance tags like `fix`), while
+  articles carrying any other tag are not. Matching is an exact full-string
+  match, case-insensitive (`str.casefold()`). Default empty: only fully
+  untagged articles are fetched.
 - `[ai]` enables the LLM tagger: `provider` (`ollama` or `openai-compatible`),
   `base_url`, and `model`; it is active iff `provider` is set, otherwise the
   keyword tagger is used. `confidence_threshold` (default 0.7) gates headless

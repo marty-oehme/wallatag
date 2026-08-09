@@ -16,6 +16,7 @@ path = "/data/wallatag.db"
 [tagger]
 max_suggestions = 5
 tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
+ignore_tags = ["fix", "_frigo"]       # tags treated as untagged: articles carrying ONLY these are still fetched
 
 # Named rule groups ("focus" areas). --focus NAME activates one; default = all.
 [focus.methods]

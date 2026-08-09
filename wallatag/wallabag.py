@@ -44,6 +44,43 @@ class EntryPage:
     pages: int
 
 
+def _tag_labels(raw_tags: object) -> list[str]:
+    """Extract label strings from a wallabag 2.x entry ``tags`` value.
+
+    Wallabag 2.x returns tag objects (``{"label": ..., "slug": ...}``) in the
+    API but some responses carry plain strings; other shapes are ignored.
+    Returns an empty list when there are no recognizable tags.
+    """
+    labels: list[str] = []
+    if not isinstance(raw_tags, list):
+        return labels
+    for tag in raw_tags:
+        if isinstance(tag, str):
+            labels.append(tag)
+        elif isinstance(tag, dict):
+            label = tag.get("label")
+            if isinstance(label, str):
+                labels.append(label)
+            else:
+                slug = tag.get("slug")
+                if isinstance(slug, str):
+                    labels.append(slug)
+        # Other shapes contribute no label and are ignored.
+    return labels
+
+
+def _should_fetch(labels: list[str], ignored: frozenset[str]) -> bool:
+    """True iff an entry whose tags normalize to ``labels`` should be fetched.
+
+    Fetched iff there are no labels OR every label is in the ``ignored`` set
+    (already casefolded). Comparison is exact full-string; both sides are
+    casefolded so ``"Fix"`` in the ignore list matches tag ``"fix"``.
+    """
+    if not labels:
+        return True
+    return all(label.casefold() in ignored for label in labels)
+
+
 class WallabagClient:
     """OAuth2 password-grant client for the wallabag REST API.
 
@@ -234,23 +271,42 @@ class WallabagClient:
             pages=payload.get("pages", 0),
         )
 
-    def untagged_entries(self, page: int = 1, per_page: int = 30) -> EntryPage:
-        """Like get_entries, but only items whose ``tags`` is empty.
+    def untagged_entries(
+        self, page: int = 1, per_page: int = 30, ignored_tags: tuple[str, ...] = ()
+    ) -> EntryPage:
+        """Like get_entries, but only items that should be fetched.
 
-        The API has no server-side "no tags" filter, so this filters
-        client-side on ``tags == []`` while preserving total/page/pages.
+        An item is fetched iff it has no tags OR every one of its tags is in
+        ``ignored_tags`` (an "ignore-any" list: articles carrying ONLY ignored
+        tags are still fetched, e.g. maintenance tags like ``fix``). Matching
+        is exact full-string and case-insensitive (``str.casefold()`` on both
+        sides, matching the engine's case-insensitive convention). The API has
+        no server-side "no tags" filter, so this filters client-side while
+        preserving total/page/pages.
         """
         full = self.get_entries(page=page, per_page=per_page)
-        items = [item for item in full.items if not item.get("tags")]
+        ignored = frozenset(tag.casefold() for tag in ignored_tags)
+        items = [
+            item
+            for item in full.items
+            if _should_fetch(_tag_labels(item.get("tags")), ignored)
+        ]
         return EntryPage(
             items=items, total=full.total, page=full.page, pages=full.pages
         )
 
-    def iter_untagged(self, per_page: int = 30) -> Iterator[dict]:
-        """Yield untagged entries across all pages, in order."""
+    def iter_untagged(
+        self, per_page: int = 30, ignored_tags: tuple[str, ...] = ()
+    ) -> Iterator[dict]:
+        """Yield fetchable entries across all pages, in order.
+
+        ``ignored_tags`` is the ignore-any list; see ``untagged_entries``.
+        """
         page_num = 1
         while True:
-            page = self.untagged_entries(page=page_num, per_page=per_page)
+            page = self.untagged_entries(
+                page=page_num, per_page=per_page, ignored_tags=ignored_tags
+            )
             yield from page.items
             if not page.pages or page_num >= page.pages:
                 return

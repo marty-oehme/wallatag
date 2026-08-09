@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from wallatag.config import (
+    Config,
     ConfigError,
     find_config_file,
     load_config,
@@ -38,6 +39,7 @@ class NoConfigFileDefaultsTest(unittest.TestCase):
         self.assertEqual(config.tagger.max_suggestions, 5)
         self.assertEqual(config.tagger.tag_policy, "prefer-existing")
         self.assertEqual(config.tagger.focus_groups, {})
+        self.assertEqual(config.tagger.ignore_tags, ())
         self.assertFalse(config.verbose)
 
 
@@ -157,6 +159,44 @@ url = "https://wallabag.example.com"
             with self.assertRaises(ConfigError) as ctx:
                 load_config(config_path=str(tmp / "wallatag.toml"), env={})
         self.assertIn("section [ai] must be a table", str(ctx.exception))
+
+
+class IgnoreTagsTomlTest(unittest.TestCase):
+    """[tagger] ignore_tags: list of tags treated as untagged (TOMl only)."""
+
+    def _load(self, toml_text: str) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_ignore_tags_parsed(self):
+        config = self._load('[tagger]\nignore_tags = ["fix", "_frigo"]\n')
+        self.assertEqual(config.tagger.ignore_tags, ("fix", "_frigo"))
+
+    def test_ignore_tags_absent_defaults_empty(self):
+        # No ignore_tags key -> () with no error (a no-op).
+        config = self._load('[tagger]\ntag_policy = "all"\n')
+        self.assertEqual(config.tagger.ignore_tags, ())
+
+    def test_ignore_tags_empty_array_defaults_empty(self):
+        config = self._load("[tagger]\nignore_tags = []\n")
+        self.assertEqual(config.tagger.ignore_tags, ())
+
+    def test_ignore_tags_string_raises(self):
+        # A plain string must be rejected, never split into characters.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[tagger]\nignore_tags = "fix"\n')
+        message = str(ctx.exception)
+        self.assertIn("ignore_tags", message)
+        self.assertIn("list of strings", message)
+
+    def test_ignore_tags_non_string_element_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[tagger]\nignore_tags = [1, 2]\n")
+        message = str(ctx.exception)
+        self.assertIn("ignore_tags", message)
+        self.assertIn("non-string", message)
 
 
 class FocusGroupValidationTest(unittest.TestCase):

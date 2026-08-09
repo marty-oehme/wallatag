@@ -28,6 +28,7 @@ from wallatag.config import (
     load_config,
 )
 from wallatag.tagger import KeywordTagger, LLMTagger
+from wallatag.wallabag import _should_fetch, _tag_labels
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -308,9 +309,13 @@ class FakeClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30):
+    def iter_untagged(self, per_page=30, ignored_tags=()):
+        # Faithful to WallabagClient.iter_untagged: drop entries whose tags
+        # are non-empty and not all in the ignore-any list.
+        ignored = frozenset(t.casefold() for t in ignored_tags)
         for item in self.entries:
-            yield dict(item)
+            if _should_fetch(_tag_labels(item.get("tags")), ignored):
+                yield dict(item)
 
     def get_tags(self):
         return [{"label": t, "slug": t, "nbEntries": 0} for t in self.tags]

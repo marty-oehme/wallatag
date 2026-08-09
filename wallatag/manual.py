@@ -81,7 +81,9 @@ def run_manual(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> 
     try:
         unseen = (
             entry
-            for entry in client.iter_untagged(per_page=30)
+            for entry in client.iter_untagged(
+                per_page=30, ignored_tags=cfg.tagger.ignore_tags
+            )
             if not store.is_seen(entry["id"])
         )
         for entry in itertools.islice(unseen, cfg.max_articles):

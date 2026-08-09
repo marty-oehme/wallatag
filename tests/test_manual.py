@@ -16,12 +16,12 @@ import unittest
 from unittest.mock import patch
 
 from wallatag.cli import cmd_manual
-from wallatag.config import Config, StoreConfig, WallabagConfig
+from wallatag.config import Config, StoreConfig, TaggerConfig, WallabagConfig
 from wallatag.llm import LLMError
 from wallatag.manual import run_manual, summary_line
 from wallatag.store import Store
 from wallatag.tagger import KeywordTagger
-from wallatag.wallabag import WallabagError
+from wallatag.wallabag import WallabagError, _should_fetch, _tag_labels
 
 
 class RaisingTagger:
@@ -32,7 +32,7 @@ class RaisingTagger:
 
 
 def entry(eid, title, url="https://example.com/x", domain="example.com",
-          content="", reading_time=5):
+          content="", reading_time=5, tags=()):
     return {
         "id": eid,
         "title": title,
@@ -41,7 +41,7 @@ def entry(eid, title, url="https://example.com/x", domain="example.com",
         "content": content,
         "reading_time": reading_time,
         "language": "en",
-        "tags": [],
+        "tags": list(tags),
     }
 
 
@@ -53,9 +53,13 @@ class FakeClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30):
+    def iter_untagged(self, per_page=30, ignored_tags=()):
+        # Faithful to WallabagClient.iter_untagged: drop entries whose tags
+        # are non-empty and not all in the ignore-any list.
+        ignored = frozenset(t.casefold() for t in ignored_tags)
         for item in self.entries:
-            yield dict(item)
+            if _should_fetch(_tag_labels(item.get("tags")), ignored):
+                yield dict(item)
 
     def get_tags(self):
         return [{"label": t, "slug": t, "nbEntries": 0} for t in self.tags]
@@ -76,7 +80,7 @@ class FailingFeedClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30):
+    def iter_untagged(self, per_page=30, ignored_tags=()):
         yield entry(1, "first")
         yield entry(2, "second")
         raise WallabagError("network died")
@@ -101,7 +105,7 @@ class EagerFailingClient:
     def __init__(self):
         self.closed = False
 
-    def iter_untagged(self, per_page=30):
+    def iter_untagged(self, per_page=30, ignored_tags=()):
         raise WallabagError("cannot connect")
 
     def get_tags(self):
@@ -197,6 +201,85 @@ class NextFlowTest(ManualBase):
                 ).fetchone()[0]
             self.assertEqual(seen, 1)
         self.assertEqual((summary.tagged, summary.accepted), (1, 1))
+
+
+class IgnoredTagsTest(ManualBase):
+    """[tagger] ignore_tags flows through run_manual to the client filter."""
+
+    def _cfg(self, ignore_tags=()):
+        return dataclasses.replace(
+            Config(), tagger=TaggerConfig(ignore_tags=ignore_tags)
+        )
+
+    def test_ignored_tag_article_is_presented_and_tagged(self):
+        # ignore_tags=("fix",): an article tagged ["fix"] is still fetched
+        # (every one of its tags is in the ignore-any list).
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["fix"])],
+            tags=["Pomodoro"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client,
+                    [""],  # enter = next
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    cfg=self._cfg(ignore_tags=("fix",)),
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertEqual((summary.presented, summary.tagged), (1, 1))
+
+    def test_mixed_tags_article_not_presented(self):
+        # A tag outside the ignore list disqualifies the article.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["fix", "something"])],
+            tags=["Pomodoro"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client,
+                    [""],
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    cfg=self._cfg(ignore_tags=("fix",)),
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(summary.presented, 0)
+
+    def test_tagged_article_not_presented_with_default_ignore(self):
+        # Default empty ignore list: a ["fix"]-tagged article is NOT fetched,
+        # matching the real client contract.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["fix"])],
+            tags=["Pomodoro"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client,
+                    [""],
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(summary.presented, 0)
 
 
 class DropFlowTest(ManualBase):

@@ -365,6 +365,69 @@ class EntriesTest(WallabagClientTestCase):
         self.assertEqual([e["id"] for e in entries], [1, 3])
         self.assertEqual(len(self.api_calls("/api/entries.json")), 2)
 
+    def test_untagged_entries_ignored_tags_matrix(self):
+        # The user A-E matrix: an article is fetched iff it has no tags OR
+        # every one of its tags is in the ignore-any list.
+        items = [
+            entry(1, ["fix", "_frigo"]),    # A: all ignored -> fetched
+            entry(2, ["fix"]),              # B: all ignored -> fetched
+            entry(3, ["fix", "something"]),  # C: non-ignored present -> dropped
+            entry(4, ["something"]),        # D: non-ignored present -> dropped
+            entry(5, []),                   # E: untagged -> fetched, as before
+        ]
+        payload = entries_payload(items, total=5, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(ignored_tags=["fix", "_frigo"])
+
+        self.assertEqual([e["id"] for e in page.items], [1, 2, 5])
+        # Client-side filtering; the API-level counts are preserved.
+        self.assertEqual(page.total, 5)
+        self.assertEqual(page.pages, 1)
+
+    def test_iter_untagged_default_ignored_tags_unchanged(self):
+        # With the default empty ignore list, only fully untagged entries are
+        # yielded (existing behavior unchanged).
+        page = entries_payload(
+            [entry(1, []), entry(2, ["a"]), entry(3, ["fix"])],
+            total=3, pages=1,
+        )
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page))
+
+        entries = list(self.client.iter_untagged(per_page=30))
+
+        self.assertEqual([e["id"] for e in entries], [1])
+
+    def test_untagged_entries_dict_shaped_tags_matched(self):
+        # Wallabag 2.x may return tag objects; label is used, slug as fallback.
+        items = [
+            entry(1, [{"label": "fix", "slug": "fix"}]),   # label ignored -> fetched
+            entry(2, [{"slug": "fix"}]),                   # no label, slug ignored -> fetched
+            entry(3, [{"label": "something"}]),            # non-ignored label -> dropped
+            entry(4, [{"foo": "bar"}]),                    # no label/slug -> untagged -> fetched
+        ]
+        payload = entries_payload(items, total=4, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(ignored_tags=["fix"])
+
+        self.assertEqual([e["id"] for e in page.items], [1, 2, 4])
+        self.assertEqual(page.total, 4)
+
+    def test_untagged_entries_ignored_tags_case_insensitive(self):
+        # Case-insensitive exact match: ignore ["Fix"] also covers tag "fix".
+        items = [
+            entry(1, ["fix"]),                # casefold matches "Fix" -> fetched
+            entry(2, ["FIX", "something"]),   # still carries a non-ignored tag
+        ]
+        payload = entries_payload(items, total=2, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(ignored_tags=["Fix"])
+
+        self.assertEqual([e["id"] for e in page.items], [1])
+        self.assertEqual(page.total, 2)
+
     def test_per_page_too_large_raises_valueerror(self):
         with self.assertRaises(ValueError):
             self.client.get_entries(per_page=31)
