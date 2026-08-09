@@ -78,6 +78,60 @@ class BlocksModelTest(unittest.TestCase):
             },
         )
 
+    def test_wallabag_block_metadata(self) -> None:
+        cls = self.blocks.WallabagCredentials
+        self.assertEqual(cls._block_type_name, "Wallabag Credentials")
+        self.assertEqual(cls._block_type_slug, "wallabag-credentials")
+
+    def test_wallabag_block_name_constant(self) -> None:
+        self.assertEqual(self.blocks.WALLABAG_BLOCK_NAME, "wallabag")
+
+    def test_wallabag_default_fields(self) -> None:
+        block = self.blocks.WallabagCredentials()
+        self.assertEqual(block.base_url, "")
+        self.assertEqual(block.client_id, "")
+        self.assertEqual(block.client_secret.get_secret_value(), "")
+        self.assertEqual(block.username, "")
+        self.assertEqual(block.password.get_secret_value(), "")
+
+    def test_wallabag_empty_block_yields_empty_env(self) -> None:
+        block = self.blocks.WallabagCredentials()
+        self.assertEqual(block.wallabag_env(), {})
+
+    def test_wallabag_env_maps_populated_fields(self) -> None:
+        block = self.blocks.WallabagCredentials(
+            base_url="https://wallabag.example.com",
+            client_id="client-id-123",
+            client_secret="client-secret-456",
+            username="reader@example.com",
+            password="hunter2",
+        )
+        self.assertEqual(
+            block.wallabag_env(),
+            {
+                "WALLATAG_URL": "https://wallabag.example.com",
+                "WALLATAG_CLIENT_ID": "client-id-123",
+                "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                "WALLATAG_USERNAME": "reader@example.com",
+                "WALLATAG_PASSWORD": "hunter2",
+            },
+        )
+
+    def test_wallabag_env_omits_empty_secret_fields(self) -> None:
+        block = self.blocks.WallabagCredentials(
+            base_url="https://wallabag.example.com",
+            client_id="client-id-123",
+            username="reader@example.com",
+        )
+        self.assertEqual(
+            block.wallabag_env(),
+            {
+                "WALLATAG_URL": "https://wallabag.example.com",
+                "WALLATAG_CLIENT_ID": "client-id-123",
+                "WALLATAG_USERNAME": "reader@example.com",
+            },
+        )
+
 
 class EnsureBlockTest(unittest.TestCase):
     @classmethod
@@ -249,6 +303,136 @@ class EnsureBlockTest(unittest.TestCase):
         self.assertIsNone(saved["block"].confidence_threshold)
         self.assertTrue(
             any("warning" in m and "out of range" in m for m in messages)
+        )
+
+    def test_wallabag_seeds_from_env_when_quintet_set(self) -> None:
+        saved = {}
+
+        def fake_save(self, name, overwrite=False, client=None):
+            saved["block"] = self
+            saved["name"] = name
+
+        messages = []
+        with patch.object(
+            self.blocks.WallabagCredentials,
+            "load",
+            side_effect=Exception("missing"),
+        ), patch.object(
+            self.blocks.WallabagCredentials, "save", fake_save
+        ), patch.dict(
+            os.environ,
+            {
+                "WALLATAG_URL": "https://wallabag.example.com",
+                "WALLATAG_CLIENT_ID": "client-id-123",
+                "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                "WALLATAG_USERNAME": "reader@example.com",
+                "WALLATAG_PASSWORD": "hunter2",
+            },
+            clear=True,
+        ):
+            self.blocks.ensure_wallabag_credentials_block(log=messages.append)
+
+        block = saved["block"]
+        self.assertEqual(saved["name"], "wallabag")
+        self.assertEqual(block.base_url, "https://wallabag.example.com")
+        self.assertEqual(block.client_id, "client-id-123")
+        self.assertEqual(block.client_secret.get_secret_value(), "client-secret-456")
+        self.assertEqual(block.username, "reader@example.com")
+        self.assertEqual(block.password.get_secret_value(), "hunter2")
+        self.assertTrue(any("seeding" in m for m in messages))
+        self.assertTrue(any("created" in m for m in messages))
+
+    def test_wallabag_creates_empty_block_without_env(self) -> None:
+        saved = {}
+
+        def fake_save(self, name, overwrite=False, client=None):
+            saved["block"] = self
+
+        messages = []
+        with patch.object(
+            self.blocks.WallabagCredentials,
+            "load",
+            side_effect=Exception("missing"),
+        ), patch.object(
+            self.blocks.WallabagCredentials, "save", fake_save
+        ), patch.dict(
+            os.environ, {}, clear=True
+        ):
+            self.blocks.ensure_wallabag_credentials_block(log=messages.append)
+
+        block = saved["block"]
+        self.assertEqual(block.base_url, "")
+        self.assertEqual(block.client_id, "")
+        self.assertEqual(block.client_secret.get_secret_value(), "")
+        self.assertEqual(block.username, "")
+        self.assertEqual(block.password.get_secret_value(), "")
+        self.assertTrue(any("creating empty" in m for m in messages))
+        self.assertTrue(any("quintet" in m for m in messages))
+
+    def test_wallabag_partial_env_creates_empty_block(self) -> None:
+        # Seeding requires the full WALLATAG_* quintet.
+        saved = {}
+
+        def fake_save(self, name, overwrite=False, client=None):
+            saved["block"] = self
+
+        with patch.object(
+            self.blocks.WallabagCredentials,
+            "load",
+            side_effect=Exception("missing"),
+        ), patch.object(
+            self.blocks.WallabagCredentials, "save", fake_save
+        ), patch.dict(
+            os.environ, {"WALLATAG_URL": "https://wallabag.example.com"},
+            clear=True,
+        ):
+            self.blocks.ensure_wallabag_credentials_block()
+
+        self.assertEqual(saved["block"].base_url, "")
+        self.assertEqual(saved["block"].client_id, "")
+        self.assertEqual(saved["block"].client_secret.get_secret_value(), "")
+        self.assertEqual(saved["block"].username, "")
+        self.assertEqual(saved["block"].password.get_secret_value(), "")
+
+    def test_wallabag_existing_block_not_overwritten(self) -> None:
+        with patch.object(
+            self.blocks.WallabagCredentials,
+            "load",
+            return_value=self.blocks.WallabagCredentials(
+                base_url="https://existing.example"
+            ),
+        ), patch.object(self.blocks.WallabagCredentials, "save") as mock_save, \
+            redirect_stdout(io.StringIO()) as out:
+            self.blocks.ensure_wallabag_credentials_block()
+        mock_save.assert_not_called()
+        self.assertIn("already exists", out.getvalue())
+
+    def test_wallabag_save_failure_logs_warning_and_returns(self) -> None:
+        messages = []
+        with patch.object(
+            self.blocks.WallabagCredentials,
+            "load",
+            side_effect=Exception("missing"),
+        ), patch.object(
+            self.blocks.WallabagCredentials,
+            "save",
+            side_effect=RuntimeError("prefect server unreachable"),
+        ), patch.dict(
+            os.environ,
+            {
+                "WALLATAG_URL": "https://wallabag.example.com",
+                "WALLATAG_CLIENT_ID": "client-id-123",
+                "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                "WALLATAG_USERNAME": "reader@example.com",
+                "WALLATAG_PASSWORD": "hunter2",
+            },
+            clear=True,
+        ):
+            # Must not raise.
+            self.blocks.ensure_wallabag_credentials_block(log=messages.append)
+
+        self.assertTrue(
+            any("warning" in m and "could not save" in m for m in messages)
         )
 
 

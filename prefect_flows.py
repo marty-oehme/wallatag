@@ -13,7 +13,12 @@ import shutil
 import subprocess
 from typing import TYPE_CHECKING
 
-from blocks import BLOCK_NAME, LLMCredentials
+from blocks import (
+    BLOCK_NAME,
+    WALLABAG_BLOCK_NAME,
+    LLMCredentials,
+    WallabagCredentials,
+)
 from prefect import flow
 
 if TYPE_CHECKING:
@@ -53,6 +58,25 @@ def llm_env_from_block() -> dict[str, str]:
         return {}
 
 
+def wallabag_env_from_block() -> dict[str, str]:
+    """Return WALLATAG_* defaults from the wallabag-credentials block, if any.
+
+    The block provides defaults for scheduled runs; container env vars (dokku
+    config:set) override them for the same variable. Fail-open: any error (no
+    Prefect server, missing block, network) logs a warning and returns {}, so
+    scheduled runs fall back to the container env / wallatag.toml.
+    """
+    try:
+        return WallabagCredentials.load(WALLABAG_BLOCK_NAME).wallabag_env()
+    except Exception:
+        print(
+            f"wallabag credentials block {WALLABAG_BLOCK_NAME!r} not "
+            f"available, falling back to config/env",
+            flush=True,
+        )
+        return {}
+
+
 @flow(log_prints=True)
 def wallatag_batch(
     max_articles: int = 50,
@@ -63,20 +87,21 @@ def wallatag_batch(
 
     The flow executes inside the Dokku container, so it shells out to the
     installed `wallatag` console script (which reads WALLATAG_* env vars).
-    LLM settings merge with the following precedence (lowest to highest):
-    wallatag.toml defaults → the auto-created wallatag-llm block (blocks.py),
-    which provides defaults for scheduled runs → container env vars (dokku
-    config:set) → CLI options (none exist for AI config today). So a
-    WALLATAG_AI_* env var overrides the block for that variable, and empty
-    block fields fall back to TOML/env. Returns the captured stdout on
-    success. Raises on a non-zero exit so Prefect marks the run Failed and can
-    notify on problems.
+    Settings merge with the following precedence (lowest to highest):
+    wallatag.toml defaults → the auto-created blocks (blocks.py), which
+    provide defaults for scheduled runs: the wallatag-llm block (LLM
+    settings) and the wallabag-credentials block (wallabag URL/credentials)
+    → container env vars (dokku config:set) → CLI options (none exist for AI
+    config today). So a WALLATAG_AI_* / WALLATAG_* env var overrides the
+    block for that variable, and empty block fields fall back to TOML/env.
+    Returns the captured stdout on success. Raises on a non-zero exit so
+    Prefect marks the run Failed and can notify on problems.
     """
     if shutil.which("wallatag") is None:
         raise RuntimeError(
             "wallatag console script not found on PATH; is the package installed?"
         )
-    env = {**llm_env_from_block(), **os.environ}
+    env = {**llm_env_from_block(), **wallabag_env_from_block(), **os.environ}
     try:
         completed = subprocess.run(
             build_wallatag_command(max_articles, tag_policy, focus),

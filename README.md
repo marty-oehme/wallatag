@@ -161,6 +161,35 @@ Block values apply to Prefect-scheduled runs only: `dokku run wallatag ...`
 `WALLATAG_AI_*` vars in the `config:set` above if you also run the LLM tagger
 manually. No secrets end up in git either way.
 
+The release phase auto-creates the shared `Wallabag Credentials` block too
+(deploy/release.py), under the block document name `wallabag` — the same block
+document that the morning-digest project reads, so one block on the Prefect
+server serves both projects. On first creation it is seeded from the
+`WALLATAG_*` container env vars when all five are set (`WALLATAG_URL`,
+`WALLATAG_CLIENT_ID`, `WALLATAG_CLIENT_SECRET`, `WALLATAG_USERNAME`,
+`WALLATAG_PASSWORD`), otherwise it is created empty. The block's fields are
+base_url, client_id, client_secret, username and password. Fill or edit it in
+the Prefect UI (Blocks > Wallabag Credentials) to configure the wallabag
+URL/credentials for scheduled runs without redeploying.
+
+For scheduled runs, the flow reads the wallabag-credentials block each run and
+passes its non-empty fields to the wallatag CLI as `WALLATAG_*` env vars.
+Precedence for wallabag credentials, lowest to highest: `wallatag.toml`
+defaults → wallabag-credentials block (defaults for scheduled runs) →
+`WALLATAG_*` env vars (`dokku config:set`). So container env vars
+**override** the block: rotate or override credentials with `dokku config:set
+wallatag WALLATAG_...` and the change takes effect on scheduled runs without
+touching the block, while editing the block in the Prefect UI changes the
+default. To CLEAR a block value, use `dokku config:unset` (e.g. `dokku
+config:unset wallatag WALLATAG_URL`): do NOT `config:set` it to an empty
+string: a present-but-empty `WALLATAG_*` var overrides the block with `""` and
+fails wallatag's config validation (ConfigError) on every scheduled run.
+Empty block fields fall back to the TOML config / container env. Block values
+apply to Prefect-scheduled runs only: `dokku run wallatag ...`
+(manual/status) reads config/env only and never sees the block, so keep the
+`WALLATAG_*` vars in the `config:set` above if you also run wallatag manually.
+No secrets end up in git either way.
+
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.
 

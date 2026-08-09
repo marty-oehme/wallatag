@@ -28,6 +28,24 @@
 # block with "" and fails wallatag's config validation (ConfigError), except
 # WALLATAG_AI_API_KEY="" which intentionally clears the api key. No secrets
 # land in git either way.
+#
+# Wallabag URL/credentials for Prefect-scheduled runs come from the
+# `WallabagCredentials` block (document `wallabag`, blocks.py): base_url,
+# client_id, client_secret, username, password. The release phase auto-creates
+# it (deploy/release.py): seeded from the WALLATAG_* env vars when all five
+# are set, else created empty; it can be filled/edited in the Prefect UI
+# without redeploying. The block document name `wallabag` is shared with the
+# morning-digest project, so one block serves both.
+#
+# The flow (prefect_flows.py) reads the block every run and passes its
+# non-empty fields to the wallatag CLI as WALLATAG_* env vars. The block
+# provides DEFAULTS for scheduled runs; WALLATAG_* container env vars (dokku
+# config:set) override them. Precedence, lowest to highest: wallatag.toml
+# defaults → wallabag-credentials block fields → container env vars. Empty
+# block fields fall back to TOML/config env. To CLEAR a block value,
+# `dokku config:unset` it: do NOT `config:set` it to "": a present-but-empty
+# WALLATAG_* var overrides the block with "" and fails wallatag's config
+# validation (ConfigError). No secrets land in git either way.
 
 build: null
 push: null

@@ -40,11 +40,14 @@ class ReleaseScriptTest(unittest.TestCase):
             "blocks.ensure_wallatag_llm_credentials_block",
             side_effect=lambda *a, **k: calls.append("block"),
         ), patch(
+            "blocks.ensure_wallabag_credentials_block",
+            side_effect=lambda *a, **k: calls.append("wallabag-block"),
+        ), patch(
             "deploy.release.subprocess.run",
             side_effect=lambda *a, **k: calls.append("deploy"),
         ):
             self.release.main()
-        self.assertEqual(calls, ["pool", "block", "deploy"])
+        self.assertEqual(calls, ["pool", "block", "wallabag-block", "deploy"])
 
 
 if __name__ == "__main__":

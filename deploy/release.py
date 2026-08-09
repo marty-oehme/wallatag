@@ -10,7 +10,12 @@ Responsibilities:
    (auto-created on the first release, seeded from the WALLATAG_AI_* env vars
    when the provider/base_url/model trio is set, else empty): so the user
    does not have to create the credentials block by hand in the Prefect UI.
-3. Run `prefect deploy --all`, which registers the single committed
+3. Idempotently ensure the shared `wallabag` WallabagCredentials block exists
+   (same block document as the morning-digest project; auto-created on the
+   first release, seeded from the WALLATAG_* env vars when all five are set,
+   else empty): so the user does not have to create the wallabag credentials
+   block by hand in the Prefect UI either.
+4. Run `prefect deploy --all`, which registers the single committed
    `prefect.yaml` deployment (wallatag-batch). `prefect deploy --all` is
    idempotent, so re-runs on every deploy are harmless.
 
@@ -59,9 +64,13 @@ def main() -> None:
     ensure_work_pool()
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    from blocks import ensure_wallatag_llm_credentials_block
+    from blocks import (
+        ensure_wallabag_credentials_block,
+        ensure_wallatag_llm_credentials_block,
+    )
 
     ensure_wallatag_llm_credentials_block()
+    ensure_wallabag_credentials_block()
     subprocess.run(
         ["prefect", "deploy", "--all"],
         check=True,

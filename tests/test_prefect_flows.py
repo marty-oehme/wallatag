@@ -171,6 +171,140 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(captured["env"], {**os.environ})
         self.assertIn("falling back to config/env", out.getvalue())
 
+    def test_wallabag_env_from_block_fail_open(self) -> None:
+        with patch(
+            "prefect_flows.WallabagCredentials.load",
+            side_effect=Exception("prefect server unreachable"),
+        ), contextlib.redirect_stdout(io.StringIO()) as out:
+            env = self.prefect_flows.wallabag_env_from_block()
+        self.assertEqual(env, {})
+        self.assertIn("falling back to config/env", out.getvalue())
+
+    def test_flow_wallabag_block_fills_env_gaps(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch(
+                 "prefect_flows.wallabag_env_from_block",
+                 return_value={
+                     "WALLATAG_URL": "https://wallabag.example.com",
+                     "WALLATAG_CLIENT_ID": "client-id-123",
+                     "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                     "WALLATAG_USERNAME": "reader@example.com",
+                     "WALLATAG_PASSWORD": "hunter2",
+                 },
+             ), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # Block values fill in WALLATAG_* vars that os.environ does not set.
+        self.assertEqual(
+            captured["env"],
+            {
+                "WALLATAG_URL": "https://wallabag.example.com",
+                "WALLATAG_CLIENT_ID": "client-id-123",
+                "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                "WALLATAG_USERNAME": "reader@example.com",
+                "WALLATAG_PASSWORD": "hunter2",
+            },
+        )
+
+    def test_flow_wallabag_env_overrides_block_for_same_var(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch(
+                 "prefect_flows.wallabag_env_from_block",
+                 return_value={"WALLATAG_URL": "https://block.example"},
+             ), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_URL": "https://env.example"},
+                 clear=True,
+             ), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # When both the block and os.environ define the same var, os.environ
+        # (container env) wins over the block value.
+        self.assertEqual(
+            captured["env"], {"WALLATAG_URL": "https://env.example"}
+        )
+
+    def test_flow_passes_present_but_empty_wallabag_env_var_through(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch(
+                 "prefect_flows.wallabag_env_from_block",
+                 return_value={"WALLATAG_URL": "https://block.example"},
+             ), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_URL": ""},
+                 clear=True,
+             ), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # A present-but-empty env var overrides the block with "" verbatim
+        # (wallatag's config validation then rejects it, which is why the docs
+        # say to `dokku config:unset` a block value rather than `config:set`
+        # it to an empty string).
+        self.assertEqual(captured["env"], {"WALLATAG_URL": ""})
+
+    def test_flow_falls_back_to_os_environ_when_wallabag_block_unavailable(
+        self,
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch(
+                 "prefect_flows.WallabagCredentials.load",
+                 side_effect=Exception("prefect server unreachable"),
+             ), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        self.assertEqual(captured["env"], {**os.environ})
+        self.assertIn("falling back to config/env", out.getvalue())
+
     def test_missing_console_script_raises(self) -> None:
         with patch("prefect_flows.shutil.which", return_value=None):
             with self.assertRaises(RuntimeError):
