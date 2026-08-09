@@ -31,8 +31,6 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 WORK_POOL_NAME = "wallatag-pool"
 
 
@@ -59,6 +57,8 @@ def ensure_work_pool() -> None:
 def main() -> None:
     log(f"work pool: {WORK_POOL_NAME}")
     ensure_work_pool()
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
     from blocks import ensure_wallatag_llm_credentials_block
 
     ensure_wallatag_llm_credentials_block()
