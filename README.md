@@ -78,7 +78,14 @@ activates one group; the default is all groups.
   articles carrying any other tag are not. Matching is an exact full-string
   match, case-insensitive (`str.casefold()`). Default empty: only fully
   untagged articles are fetched. Override with `WALLATAG_IGNORE_TAGS`
-  (comma-separated string, e.g. `fix,_frigo`); an empty value clears the list.
+  (comma-separated string, e.g. `fix,_frigo`); an empty value clears the list
+  (whitespace-only or comma-only values are rejected, since they would
+  silently clear it).
+- Empty values for `WALLATAG_TAG_POLICY` and `WALLATAG_MAX_SUGGESTIONS` are
+  not clears — they raise a ConfigError — so remove those variables
+  (`dokku config:unset`) rather than setting them to `""` (unlike
+  `WALLATAG_IGNORE_TAGS`, `WALLATAG_DB`, and `WALLATAG_AI_API_KEY`, where
+  empty means clear).
 - `[ai]` enables the LLM tagger: `provider` (`ollama` or `openai-compatible`),
   `base_url`, and `model`; it is active iff `provider` is set, otherwise the
   keyword tagger is used. `confidence_threshold` (default 0.7) gates headless

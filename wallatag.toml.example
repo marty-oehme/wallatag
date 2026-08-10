@@ -16,7 +16,10 @@ path = "/data/wallatag.db"
 [tagger]
 # Each key below can be overridden by an environment variable (see README):
 # WALLATAG_MAX_SUGGESTIONS, WALLATAG_TAG_POLICY, WALLATAG_IGNORE_TAGS.
-# WALLATAG_IGNORE_TAGS is comma-separated, e.g. "fix,_frigo"; empty string clears the list.
+# WALLATAG_IGNORE_TAGS is comma-separated, e.g. "fix,_frigo"; "" clears the
+# list (whitespace-only/comma-only values are rejected). Empty
+# WALLATAG_TAG_POLICY / WALLATAG_MAX_SUGGESTIONS raise a ConfigError: unset
+# the variable instead of setting it to "".
 max_suggestions = 5
 tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
 ignore_tags = ["fix", "_frigo"]       # tags treated as untagged: articles carrying ONLY these are still fetched

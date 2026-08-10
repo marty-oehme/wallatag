@@ -163,7 +163,7 @@ url = "https://wallabag.example.com"
 
 
 class IgnoreTagsTomlTest(unittest.TestCase):
-    """[tagger] ignore_tags: list of tags treated as untagged (TOMl only)."""
+    """[tagger] ignore_tags: list of tags treated as untagged."""
 
     def _load(self, toml_text: str) -> Config:
         with tempfile.TemporaryDirectory() as tmp:
@@ -605,6 +605,53 @@ class TaggerEnvTest(unittest.TestCase):
     def test_env_non_integer_max_suggestions_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "abc"})
+        self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
+
+    def test_env_max_suggestions_strips_whitespace(self):
+        config = self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": " 7 "})
+        self.assertEqual(config.tagger.max_suggestions, 7)
+
+    def test_env_max_suggestions_leading_zeros(self):
+        config = self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "007"})
+        self.assertEqual(config.tagger.max_suggestions, 7)
+
+    def test_env_max_suggestions_bool_string_raises(self):
+        # "True" is not an integer: the case-sensitive int() parse must fail,
+        # exactly like "abc".
+        with self.assertRaises(ConfigError):
+            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "True"})
+
+    def test_env_tag_policy_is_case_sensitive(self):
+        # Only lowercase "all" is valid, matching the TOML path: "ALL" must
+        # raise, not be case-folded.
+        with self.assertRaises(ConfigError):
+            self._env_load("", {"WALLATAG_TAG_POLICY": "ALL"})
+
+    def test_env_ignore_tags_drops_inner_empties(self):
+        config = self._env_load("", {"WALLATAG_IGNORE_TAGS": "a,,b"})
+        self.assertEqual(config.tagger.ignore_tags, ("a", "b"))
+
+    def test_env_whitespace_only_ignore_tags_raises(self):
+        # " " parses to () which would silently clear the list: reject it.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_IGNORE_TAGS": " "})
+        self.assertIn("WALLATAG_IGNORE_TAGS", str(ctx.exception))
+
+    def test_env_comma_only_ignore_tags_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_IGNORE_TAGS": ","})
+        self.assertIn("WALLATAG_IGNORE_TAGS", str(ctx.exception))
+
+    def test_env_empty_tag_policy_raises(self):
+        # A present-but-empty WALLATAG_TAG_POLICY is invalid, not a clear:
+        # unset the var (e.g. `dokku config:unset`) instead.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_TAG_POLICY": ""})
+        self.assertIn("WALLATAG_TAG_POLICY", str(ctx.exception))
+
+    def test_env_empty_max_suggestions_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": ""})
         self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
 
 

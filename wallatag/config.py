@@ -165,14 +165,24 @@ def _parse_string_list(context: str, key: str, value: object) -> tuple[str, ...]
     return tuple(value)
 
 
-def _parse_comma_separated(value: str) -> tuple[str, ...]:
+def _parse_comma_separated(context: str, key: str, value: str) -> tuple[str, ...]:
     """Parse a comma-separated env-var value into a tuple of non-empty items.
 
     Items are stripped of surrounding whitespace and empty items are dropped,
-    so ``""`` yields ``()`` (used to clear a TOML list). Shared by
-    ``WALLATAG_IGNORE_TAGS`` and the ``WALLATAG_FOCUS_<NAME>_*`` vars.
+    so ``""`` yields ``()`` (used to clear a TOML list). A non-empty value
+    that parses to ``()`` — i.e. only separators/whitespace — is rejected
+    instead of silently clearing the list, since that is almost certainly a
+    typo. Shared by ``WALLATAG_IGNORE_TAGS`` and the
+    ``WALLATAG_FOCUS_<NAME>_*`` vars. ``context``/``key`` name the source in
+    error messages, mirroring the ``_parse_string_list`` convention.
     """
-    return tuple(item.strip() for item in value.split(",") if item.strip())
+    parsed = tuple(item.strip() for item in value.split(",") if item.strip())
+    if value != "" and not parsed:
+        raise ConfigError(
+            f"{context}: {key} must be a comma-separated list; "
+            "got only separators/whitespace"
+        )
+    return parsed
 
 
 def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
@@ -410,6 +420,10 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 f"WALLATAG_MAX_SUGGESTIONS: max_suggestions must be a "
                 f"non-negative integer, got {max_suggestions_raw!r}"
             ) from None
+        # The isinstance guards mirror the TOML path, where tomllib can parse
+        # `max_suggestions = true` as a bool; they are unreachable here because
+        # int() of a str can never return a bool or a non-int. Kept for
+        # symmetry so both paths validate identically.
         if (
             not isinstance(max_suggestions, int)
             or isinstance(max_suggestions, bool)
