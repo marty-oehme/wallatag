@@ -31,6 +31,9 @@ _ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
 _ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
 _ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
 _ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
+_ENV_FOCUS_PREFIX = "WALLATAG_FOCUS_"
+_ENV_FOCUS_KEYWORDS_SUFFIX = "_KEYWORDS"
+_ENV_FOCUS_TAGS_SUFFIX = "_TAGS"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
 
@@ -162,9 +165,31 @@ def _parse_string_list(context: str, key: str, value: object) -> tuple[str, ...]
     return tuple(value)
 
 
+def _parse_comma_separated(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated env-var value into a tuple of non-empty items.
+
+    Items are stripped of surrounding whitespace and empty items are dropped,
+    so ``""`` yields ``()`` (used to clear a TOML list). Shared by
+    ``WALLATAG_IGNORE_TAGS`` and the ``WALLATAG_FOCUS_<NAME>_*`` vars.
+    """
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
     groups: dict[str, FocusGroup] = {}
+    # Two group names that differ only in case (e.g. `[focus.methods]` and
+    # `[focus.Methods]`) would merge ambiguously when env vars override by
+    # case-insensitive name, so they are rejected up front.
+    seen_casefold: dict[str, str] = {}
     for name, section in raw.items():
+        folded = name.casefold()
+        previous = seen_casefold.get(folded)
+        if previous is not None:
+            raise ConfigError(
+                "focus group names must be unique case-insensitively: "
+                f"{previous!r} vs {name!r}"
+            )
+        seen_casefold[folded] = name
         if not isinstance(section, dict):
             raise ConfigError(
                 f"focus group {name!r} must be a table with keywords and tags"
@@ -364,10 +389,8 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         # empty items are dropped.
         tagger = replace(
             tagger,
-            ignore_tags=tuple(
-                item.strip()
-                for item in ignore_tags_raw.split(",")
-                if item.strip()
+            ignore_tags=_parse_comma_separated(
+                "tagger", _ENV_IGNORE_TAGS, ignore_tags_raw
             ),
         )
     tag_policy = env.get(_ENV_TAG_POLICY)
@@ -397,6 +420,60 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 f"non-negative integer, got {max_suggestions_raw!r}"
             )
         tagger = replace(tagger, max_suggestions=max_suggestions)
+
+    # Focus groups: WALLATAG_FOCUS_<NAME>_KEYWORDS / WALLATAG_FOCUS_<NAME>_TAGS
+    # (comma-separated, same parsing as WALLATAG_IGNORE_TAGS; "" clears that
+    # field). Matching is by name, case-insensitively: an env var overrides the
+    # same-named TOML group per-field (only the fields it sets), an env-only
+    # group is created with the missing field defaulting to (), and TOML groups
+    # without an env counterpart survive unchanged. Overrides of an existing
+    # TOML group keep the TOML key's original casing; env-only groups are
+    # stored lowercased. A var with the prefix but an empty name (e.g.
+    # WALLATAG_FOCUS_KEYWORDS) is a ConfigError; WALLATAG_FOCUS_<NAME> without
+    # a suffix is ignored.
+    focus = dict(config.tagger.focus_groups)
+    focus_by_casefold = {name.casefold(): name for name in focus}
+    focus_changed = False
+    for key in sorted(env):
+        if not key.startswith(_ENV_FOCUS_PREFIX):
+            continue
+        if key.endswith(_ENV_FOCUS_KEYWORDS_SUFFIX):
+            field = "keywords"
+            name = key[
+                len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_KEYWORDS_SUFFIX)
+            ]
+        elif key.endswith(_ENV_FOCUS_TAGS_SUFFIX):
+            field = "tags"
+            name = key[len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_TAGS_SUFFIX)]
+        else:
+            # No suffix: WALLATAG_FOCUS_ (bare prefix) and
+            # WALLATAG_FOCUS_<NAME> alone are ignored.
+            continue
+        if not name:
+            raise ConfigError(
+                f"invalid focus-group environment variable {key}: the focus "
+                f"group name is empty; expected WALLATAG_FOCUS_<NAME>_{field.upper()}"
+            )
+        storage_key = focus_by_casefold.get(name.casefold())
+        if storage_key is None:
+            storage_key = name.lower()
+            focus_by_casefold[storage_key.casefold()] = storage_key
+            focus[storage_key] = FocusGroup(keywords=(), tags=())
+        group = focus[storage_key]
+        if field == "keywords":
+            group = replace(
+                group,
+                keywords=_parse_comma_separated("focus group", key, env[key]),
+            )
+        else:
+            group = replace(
+                group,
+                tags=_parse_comma_separated("focus group", key, env[key]),
+            )
+        focus[storage_key] = group
+        focus_changed = True
+    if focus_changed:
+        tagger = replace(tagger, focus_groups=focus)
 
     if (
         wallabag is config.wallabag

@@ -8,6 +8,7 @@ from pathlib import Path
 from wallatag.config import (
     Config,
     ConfigError,
+    FocusGroup,
     find_config_file,
     load_config,
 )
@@ -271,6 +272,28 @@ tags = ["productivity"]
         group = config.tagger.focus_groups["methods"]
         self.assertEqual(group.keywords, ("pomodoro", "gtd"))
         self.assertEqual(group.tags, ("productivity",))
+
+    def test_casefold_duplicate_group_names_raise(self):
+        # [focus.methods] + [focus.Methods] differ only in case and would merge
+        # ambiguously at env-override time: reject the TOML up front.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords = ["pomodoro"]
+
+[focus.Methods]
+keywords = ["gtd"]
+""",
+            )
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+        message = str(ctx.exception)
+        self.assertIn("case-insensitively", message)
+        self.assertIn("'methods'", message)
+        self.assertIn("'Methods'", message)
 
 
 class AiConfigTomlTest(unittest.TestCase):
@@ -692,6 +715,179 @@ class ValidationTest(unittest.TestCase):
             write_toml(tmp, "[tagger]\nmax_suggestions = -3\n")
             with self.assertRaises(ConfigError):
                 load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+
+class FocusEnvTest(unittest.TestCase):
+    """WALLATAG_FOCUS_<NAME>_{KEYWORDS,TAGS} env vars merge focus groups by name."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_overrides_toml_group_per_field(self):
+        # Only the keywords field is overridden; tags fall back to TOML.
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+""",
+            {"WALLATAG_FOCUS_METHODS_KEYWORDS": "gtd,zettelkasten"},
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"],
+            FocusGroup(keywords=("gtd", "zettelkasten"), tags=("productivity",)),
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords, ("gtd", "zettelkasten")
+        )
+        self.assertEqual(config.tagger.focus_groups["methods"].tags, ("productivity",))
+
+    def test_env_only_group_both_fields(self):
+        config = self._env_load(
+            "",
+            {
+                "WALLATAG_FOCUS_LANGUAGES_KEYWORDS": "python,rust",
+                "WALLATAG_FOCUS_LANGUAGES_TAGS": "programming",
+            },
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["languages"],
+            FocusGroup(keywords=("python", "rust"), tags=("programming",)),
+        )
+
+    def test_case_insensitive_override_preserves_toml_casing(self):
+        # Env name matches the TOML group case-insensitively; the TOML key's
+        # original casing ("Methods") is kept, not replaced by "methods".
+        config = self._env_load(
+            """
+[focus.Methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+""",
+            {"WALLATAG_FOCUS_METHODS_TAGS": "gtd"},
+        )
+        self.assertIn("Methods", config.tagger.focus_groups)
+        self.assertNotIn("methods", config.tagger.focus_groups)
+        group = config.tagger.focus_groups["Methods"]
+        self.assertEqual(group.keywords, ("pomodoro",))
+        self.assertEqual(group.tags, ("gtd",))
+
+    def test_env_empty_clears_field(self):
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+""",
+            {"WALLATAG_FOCUS_METHODS_KEYWORDS": ""},
+        )
+        self.assertEqual(config.tagger.focus_groups["methods"].keywords, ())
+        self.assertEqual(config.tagger.focus_groups["methods"].tags, ("productivity",))
+
+    def test_env_only_group_keywords_only_defaults_tags(self):
+        config = self._env_load("", {"WALLATAG_FOCUS_LANGUAGES_KEYWORDS": "python"})
+        self.assertEqual(
+            config.tagger.focus_groups["languages"],
+            FocusGroup(keywords=("python",), tags=()),
+        )
+
+    def test_env_only_group_tags_only_defaults_keywords(self):
+        config = self._env_load("", {"WALLATAG_FOCUS_LANGUAGES_TAGS": "programming"})
+        self.assertEqual(
+            config.tagger.focus_groups["languages"],
+            FocusGroup(keywords=(), tags=("programming",)),
+        )
+
+    def test_env_insertion_order_does_not_matter(self):
+        # _apply_env iterates sorted(env), so listing the group's _TAGS var
+        # BEFORE its _KEYWORDS var in the dict still lands both fields on the
+        # one merged group (deterministic regardless of insertion order).
+        config = self._env_load(
+            "",
+            {
+                "WALLATAG_FOCUS_METHODS_TAGS": "productivity",
+                "WALLATAG_FOCUS_METHODS_KEYWORDS": "gtd",
+            },
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"],
+            FocusGroup(keywords=("gtd",), tags=("productivity",)),
+        )
+
+    def test_env_whitespace_only_focus_value_raises(self):
+        # " " parses to () which would silently clear the field: reject it.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS": " "})
+        self.assertIn("WALLATAG_FOCUS_METHODS_KEYWORDS", str(ctx.exception))
+
+    def test_env_strips_whitespace_and_drops_empties(self):
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_METHODS_KEYWORDS": " fix , _frigo "}
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords, ("fix", "_frigo")
+        )
+        config = self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS": "fix,"})
+        self.assertEqual(config.tagger.focus_groups["methods"].keywords, ("fix",))
+
+    def test_toml_groups_without_env_counterpart_survive(self):
+        # Unrelated env vars (WALLATAG_URL, FOO) must not touch focus groups.
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+[focus.languages]
+keywords = ["python"]
+""",
+            {"WALLATAG_URL": "https://x.example", "FOO": "bar"},
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords, ("pomodoro",)
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["languages"].keywords, ("python",)
+        )
+
+    def test_env_empty_name_raises(self):
+        # Exactly WALLATAG_FOCUS_KEYWORDS: prefix + suffix but an empty name.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_KEYWORDS": "x"})
+        self.assertIn("WALLATAG_FOCUS_KEYWORDS", str(ctx.exception))
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_TAGS": "x"})
+        self.assertIn("WALLATAG_FOCUS_TAGS", str(ctx.exception))
+
+    def test_env_no_suffix_alone_is_ignored(self):
+        # WALLATAG_FOCUS_<NAME> without a suffix, and the bare prefix, are
+        # ignored; the TOML group is untouched.
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+""",
+            {"WALLATAG_FOCUS_METHODS": "x", "WALLATAG_FOCUS_": "y"},
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords, ("pomodoro",)
+        )
+
+    def test_env_empty_matches_toml_only(self):
+        # No focus env vars -> focus groups come from TOML unchanged.
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+""",
+            {},
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"],
+            FocusGroup(keywords=("pomodoro",), tags=("productivity",)),
+        )
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
 | Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
 | Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
+| Focus groups             | `[focus.<name>]` keywords/tags | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS` |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
 `WALLATAG_DB` set to an empty string means history-less mode (no database at
@@ -86,6 +87,23 @@ activates one group; the default is all groups.
   it is sent as an `Authorization: Bearer <api_key>` header on every LLM
   request, which is only needed for keyed openai-compatible providers (OpenAI,
   OpenRouter, ...); unset or empty means no auth header.
+
+Focus groups can be defined or overridden via environment variables too:
+`WALLATAG_FOCUS_<NAME>_KEYWORDS` and `WALLATAG_FOCUS_<NAME>_TAGS` map to a
+`[focus.<name>]` group's `keywords` and `tags`. The group name is the text
+between the `WALLATAG_FOCUS_` prefix and the trailing `_KEYWORDS`/`_TAGS`
+suffix, and those exact suffixes are required (`WALLATAG_FOCUS_<NAME>` with
+no suffix is ignored). Names may contain underscores: only the trailing
+suffix is stripped, so `WALLATAG_FOCUS_METHODS_KEYWORDS_TAGS` is group
+`methods_keywords` with its `tags` field set (mind the nesting). Values are
+comma-separated (items stripped of whitespace, empty items dropped, e.g.
+`fix,_frigo`); a non-empty value that parses to nothing (only separators or
+whitespace) is rejected, and an empty value clears (disables) that field.
+Group names are case-insensitive and groups merge by name: an env var
+overrides the same-named TOML group per-field (only the fields it sets),
+env-only groups are created with the missing field defaulting to empty, and
+TOML groups with no env counterpart survive unchanged. `--focus NAME`
+selection is unchanged and works on the merged result.
 
 ## Note on wallabag's native regex tagging rules
 
