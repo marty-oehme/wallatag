@@ -24,15 +24,29 @@ max_suggestions = 5
 tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
 ignore_tags = ["fix", "_frigo"]       # tags treated as untagged: articles carrying ONLY these are still fetched
 
+# [vocabulary] fields: which article fields the existing-tag vocabulary
+# matcher checks. Default (absent key): title, url, domain_name, content.
+# An empty list [] disables vocabulary matching entirely. Field names are
+# strict (exact, case-sensitive): only title, url, domain_name, content.
+# Env override: WALLATAG_VOCABULARY_FIELDS (comma-separated, e.g. "title,url";
+# "" disables).
+[vocabulary]
+fields = ["title", "url"]
+
 # Named rule groups ("focus" areas). --focus NAME activates one; default = all.
-# Each group's keywords/tags can also be overridden (or a new group defined)
-# via environment variables: WALLATAG_FOCUS_<NAME>_KEYWORDS and
-# WALLATAG_FOCUS_<NAME>_TAGS, where NAME is the text between the prefix and
-# the exact _KEYWORDS/_TAGS suffix (may contain underscores; case-insensitive
-# name, comma-separated values, merge by name, "" clears that field).
+# Each group's keywords/tags/fields can also be overridden (or a new group
+# defined) via environment variables: WALLATAG_FOCUS_<NAME>_KEYWORDS,
+# WALLATAG_FOCUS_<NAME>_TAGS and WALLATAG_FOCUS_<NAME>_FIELDS, where NAME is
+# the text between the prefix and the exact _KEYWORDS/_TAGS/_FIELDS suffix
+# (may contain underscores; case-insensitive name, comma-separated values,
+# merge by name, "" clears that field).
 [focus.methods]
 keywords = ["pomodoro", "gtd", "zettelkasten"]
 tags = ["productivity", "method"]
+# Which article fields THIS group's keywords match against. Default (absent):
+# all four fields; an empty list [] disables this group's keyword matching.
+# Same strict field names as [vocabulary] fields above.
+fields = ["title", "content"]
 
 [focus.languages]
 keywords = ["python", "rust", "golang"]

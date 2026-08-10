@@ -156,6 +156,7 @@ def _build_tagger(
         max_suggestions=config.tagger.max_suggestions,
         tag_policy=config.tagger.tag_policy,
         existing_tags=existing_tags,
+        vocabulary_fields=config.vocabulary.fields,
     )
     return tagger, None
 

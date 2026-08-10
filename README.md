@@ -50,7 +50,8 @@ Values are merged from lowest to highest precedence: later sources win:
 | Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
 | Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
 | Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
-| Focus groups             | `[focus.<name>]` keywords/tags | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS` |
+| Vocabulary match fields  | `[vocabulary] fields`       | `WALLATAG_VOCABULARY_FIELDS`       |
+| Focus groups             | `[focus.<name>]` keywords/tags/fields | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`, `WALLATAG_FOCUS_<NAME>_FIELDS` |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
 `WALLATAG_DB` set to an empty string means history-less mode (no database at
@@ -81,6 +82,24 @@ activates one group; the default is all groups.
   (comma-separated string, e.g. `fix,_frigo`); an empty value clears the list
   (whitespace-only or comma-only values are rejected, since they would
   silently clear it).
+- Per-source match fields: the keyword tagger matches against the article's
+  `title`, `url`, `domain_name` and `content` fields by default. Which fields
+  are checked is configurable **per source** — the vocabulary matcher and each
+  focus group are independent:
+  - `[vocabulary] fields` (env `WALLATAG_VOCABULARY_FIELDS`) restricts the
+    existing-tag vocabulary matcher (which fields existing labels are matched
+    against).
+  - `[focus.<name>] fields` (env `WALLATAG_FOCUS_<NAME>_FIELDS`) restricts
+    that group's keywords to its own subset; `--focus NAME` and `--tag-policy`
+    are unaffected, and each group keeps its own fields.
+  - A missing key means all four fields; an empty list `[]` (or `""` via env)
+    disables that source entirely — it never matches (explicit on/off switches
+    arrive later). Field names are validated strictly (exact, case-sensitive):
+    only `title`, `url`, `domain_name`, `content` are accepted, anything else
+    is a ConfigError. Env values are comma-separated (e.g. `title,url`); a
+    non-empty value that parses to nothing (only separators or whitespace) is
+    rejected. The LLM tagger has no equivalent: it reads its prompt fields
+    directly and is untouched by this setting.
 - Empty values for `WALLATAG_TAG_POLICY` and `WALLATAG_MAX_SUGGESTIONS` are
   not clears — they raise a ConfigError — so remove those variables
   (`dokku config:unset`) rather than setting them to `""` (unlike
@@ -96,18 +115,20 @@ activates one group; the default is all groups.
   OpenRouter, ...); unset or empty means no auth header.
 
 Focus groups can be defined or overridden via environment variables too:
-`WALLATAG_FOCUS_<NAME>_KEYWORDS` and `WALLATAG_FOCUS_<NAME>_TAGS` map to a
-`[focus.<name>]` group's `keywords` and `tags`. The group name is the text
-between the `WALLATAG_FOCUS_` prefix and the trailing `_KEYWORDS`/`_TAGS`
-suffix, and those exact suffixes are required (`WALLATAG_FOCUS_<NAME>` with
-no suffix is ignored). Names may contain underscores: only the trailing
-suffix is stripped, so `WALLATAG_FOCUS_METHODS_KEYWORDS_TAGS` is group
-`methods_keywords` with its `tags` field set (mind the nesting). Values are
-comma-separated (items stripped of whitespace, empty items dropped, e.g.
-`fix,_frigo`); a non-empty value that parses to nothing (only separators or
-whitespace) is rejected, and an empty value clears (disables) that field.
-Group names are case-insensitive and groups merge by name: an env var
-overrides the same-named TOML group per-field (only the fields it sets),
+`WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS` and
+`WALLATAG_FOCUS_<NAME>_FIELDS` map to a `[focus.<name>]` group's `keywords`,
+`tags` and `fields`. The group name is the text between the `WALLATAG_FOCUS_`
+prefix and the trailing `_KEYWORDS`/`_TAGS`/`_FIELDS` suffix, and those exact
+suffixes are required (`WALLATAG_FOCUS_<NAME>` with no suffix is ignored).
+Names may contain underscores: only the trailing suffix is stripped, so
+`WALLATAG_FOCUS_METHODS_KEYWORDS_TAGS` is group `methods_keywords` with its
+`tags` field set (mind the nesting). Values are comma-separated (items
+stripped of whitespace, empty items dropped, e.g. `fix,_frigo`); a non-empty
+value that parses to nothing (only separators or whitespace) is rejected, and
+an empty value clears (disables) that field — for `_FIELDS`, `""` disables the
+group's keyword matching entirely. Group names are case-insensitive and
+groups merge by name: an env var overrides the same-named TOML group
+per-field (only the fields it sets),
 env-only groups are created with the missing field defaulting to empty, and
 TOML groups with no env counterpart survive unchanged. `--focus NAME`
 selection is unchanged and works on the merged result.

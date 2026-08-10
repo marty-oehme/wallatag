@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Protocol
 
-from wallatag.config import VALID_TAG_POLICIES, FocusGroup
+from wallatag.config import VALID_MATCH_FIELDS, VALID_TAG_POLICIES, FocusGroup
 from wallatag.llm import LLMError
 
 _VOCABULARY_CONFIDENCE = 1.0
@@ -73,7 +73,7 @@ class LLMClientLike(Protocol):
 
 
 class KeywordTagger:
-    """MVP tagger: keyword-rule groups plus existing-tag vocabulary.
+    """Keyword tagger: deterministic rule groups plus the existing-tag vocabulary.
 
     Pure logic: no I/O and no dependency on the wallabag client. Matching is a
     case-insensitive raw substring check, evaluated per field: a keyword or an
@@ -82,13 +82,25 @@ class KeywordTagger:
     needle never matches across field boundaries. The content is HTML; raw
     substring matching against it is acceptable for the MVP.
 
+    Which fields are matched is configurable PER SOURCE. The vocabulary
+    matcher (existing-tag labels) checks ``vocabulary_fields`` (default: all
+    four fields); each focus group checks ``group.fields`` when set, otherwise
+    the same all-four default. Absent/None means all four fields; an
+    explicitly empty tuple disables that source entirely (it never matches).
+    Field names are strict: only the exact ``VALID_MATCH_FIELDS`` names are
+    accepted, at config-load time (ConfigError) and at construction
+    (ValueError).
+
     tag_policy semantics in the MVP: both "prefer-existing" and "all" produce
     the same ordering: vocabulary suggestions first, then rule suggestions,
     with case-insensitive first-wins dedup; the policies differ only in that
     "only-existing" drops rule suggestions entirely.
     """
 
-    _FIELDS = ("title", "url", "domain_name", "content")
+    # Default set of article fields matched against when a source does not
+    # pin its own: aliased to config.VALID_MATCH_FIELDS so there is one source
+    # of truth (KeywordTagger.__init__ accepts only those names too).
+    _FIELDS = VALID_MATCH_FIELDS
 
     def __init__(
         self,
@@ -97,6 +109,7 @@ class KeywordTagger:
         max_suggestions: int,
         tag_policy: str,
         existing_tags: Iterable[str] = (),
+        vocabulary_fields: Iterable[str] = _FIELDS,
     ) -> None:
         if tag_policy not in VALID_TAG_POLICIES:
             raise ValueError(
@@ -109,6 +122,18 @@ class KeywordTagger:
             or max_suggestions < 0
         ):
             raise ValueError("max_suggestions must be a non-negative integer")
+        # Materialize ONCE before validating: vocabulary_fields is only
+        # declared Iterable, so a one-shot generator would otherwise be
+        # consumed by the validation loop and the stored tuple would come out
+        # empty (vocabulary silently disabled). Mirrors the single-iteration
+        # existing_tags pattern above.
+        vocabulary_fields = tuple(vocabulary_fields)
+        for field in vocabulary_fields:
+            if field not in VALID_MATCH_FIELDS:
+                raise ValueError(
+                    "invalid field %r; valid choices: %s"
+                    % (field, ", ".join(VALID_MATCH_FIELDS))
+                )
         # dict preserves config insertion order -> deterministic iteration.
         self.focus_groups = dict(focus_groups)
         self.max_suggestions = max_suggestions
@@ -116,15 +141,21 @@ class KeywordTagger:
         # Labels are normalized for matching but suggested in their original
         # casing (wallabag labels as provided).
         self.existing_tags = list(existing_tags)
+        self.vocabulary_fields = vocabulary_fields
 
-    def _field_needles(self, entry: dict) -> tuple[str, ...]:
-        """Casefolded per-field text to match against, fields kept separate."""
-        fields = []
-        for key in self._FIELDS:
+    def _field_needles(self, entry: dict, fields) -> tuple[str, ...]:
+        """Casefolded per-field text to match against, fields kept separate.
+
+        ``fields`` names which article keys to read (the configured per-source
+        subset), so a source pinned to ``("title",)`` never sees needles from
+        the content field.
+        """
+        needles = []
+        for key in fields:
             value = entry.get(key)
             if isinstance(value, str) and value:
-                fields.append(value.casefold())
-        return tuple(fields)
+                needles.append(value.casefold())
+        return tuple(needles)
 
     @staticmethod
     def _matches(needle: object, fields: tuple[str, ...]) -> bool:
@@ -152,9 +183,17 @@ class KeywordTagger:
                 )
         return suggestions
 
-    def _rule_suggestions(self, fields: tuple[str, ...]) -> list[TagSuggestion]:
+    def _rule_suggestions(self, entry: dict) -> list[TagSuggestion]:
+        """Rule suggestions, matching each group against its OWN field subset.
+
+        A group with ``fields`` set matches its keywords against only those
+        article fields; ``fields=None`` falls back to the class default (all
+        four); an explicitly empty tuple means the group never matches.
+        """
         suggestions = []
         for group in self.focus_groups.values():
+            group_fields = group.fields if group.fields is not None else self._FIELDS
+            fields = self._field_needles(entry, group_fields)
             if any(self._matches(kw, fields) for kw in group.keywords):
                 for tag in group.tags:
                     if isinstance(tag, str) and tag.strip():
@@ -166,13 +205,13 @@ class KeywordTagger:
         return suggestions
 
     def suggest(self, entry: dict) -> list[TagSuggestion]:
-        fields = self._field_needles(entry)
-
-        vocabulary = self._vocabulary_suggestions(fields)
+        vocabulary = self._vocabulary_suggestions(
+            self._field_needles(entry, self.vocabulary_fields)
+        )
 
         # "only-existing" drops rule-derived suggestions entirely.
         rules = (
-            self._rule_suggestions(fields)
+            self._rule_suggestions(entry)
             if self.tag_policy != "only-existing"
             else []
         )

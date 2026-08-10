@@ -937,5 +937,288 @@ tags = ["productivity"]
         )
 
 
+class VocabularyTomlTest(unittest.TestCase):
+    """[vocabulary] fields: which article fields the vocabulary matcher checks."""
+
+    def _load(self, toml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_fields_parsed(self):
+        config = self._load('[vocabulary]\nfields = ["title", "url"]\n')
+        self.assertEqual(config.vocabulary.fields, ("title", "url"))
+
+    def test_absent_defaults_all_four(self):
+        config = self._load("")
+        self.assertEqual(
+            config.vocabulary.fields, ("title", "url", "domain_name", "content")
+        )
+        # A [vocabulary] table without a fields key also defaults to all four.
+        config = self._load("[vocabulary]\n")
+        self.assertEqual(
+            config.vocabulary.fields, ("title", "url", "domain_name", "content")
+        )
+
+    def test_empty_fields_disables_vocabulary(self):
+        config = self._load("[vocabulary]\nfields = []\n")
+        self.assertEqual(config.vocabulary.fields, ())
+
+    def test_unknown_field_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[vocabulary]\nfields = ["title", "author"]\n')
+        message = str(ctx.exception)
+        self.assertIn("author", message)
+        self.assertIn("valid choices", message)
+        self.assertIn("title", message)
+        self.assertIn("domain_name", message)
+
+    def test_unknown_field_validation_is_strict(self):
+        # Case-sensitive, exact match: "Title" and " title" are unknown.
+        for bad in ('["Title"]', '[" title"]', '["content "]'):
+            with self.assertRaises(ConfigError):
+                self._load(f"[vocabulary]\nfields = {bad}\n")
+
+    def test_non_list_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[vocabulary]\nfields = "title"\n')
+        message = str(ctx.exception)
+        self.assertIn("fields", message)
+        self.assertIn("list of strings", message)
+
+    def test_non_string_element_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[vocabulary]\nfields = [1, 2]\n")
+        message = str(ctx.exception)
+        self.assertIn("fields", message)
+        self.assertIn("non-string", message)
+
+    def test_non_table_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('vocabulary = "foo"\n')
+        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+
+    def test_empty_string_non_table_raises(self):
+        # Falsy non-tables must NOT be masked by `or {}` normalization.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('vocabulary = ""\n')
+        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+
+    def test_false_non_table_raises(self):
+        # `vocabulary = false` is a falsy non-table: it must raise, not parse
+        # as an empty table with the all-four-fields default.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("vocabulary = false\n")
+        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+
+    def test_empty_array_non_table_raises(self):
+        # A falsy [] is still a non-table: it must raise, not parse as empty.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("vocabulary = []\n")
+        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+
+    def test_fields_survive_env_without_touch(self):
+        # No vocabulary env vars -> TOML fields survive unchanged.
+        config = self._load('[vocabulary]\nfields = ["title"]\n')
+        self.assertEqual(config.vocabulary.fields, ("title",))
+
+
+class VocabularyEnvTest(unittest.TestCase):
+    """WALLATAG_VOCABULARY_FIELDS overlays [vocabulary] fields."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_overrides_toml(self):
+        config = self._env_load(
+            '[vocabulary]\nfields = ["title", "url"]\n',
+            {"WALLATAG_VOCABULARY_FIELDS": "title,content"},
+        )
+        self.assertEqual(config.vocabulary.fields, ("title", "content"))
+
+    def test_env_strips_whitespace_and_drops_empties(self):
+        config = self._env_load(
+            "", {"WALLATAG_VOCABULARY_FIELDS": " title , url, "}
+        )
+        self.assertEqual(config.vocabulary.fields, ("title", "url"))
+
+    def test_env_empty_clears_to_disabled(self):
+        # "" clears the TOML list: the vocabulary matcher is disabled.
+        config = self._env_load(
+            '[vocabulary]\nfields = ["title", "url"]\n',
+            {"WALLATAG_VOCABULARY_FIELDS": ""},
+        )
+        self.assertEqual(config.vocabulary.fields, ())
+
+    def test_env_empty_without_toml_clears_to_disabled(self):
+        config = self._env_load("", {"WALLATAG_VOCABULARY_FIELDS": ""})
+        self.assertEqual(config.vocabulary.fields, ())
+
+    def test_env_unknown_field_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_VOCABULARY_FIELDS": "author"})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_VOCABULARY_FIELDS", message)
+        self.assertIn("author", message)
+        self.assertIn("valid choices", message)
+
+    def test_env_whitespace_only_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_VOCABULARY_FIELDS": " "})
+        self.assertIn("WALLATAG_VOCABULARY_FIELDS", str(ctx.exception))
+
+    def test_env_comma_only_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_VOCABULARY_FIELDS": ","})
+        self.assertIn("WALLATAG_VOCABULARY_FIELDS", str(ctx.exception))
+
+    def test_unrelated_env_vars_ignored(self):
+        config = self._env_load(
+            '[vocabulary]\nfields = ["title"]\n',
+            {"WALLATAG_URL": "https://x.example", "FOO": "bar"},
+        )
+        self.assertEqual(config.vocabulary.fields, ("title",))
+
+
+class FocusGroupFieldsTomlTest(unittest.TestCase):
+    """[focus.<name>] fields: per-group article fields for keyword matching."""
+
+    def _load(self, toml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_fields_parsed_onto_group(self):
+        config = self._load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+fields = ["title", "content"]
+"""
+        )
+        group = config.tagger.focus_groups["methods"]
+        self.assertEqual(group.fields, ("title", "content"))
+        self.assertEqual(group.keywords, ("pomodoro",))
+        self.assertEqual(group.tags, ("productivity",))
+
+    def test_absent_defaults_none(self):
+        config = self._load(
+            '[focus.methods]\nkeywords = ["pomodoro"]\ntags = ["productivity"]\n'
+        )
+        self.assertIsNone(config.tagger.focus_groups["methods"].fields)
+
+    def test_empty_fields_disables_group(self):
+        config = self._load(
+            '[focus.methods]\nkeywords = ["pomodoro"]\nfields = []\n'
+        )
+        self.assertEqual(config.tagger.focus_groups["methods"].fields, ())
+
+    def test_unknown_field_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load(
+                '[focus.methods]\nkeywords = ["pomodoro"]\n'
+                'fields = ["title", "author"]\n'
+            )
+        message = str(ctx.exception)
+        self.assertIn("methods", message)
+        self.assertIn("author", message)
+        self.assertIn("valid choices", message)
+
+    def test_non_list_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[focus.methods]\nkeywords = ["pomodoro"]\nfields = "title"\n')
+        message = str(ctx.exception)
+        self.assertIn("methods", message)
+        self.assertIn("fields", message)
+        self.assertIn("list of strings", message)
+
+
+class FocusGroupFieldsEnvTest(unittest.TestCase):
+    """WALLATAG_FOCUS_<NAME>_FIELDS overlays a focus group's fields."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_overrides_toml_group_fields(self):
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+fields = ["title", "content"]
+""",
+            {"WALLATAG_FOCUS_METHODS_FIELDS": "title"},
+        )
+        group = config.tagger.focus_groups["methods"]
+        self.assertEqual(group.fields, ("title",))
+        self.assertEqual(group.keywords, ("pomodoro",))
+        self.assertEqual(group.tags, ("productivity",))
+
+    def test_env_empty_clears_group_fields(self):
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+fields = ["title", "content"]
+""",
+            {"WALLATAG_FOCUS_METHODS_FIELDS": ""},
+        )
+        self.assertEqual(config.tagger.focus_groups["methods"].fields, ())
+
+    def test_env_only_group_with_only_fields(self):
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_LANGUAGES_FIELDS": "title"}
+        )
+        group = config.tagger.focus_groups["languages"]
+        self.assertEqual(
+            group,
+            FocusGroup(keywords=(), tags=(), fields=("title",)),
+        )
+
+    def test_env_fields_merge_with_other_field_overrides(self):
+        config = self._env_load(
+            "",
+            {
+                "WALLATAG_FOCUS_METHODS_KEYWORDS": "gtd",
+                "WALLATAG_FOCUS_METHODS_FIELDS": "title,url",
+            },
+        )
+        group = config.tagger.focus_groups["methods"]
+        self.assertEqual(
+            group,
+            FocusGroup(keywords=("gtd",), tags=(), fields=("title", "url")),
+        )
+
+    def test_env_unknown_field_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_METHODS_FIELDS": "author"})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_METHODS_FIELDS", message)
+        self.assertIn("author", message)
+        self.assertIn("valid choices", message)
+
+    def test_env_whitespace_only_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_METHODS_FIELDS": " "})
+        self.assertIn("WALLATAG_FOCUS_METHODS_FIELDS", str(ctx.exception))
+
+    def test_env_empty_name_raises(self):
+        # Exactly WALLATAG_FOCUS_FIELDS: prefix + _FIELDS suffix but empty name.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_FIELDS": "title"})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_FIELDS", message)
+        self.assertIn("_FIELDS", message)
+
+
 if __name__ == "__main__":
     unittest.main()

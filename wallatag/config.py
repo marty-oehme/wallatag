@@ -14,6 +14,9 @@ from typing import Mapping
 
 VALID_TAG_POLICIES = ("only-existing", "prefer-existing", "all")
 VALID_AI_PROVIDERS = ("ollama", "openai-compatible")
+# The article dict keys the keyword tagger can match against (also the keys
+# _field_needles reads). Single source of truth: tagger.py imports it.
+VALID_MATCH_FIELDS = ("title", "url", "domain_name", "content")
 
 # Environment variable -> config field mapping.
 _ENV_URL = "WALLATAG_URL"
@@ -34,6 +37,8 @@ _ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
 _ENV_FOCUS_PREFIX = "WALLATAG_FOCUS_"
 _ENV_FOCUS_KEYWORDS_SUFFIX = "_KEYWORDS"
 _ENV_FOCUS_TAGS_SUFFIX = "_TAGS"
+_ENV_FOCUS_FIELDS_SUFFIX = "_FIELDS"
+_ENV_VOCABULARY_FIELDS = "WALLATAG_VOCABULARY_FIELDS"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
 
@@ -46,6 +51,10 @@ class ConfigError(Exception):
 class FocusGroup:
     keywords: tuple[str, ...]
     tags: tuple[str, ...]
+    # Article fields this group's keywords match against. None = the keyword
+    # tagger's default (all four fields); an explicitly empty tuple disables
+    # the group entirely. None distinguishes "absent" from "explicitly empty".
+    fields: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,19 @@ class WallabagConfig:
 @dataclass(frozen=True)
 class StoreConfig:
     path: str | None = None  # None = history-less (no DB at all)
+
+
+@dataclass(frozen=True)
+class VocabularyConfig:
+    """Which article fields the keyword tagger's vocabulary matcher checks.
+
+    ``fields`` is a tuple of article dict keys (from ``VALID_MATCH_FIELDS``)
+    that existing-tag labels are matched against. The default is all four
+    fields; an explicitly empty tuple disables vocabulary matching entirely
+    (absent config falls back to the all-fields default at parse time).
+    """
+
+    fields: tuple[str, ...] = VALID_MATCH_FIELDS
 
 
 @dataclass(frozen=True)
@@ -101,6 +123,7 @@ class Config:
     store: StoreConfig = field(default_factory=StoreConfig)
     tagger: TaggerConfig = field(default_factory=TaggerConfig)
     ai: AiConfig = field(default_factory=AiConfig)
+    vocabulary: VocabularyConfig = field(default_factory=VocabularyConfig)
     verbose: bool = False
     # Runtime-only: sourced solely from the --max flag (max articles per run).
     # Never read from TOML: that is `[tagger] max_suggestions` instead.
@@ -185,6 +208,26 @@ def _parse_comma_separated(context: str, key: str, value: str) -> tuple[str, ...
     return parsed
 
 
+def _validate_match_fields(
+    context: str, key: str, fields: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Validate a tuple of article-field names against ``VALID_MATCH_FIELDS``.
+
+    Strict, case-sensitive, exact membership: an unknown member (e.g. a typo
+    like ``"title "`` or ``"Title"``) raises ConfigError naming the offending
+    member and listing the valid choices. Returns the tuple unchanged on
+    success. Both the TOML path and the env path call it, so a bad field name
+    fails loudly instead of silently narrowing the matcher.
+    """
+    for field_name in fields:
+        if field_name not in VALID_MATCH_FIELDS:
+            raise ConfigError(
+                f"{context}: {key} contains unknown field {field_name!r}; "
+                f"valid choices: {', '.join(VALID_MATCH_FIELDS)}"
+            )
+    return fields
+
+
 def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
     groups: dict[str, FocusGroup] = {}
     # Two group names that differ only in case (e.g. `[focus.methods]` and
@@ -214,7 +257,19 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
             if "tags" in section
             else ()
         )
-        groups[name] = FocusGroup(keywords=keywords, tags=tags)
+        # Optional per-group match fields. Absent -> None (the tagger's
+        # default: all four fields); present -> strict validation, and an
+        # explicitly empty list () disables the group entirely.
+        fields = (
+            _validate_match_fields(
+                f"focus group {name!r}",
+                "fields",
+                _parse_string_list(f"focus group {name!r}", "fields", section["fields"]),
+            )
+            if "fields" in section
+            else None
+        )
+        groups[name] = FocusGroup(keywords=keywords, tags=tags, fields=fields)
     return groups
 
 
@@ -279,6 +334,14 @@ def _parse_toml_config(raw: dict) -> Config:
 
     if not isinstance(wallabag_raw, dict) or not isinstance(store_raw, dict) or not isinstance(tagger_raw, dict):
         raise ConfigError("sections [wallabag], [store], [tagger] must be tables")
+    # The isinstance check runs on the RAW value BEFORE any `or {}`
+    # normalization (mirrors _parse_ai): falsy non-tables (`vocabulary = ""`,
+    # `vocabulary = false`, `vocabulary = []`) must raise, not silently parse
+    # as an empty table. Only a dict value is normalized.
+    vocabulary_value = raw.get("vocabulary", {})
+    if not isinstance(vocabulary_value, dict):
+        raise ConfigError("section [vocabulary] must be a table")
+    vocabulary_raw = vocabulary_value or {}
 
     tag_policy = tagger_raw.get("tag_policy", "prefer-existing")
     if tag_policy not in VALID_TAG_POLICIES:
@@ -303,6 +366,20 @@ def _parse_toml_config(raw: dict) -> Config:
     if not isinstance(focus_raw, dict):
         raise ConfigError("section [focus] must be a table")
 
+    # [vocabulary] fields: which article fields the vocabulary matcher checks.
+    # Absent -> all four fields (the default); present -> list-of-strings
+    # parsing plus strict field-name validation. An empty list () disables
+    # vocabulary matching entirely.
+    vocabulary_fields = (
+        _validate_match_fields(
+            "tagger",
+            "vocabulary_fields",
+            _parse_string_list("tagger", "fields", vocabulary_raw["fields"]),
+        )
+        if "fields" in vocabulary_raw
+        else VALID_MATCH_FIELDS
+    )
+
     return Config(
         wallabag=WallabagConfig(
             url=str(wallabag_raw.get("url", "") or ""),
@@ -319,6 +396,7 @@ def _parse_toml_config(raw: dict) -> Config:
             ignore_tags=ignore_tags,
         ),
         ai=_parse_ai(raw),
+        vocabulary=VocabularyConfig(fields=vocabulary_fields),
         verbose=False,
     )
 
@@ -435,16 +513,34 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             )
         tagger = replace(tagger, max_suggestions=max_suggestions)
 
+    # Vocabulary match fields: WALLATAG_VOCABULARY_FIELDS (comma-separated,
+    # same parsing as WALLATAG_IGNORE_TAGS). "" clears the TOML list -> the
+    # vocabulary matcher is disabled (matches nothing); whitespace-only or
+    # comma-only values are rejected.
+    vocabulary = config.vocabulary
+    vocabulary_fields_raw = env.get(_ENV_VOCABULARY_FIELDS)
+    if vocabulary_fields_raw is not None:
+        vocabulary = replace(
+            vocabulary,
+            fields=_validate_match_fields(
+                "tagger",
+                _ENV_VOCABULARY_FIELDS,
+                _parse_comma_separated(
+                    "tagger", _ENV_VOCABULARY_FIELDS, vocabulary_fields_raw
+                ),
+            ),
+        )
+
     # Focus groups: WALLATAG_FOCUS_<NAME>_KEYWORDS / WALLATAG_FOCUS_<NAME>_TAGS
-    # (comma-separated, same parsing as WALLATAG_IGNORE_TAGS; "" clears that
-    # field). Matching is by name, case-insensitively: an env var overrides the
-    # same-named TOML group per-field (only the fields it sets), an env-only
-    # group is created with the missing field defaulting to (), and TOML groups
-    # without an env counterpart survive unchanged. Overrides of an existing
-    # TOML group keep the TOML key's original casing; env-only groups are
-    # stored lowercased. A var with the prefix but an empty name (e.g.
-    # WALLATAG_FOCUS_KEYWORDS) is a ConfigError; WALLATAG_FOCUS_<NAME> without
-    # a suffix is ignored.
+    # / WALLATAG_FOCUS_<NAME>_FIELDS (comma-separated, same parsing as
+    # WALLATAG_IGNORE_TAGS; "" clears that field). Matching is by name,
+    # case-insensitively: an env var overrides the same-named TOML group
+    # per-field (only the fields it sets), an env-only group is created with
+    # the missing field defaulting to (), and TOML groups without an env
+    # counterpart survive unchanged. Overrides of an existing TOML group keep
+    # the TOML key's original casing; env-only groups are stored lowercased. A
+    # var with the prefix but an empty name (e.g. WALLATAG_FOCUS_KEYWORDS) is a
+    # ConfigError; WALLATAG_FOCUS_<NAME> without a suffix is ignored.
     focus = dict(config.tagger.focus_groups)
     focus_by_casefold = {name.casefold(): name for name in focus}
     focus_changed = False
@@ -459,6 +555,9 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         elif key.endswith(_ENV_FOCUS_TAGS_SUFFIX):
             field = "tags"
             name = key[len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_TAGS_SUFFIX)]
+        elif key.endswith(_ENV_FOCUS_FIELDS_SUFFIX):
+            field = "fields"
+            name = key[len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_FIELDS_SUFFIX)]
         else:
             # No suffix: WALLATAG_FOCUS_ (bare prefix) and
             # WALLATAG_FOCUS_<NAME> alone are ignored.
@@ -479,10 +578,19 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 group,
                 keywords=_parse_comma_separated("focus group", key, env[key]),
             )
-        else:
+        elif field == "tags":
             group = replace(
                 group,
                 tags=_parse_comma_separated("focus group", key, env[key]),
+            )
+        else:  # field == "fields"
+            group = replace(
+                group,
+                fields=_validate_match_fields(
+                    "focus group",
+                    key,
+                    _parse_comma_separated("focus group", key, env[key]),
+                ),
             )
         focus[storage_key] = group
         focus_changed = True
@@ -493,11 +601,17 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         wallabag is config.wallabag
         and store is config.store
         and ai is config.ai
+        and vocabulary is config.vocabulary
         and tagger is config.tagger
     ):
         return config
     return replace(
-        config, wallabag=wallabag, store=store, ai=ai, tagger=tagger
+        config,
+        wallabag=wallabag,
+        store=store,
+        ai=ai,
+        vocabulary=vocabulary,
+        tagger=tagger,
     )
 
 

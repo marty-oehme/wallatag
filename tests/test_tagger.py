@@ -625,5 +625,163 @@ class LLMTaggerValidationTest(unittest.TestCase):
         self.assertEqual([s.tag for s in result], ["t"])
 
 
+class PerSourceMatchFieldsTest(unittest.TestCase):
+    """vocabulary_fields and FocusGroup.fields gate which fields are matched.
+
+    The vocabulary matcher checks only ``vocabulary_fields``; each rule group
+    checks only its own ``fields`` (None -> all four, () -> never matches).
+    """
+
+    def test_vocabulary_fields_restrict_vocabulary_matching(self):
+        tagger = KeywordTagger(
+            {},
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["pomodoro"],
+            vocabulary_fields=("title",),
+        )
+        # The label appears only in content: title-only matching -> no match.
+        self.assertEqual(
+            tagger.suggest(entry(title="focus", content="pomodoro notes")), []
+        )
+        # The label appears in the title: matches.
+        result = tagger.suggest(entry(title="pomodoro focus", content="x"))
+        self.assertEqual([s.tag for s in result], ["pomodoro"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_vocabulary_fields_default_is_all_four(self):
+        tagger = make_tagger({}, existing_tags=["rust"])
+        self.assertEqual(
+            tagger.vocabulary_fields, ("title", "url", "domain_name", "content")
+        )
+        # A label only in the URL still matches with the default fields.
+        result = tagger.suggest(entry(title="x", url="https://blog.rust-lang.org"))
+        self.assertEqual([s.tag for s in result], ["rust"])
+
+    def test_group_fields_restrict_rule_matching(self):
+        groups = {
+            "content_only": FocusGroup(
+                keywords=("recipe",), tags=("cooking",), fields=("content",)
+            )
+        }
+        tagger = make_tagger(groups)
+        # Keyword in the title only: content-only matching -> no match.
+        self.assertEqual(tagger.suggest(entry(title="recipe", content="")), [])
+        # Keyword in the content field: matches.
+        result = tagger.suggest(entry(title="x", content="a tasty recipe"))
+        self.assertEqual([s.tag for s in result], ["cooking"])
+
+    def test_group_fields_none_matches_all_four(self):
+        groups = {
+            "url_only_default": FocusGroup(
+                keywords=("pomodoro",), tags=("productivity",)
+            )
+        }
+        # fields defaults to None -> the keyword matches in the URL field.
+        result = make_tagger(groups).suggest(
+            entry(title="x", url="https://example.com/pomodoro")
+        )
+        self.assertEqual([s.tag for s in result], ["productivity"])
+
+    def test_group_empty_fields_matches_nothing(self):
+        groups = {
+            "disabled": FocusGroup(
+                keywords=("pomodoro",), tags=("productivity",), fields=()
+            )
+        }
+        tagger = make_tagger(groups)
+        # The keyword is in every default field, yet the empty tuple disables
+        # the group entirely.
+        self.assertEqual(
+            tagger.suggest(
+                entry(title="pomodoro", url="pomodoro", content="pomodoro")
+            ),
+            [],
+        )
+
+    def test_per_group_fields_independent(self):
+        # Group A matches title only; group B matches content only. Each
+        # keyword fires on its own field subset.
+        groups = {
+            "titles": FocusGroup(keywords=("gtd",), tags=("method",), fields=("title",)),
+            "bodies": FocusGroup(
+                keywords=("recipe",), tags=("cooking",), fields=("content",)
+            ),
+        }
+        e = entry(title="gtd", content="a recipe")
+        result = make_tagger(groups).suggest(e)
+        self.assertEqual([s.tag for s in result], ["method", "cooking"])
+
+    def test_invalid_vocabulary_fields_member_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            KeywordTagger(
+                {},
+                max_suggestions=1,
+                tag_policy="all",
+                vocabulary_fields=("author",),
+            )
+        message = str(ctx.exception)
+        self.assertIn("author", message)
+        self.assertIn("valid choices", message)
+        self.assertIn("title", message)
+        # Case-sensitive: "Title" is invalid too.
+        with self.assertRaises(ValueError):
+            KeywordTagger(
+                {}, max_suggestions=1, tag_policy="all", vocabulary_fields=("Title",)
+            )
+
+    def test_field_needles_respects_given_fields(self):
+        tagger = make_tagger({})
+        e = entry(title="TITLE", url="URL", domain_name="DOMAIN", content="BODY")
+        self.assertEqual(tagger._field_needles(e, ("title",)), ("title",))
+        self.assertEqual(tagger._field_needles(e, ("url", "content")), ("url", "body"))
+        # Non-string/missing values are skipped per field, as before.
+        self.assertEqual(
+            tagger._field_needles({"title": "t", "content": None}, ("title", "content")),
+            ("t",),
+        )
+
+    def test_vocabulary_fields_empty_disables_vocabulary(self):
+        tagger = KeywordTagger(
+            {},
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["pomodoro"],
+            vocabulary_fields=(),
+        )
+        self.assertEqual(tagger.suggest(entry(title="pomodoro")), [])
+
+    def test_vocabulary_fields_one_shot_generator_materialized_once(self):
+        # vocabulary_fields is only declared Iterable: a one-shot generator
+        # must be materialized once and used for BOTH validation and matching.
+        # Before the fix the validation loop consumed the generator, so the
+        # stored tuple came out empty and vocabulary was silently disabled.
+        tagger = KeywordTagger(
+            {},
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["pomodoro"],
+            vocabulary_fields=(x for x in ["title"]),
+        )
+        self.assertEqual(tagger.vocabulary_fields, ("title",))
+        # Matching still works: the title-only label is found in the title.
+        result = tagger.suggest(entry(title="pomodoro focus", content="x"))
+        self.assertEqual([s.tag for s in result], ["pomodoro"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_vocabulary_fields_empty_generator_disables_vocabulary(self):
+        # An exhausted/empty generator materializes to () -> vocabulary off,
+        # exactly like an explicitly empty tuple.
+        tagger = KeywordTagger(
+            {},
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["pomodoro"],
+            vocabulary_fields=(x for x in []),
+        )
+        self.assertEqual(tagger.vocabulary_fields, ())
+        self.assertEqual(tagger.suggest(entry(title="pomodoro")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

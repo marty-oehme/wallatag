@@ -425,6 +425,59 @@ class BuildTaggerTest(unittest.TestCase):
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
 
+    def test_keyword_tagger_receives_vocabulary_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                '[vocabulary]\nfields = ["title", "url"]\n', encoding="utf-8"
+            )
+            config = load_config(config_path=str(path), env={})
+            tagger, llm_client = _build_tagger(config, [])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+        self.assertEqual(tagger.vocabulary_fields, ("title", "url"))
+
+    def test_keyword_tagger_default_vocabulary_fields_all_four(self):
+        config = Config()
+        tagger, _ = _build_tagger(config, [])
+        self.assertEqual(
+            tagger.vocabulary_fields, ("title", "url", "domain_name", "content")
+        )
+
+    def test_empty_fields_disable_both_sources_end_to_end(self):
+        # End-to-end disable: a TOML with `fields = []` on BOTH the
+        # vocabulary and a focus group flows through load_config ->
+        # _build_tagger -> suggest(). The entry content contains the
+        # existing-tag label AND the keyword (both would match under the
+        # all-four-fields default), yet neither source fires: suggest() is [].
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    "[vocabulary]\n"
+                    "fields = []\n"
+                    "\n"
+                    "[focus.x]\n"
+                    'keywords = ["k"]\n'
+                    'tags = ["t"]\n'
+                    "fields = []\n"
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(config_path=str(path), env={})
+            tagger, llm_client = _build_tagger(config, ["label"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+        self.assertEqual(tagger.vocabulary_fields, ())
+        self.assertEqual(tagger.focus_groups["x"].fields, ())
+        entry = {
+            "title": "unrelated",
+            "url": "https://example.com/unrelated",
+            "domain_name": "example.com",
+            "content": "label k",
+        }
+        self.assertEqual(tagger.suggest(entry), [])
+
 
 class CmdRunAiSelectionTest(unittest.TestCase):
     """cmd_run wires the LLM tagger when [ai] is configured (and not otherwise)."""
