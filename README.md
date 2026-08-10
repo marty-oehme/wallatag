@@ -47,11 +47,15 @@ Values are merged from lowest to highest precedence: later sources win:
 | AI model                 | `[ai] model`                | `WALLATAG_AI_MODEL`                |
 | AI confidence threshold  | `[ai] confidence_threshold` | `WALLATAG_AI_CONFIDENCE_THRESHOLD` |
 | AI API key               | `[ai] api_key`              | `WALLATAG_AI_API_KEY`              |
+| Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
+| Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
+| Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
 `WALLATAG_DB` set to an empty string means history-less mode (no database at
-all). `wallatag.toml` contains secrets and is gitignored; only
-`wallatag.toml.example` is committed.
+all). `WALLATAG_IGNORE_TAGS` is a comma-separated list (items are stripped of
+whitespace); an empty string clears the TOML value. `wallatag.toml` contains
+secrets and is gitignored; only `wallatag.toml.example` is committed.
 
 ### Focus groups
 
@@ -61,16 +65,19 @@ activates one group; the default is all groups.
 ### Tagger settings
 
 - `[tagger] max_suggestions`: how many tag suggestions per article (default 5).
+  Override with `WALLATAG_MAX_SUGGESTIONS`.
 - `--max N`: maximum articles processed per run (default: unlimited). This is
   a runtime-only flag, not a config-file key; it never changes
   `max_suggestions`.
 - `[tagger] tag_policy`: `only-existing` | `prefer-existing` | `all`
-  (default `prefer-existing`). Override with `--tag-policy`.
+  (default `prefer-existing`). Override with `--tag-policy` or
+  `WALLATAG_TAG_POLICY`.
 - `[tagger] ignore_tags`: list of tags treated as untagged. Articles carrying
   ONLY those tags are still fetched (e.g. maintenance tags like `fix`), while
   articles carrying any other tag are not. Matching is an exact full-string
   match, case-insensitive (`str.casefold()`). Default empty: only fully
-  untagged articles are fetched.
+  untagged articles are fetched. Override with `WALLATAG_IGNORE_TAGS`
+  (comma-separated string, e.g. `fix,_frigo`); an empty value clears the list.
 - `[ai]` enables the LLM tagger: `provider` (`ollama` or `openai-compatible`),
   `base_url`, and `model`; it is active iff `provider` is set, otherwise the
   keyword tagger is used. `confidence_threshold` (default 0.7) gates headless

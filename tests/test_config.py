@@ -512,6 +512,79 @@ class AiConfigEnvTest(unittest.TestCase):
             )
 
 
+class TaggerEnvTest(unittest.TestCase):
+    """WALLATAG_* env vars overlay [tagger] settings (env wins over TOML)."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_overrides_all_tagger_fields(self):
+        config = self._env_load(
+            "",
+            {
+                "WALLATAG_TAG_POLICY": "all",
+                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_IGNORE_TAGS": "fix,_frigo",
+            },
+        )
+        self.assertEqual(config.tagger.tag_policy, "all")
+        self.assertEqual(config.tagger.max_suggestions, 7)
+        self.assertEqual(config.tagger.ignore_tags, ("fix", "_frigo"))
+
+    def test_env_ignore_tags_strips_whitespace_and_drops_empties(self):
+        config = self._env_load(
+            "", {"WALLATAG_IGNORE_TAGS": " fix , _frigo "}
+        )
+        self.assertEqual(config.tagger.ignore_tags, ("fix", "_frigo"))
+        config = self._env_load("", {"WALLATAG_IGNORE_TAGS": "fix,"})
+        self.assertEqual(config.tagger.ignore_tags, ("fix",))
+
+    def test_env_ignore_tags_empty_clears_toml(self):
+        # A present-but-empty WALLATAG_IGNORE_TAGS clears the TOML list,
+        # matching the WALLATAG_DB="" pattern.
+        config = self._env_load(
+            '[tagger]\nignore_tags = ["fix"]\n',
+            {"WALLATAG_IGNORE_TAGS": ""},
+        )
+        self.assertEqual(config.tagger.ignore_tags, ())
+
+    def test_env_wins_over_toml(self):
+        config = self._env_load(
+            '[tagger]\nmax_suggestions = 3\ntag_policy = "only-existing"\n'
+            'ignore_tags = ["fix"]\n',
+            {
+                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_TAG_POLICY": "all",
+            },
+        )
+        self.assertEqual(config.tagger.max_suggestions, 7)
+        self.assertEqual(config.tagger.tag_policy, "all")
+        # Not overridden -> falls back to the TOML value.
+        self.assertEqual(config.tagger.ignore_tags, ("fix",))
+
+    def test_env_invalid_tag_policy_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_TAG_POLICY": "nonsense"})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_TAG_POLICY", message)
+        self.assertIn("only-existing", message)
+        self.assertIn("prefer-existing", message)
+        self.assertIn("all", message)
+
+    def test_env_negative_max_suggestions_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "-3"})
+        self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
+
+    def test_env_non_integer_max_suggestions_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "abc"})
+        self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
+
+
 class EnvOverridesTest(unittest.TestCase):
     """(c)+(d) Env overrides TOML; WALLATAG_DB="" means history-less."""
 

@@ -28,6 +28,9 @@ _ENV_AI_BASE_URL = "WALLATAG_AI_BASE_URL"
 _ENV_AI_MODEL = "WALLATAG_AI_MODEL"
 _ENV_AI_CONFIDENCE_THRESHOLD = "WALLATAG_AI_CONFIDENCE_THRESHOLD"
 _ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
+_ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
+_ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
+_ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
 
@@ -353,13 +356,58 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         # matching the WALLATAG_DB="" pattern.
         ai = replace(ai, api_key=api_key)
 
+    tagger = config.tagger
+    ignore_tags_raw = env.get(_ENV_IGNORE_TAGS)
+    if ignore_tags_raw is not None:
+        # Comma-separated string; empty string clears the TOML value (matching
+        # the WALLATAG_DB="" pattern). Items are stripped of whitespace and
+        # empty items are dropped.
+        tagger = replace(
+            tagger,
+            ignore_tags=tuple(
+                item.strip()
+                for item in ignore_tags_raw.split(",")
+                if item.strip()
+            ),
+        )
+    tag_policy = env.get(_ENV_TAG_POLICY)
+    if tag_policy is not None:
+        if tag_policy not in VALID_TAG_POLICIES:
+            raise ConfigError(
+                f"invalid tag_policy {tag_policy!r} (from WALLATAG_TAG_POLICY); "
+                f"valid choices: {', '.join(VALID_TAG_POLICIES)}"
+            )
+        tagger = replace(tagger, tag_policy=tag_policy)
+    max_suggestions_raw = env.get(_ENV_MAX_SUGGESTIONS)
+    if max_suggestions_raw is not None:
+        try:
+            max_suggestions = int(max_suggestions_raw)
+        except ValueError:
+            raise ConfigError(
+                f"WALLATAG_MAX_SUGGESTIONS: max_suggestions must be a "
+                f"non-negative integer, got {max_suggestions_raw!r}"
+            ) from None
+        if (
+            not isinstance(max_suggestions, int)
+            or isinstance(max_suggestions, bool)
+            or max_suggestions < 0
+        ):
+            raise ConfigError(
+                f"WALLATAG_MAX_SUGGESTIONS: max_suggestions must be a "
+                f"non-negative integer, got {max_suggestions_raw!r}"
+            )
+        tagger = replace(tagger, max_suggestions=max_suggestions)
+
     if (
         wallabag is config.wallabag
         and store is config.store
         and ai is config.ai
+        and tagger is config.tagger
     ):
         return config
-    return replace(config, wallabag=wallabag, store=store, ai=ai)
+    return replace(
+        config, wallabag=wallabag, store=store, ai=ai, tagger=tagger
+    )
 
 
 def load_config(
