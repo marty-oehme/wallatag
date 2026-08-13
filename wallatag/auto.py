@@ -31,6 +31,7 @@ class AutoSummary:
     tagged: int = 0
     tags_applied: int = 0
     skipped: int = 0
+    llm_failed: int = 0
     feed_error: bool = False
     dry_run: bool = False
 
@@ -49,6 +50,8 @@ def summary_line(summary: AutoSummary, *, dry_run: bool = False) -> str:
         )
     if summary.feed_error:
         line += ", feed error"
+    if summary.llm_failed > 0:
+        line += f", {summary.llm_failed} llm failures"
     return line
 
 
@@ -83,6 +86,9 @@ def run_auto(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> Au
                 # keep going with the rest of the run.
                 logger.error("LLM tagging failed %s: %s", entry_id, exc)
                 summary.skipped += 1
+                summary.llm_failed += 1
+                if not dry_run:
+                    store.unmark_seen(entry_id)  # defer: keep the article in the queue
                 continue
             tags = sorted({suggestion.tag for suggestion in suggestions})
             logger.debug(

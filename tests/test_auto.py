@@ -392,7 +392,11 @@ class LLMErrorTest(AutoBase):
         client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
         summary, messages = self.run_auto(client, tagger=RaisingTagger())
 
-        self.assertEqual((summary.presented, summary.tagged, summary.skipped), (2, 0, 2))
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped), (2, 0, 2)
+        )
+        # Every LLM-failed article is counted separately (subset of skipped).
+        self.assertEqual(summary.llm_failed, 2)
         self.assertEqual(client.add_calls, [])
         # An LLM failure is an article-level skip, NOT a feed error.
         self.assertFalse(summary.feed_error)
