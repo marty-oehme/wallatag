@@ -306,6 +306,7 @@ def make_llm_tagger(
     tag_policy="prefer-existing",
     existing_tags=(),
     confidence_threshold=0.7,
+    use_focus_groups=True,
 ):
     return LLMTagger(
         client,
@@ -314,6 +315,7 @@ def make_llm_tagger(
         tag_policy=tag_policy,
         existing_tags=existing_tags,
         confidence_threshold=confidence_threshold,
+        use_focus_groups=use_focus_groups,
     )
 
 
@@ -597,6 +599,84 @@ class LLMTaggerPromptTest(unittest.TestCase):
         prompt = client.user_prompts[0]
         # 2000 words * ~5 chars > 6000-char cap -> truncated.
         self.assertLess(len(prompt), 7000)
+
+
+class LLMTaggerFocusAreasTest(unittest.TestCase):
+    """use_focus_groups and fields=() control the "Focus areas" prompt line."""
+
+    def _prompt(self, **kwargs):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, **kwargs).suggest(entry(title="x"))
+        return client.system_prompts[0]
+
+    def test_use_focus_groups_false_omits_focus_areas_line(self):
+        # False -> the system prompt has NO "Focus areas" line at all (not
+        # even "Focus areas: none").
+        groups = {"langs": FocusGroup(keywords=("python",), tags=("programming",))}
+        prompt = self._prompt(groups=groups, use_focus_groups=False)
+        self.assertNotIn("Focus areas", prompt)
+        # The rest of the prompt survives.
+        self.assertIn("Existing tag vocabulary: none", prompt)
+        self.assertIn("Return at most 10 tags.", prompt)
+
+    def test_disabled_group_excluded_from_focus_areas(self):
+        # fields=() group is excluded from the LLM focus areas; a normal
+        # group's tags are still present.
+        groups = {
+            "disabled": FocusGroup(
+                keywords=("pomodoro",), tags=("productivity",), fields=()
+            ),
+            "enabled": FocusGroup(keywords=("python",), tags=("programming",)),
+        }
+        prompt = self._prompt(groups=groups)
+        self.assertIn("Focus areas: programming.", prompt)
+        self.assertIn("programming", prompt)
+        self.assertNotIn("productivity", prompt)
+
+    def test_all_groups_disabled_yields_focus_areas_none(self):
+        # use_focus_groups=True (default) with EVERY focus group having
+        # fields == () -> no group contributes tags, so the prompt degrades
+        # to "Focus areas: none." Combined with use_focus_groups=False, where
+        # the same all-disabled groups drop the "Focus areas" line entirely.
+        groups = {
+            "a": FocusGroup(
+                keywords=("python",), tags=("programming",), fields=()
+            ),
+            "b": FocusGroup(
+                keywords=("pomodoro",), tags=("productivity",), fields=()
+            ),
+        }
+        prompt = self._prompt(groups=groups)
+        self.assertIn("Focus areas: none.", prompt)
+        self.assertNotIn("programming", prompt)
+        self.assertNotIn("productivity", prompt)
+        prompt = self._prompt(groups=groups, use_focus_groups=False)
+        self.assertNotIn("Focus areas", prompt)
+
+    def test_fields_none_tags_kept_in_focus_areas(self):
+        # Existing behavior pinned: fields=None groups contribute their tags.
+        groups = {
+            "default": FocusGroup(keywords=("python",), tags=("programming",)),
+        }
+        prompt = self._prompt(groups=groups)
+        self.assertIn("Focus areas: programming.", prompt)
+
+    def test_default_use_focus_groups_present(self):
+        # Backward compat: constructing without use_focus_groups keeps the
+        # "Focus areas" line in the prompt.
+        client = FakeLLMClient("[]")
+        LLMTagger(
+            client,
+            focus_groups={"a": FocusGroup(keywords=("k",), tags=("t",))},
+            max_suggestions=5,
+            tag_policy="prefer-existing",
+        ).suggest(entry(title="x"))
+        self.assertIn("Focus areas", client.system_prompts[0])
+
+    def test_non_bool_use_focus_groups_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            make_llm_tagger(FakeLLMClient("[]"), use_focus_groups=1)
+        self.assertIn("use_focus_groups", str(ctx.exception))
 
 
 class LLMTaggerValidationTest(unittest.TestCase):

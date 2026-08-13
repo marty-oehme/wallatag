@@ -149,6 +149,7 @@ def _build_tagger(
             tag_policy=config.tagger.tag_policy,
             existing_tags=existing_tags,
             confidence_threshold=config.ai.confidence_threshold,
+            use_focus_groups=config.ai.use_focus_groups,
         )
         return tagger, llm_client
     tagger = KeywordTagger(

@@ -249,6 +249,13 @@ class LLMTagger:
     (headless apply only ever sees above-threshold tags) and then gated by
     ``tag_policy``. An ``LLMError`` from the client propagates to the caller
     (pipelines decide how to degrade), never swallowed here.
+
+    Focus areas are controlled by ``use_focus_groups`` (default True). When
+    False, the "Focus areas" line is omitted from the system prompt entirely:
+    focus groups become keyword-only. When True, groups with ``fields == ()``
+    (explicitly disabled) are excluded from the focus areas, their tags never
+    reach the prompt, while groups with ``fields is None`` or a non-empty
+    tuple contribute their tags as before.
     """
 
     def __init__(
@@ -260,6 +267,7 @@ class LLMTagger:
         tag_policy: str,
         existing_tags: Iterable[str] = (),
         confidence_threshold: float = 0.7,
+        use_focus_groups: bool = True,
     ) -> None:
         if tag_policy not in VALID_TAG_POLICIES:
             raise ValueError(
@@ -282,21 +290,18 @@ class LLMTagger:
             raise ValueError(
                 "confidence_threshold must be a number in the range (0, 1]"
             )
+        if not isinstance(use_focus_groups, bool):
+            raise ValueError("use_focus_groups must be a boolean")
         self.client = client
         self.focus_groups = dict(focus_groups)
         self.max_suggestions = max_suggestions
         self.tag_policy = tag_policy
         self.existing_tags = list(existing_tags)
         self.confidence_threshold = float(confidence_threshold)
+        self.use_focus_groups = use_focus_groups
 
     def _system_prompt(self) -> str:
         """Build the system prompt: role, vocabulary rule, focus, policy."""
-        focus_tags = [
-            tag
-            for group in self.focus_groups.values()
-            for tag in group.tags
-            if isinstance(tag, str) and tag.strip()
-        ]
         existing_tags = [
             tag
             for tag in self.existing_tags
@@ -308,9 +313,19 @@ class LLMTagger:
             # The vocabulary-preference rule is verbatim from the issue spec.
             "prefer the same tags that already exist; only add new ones if they "
             "really don't fit and are an important part of the text",
-            "Focus areas: " + (", ".join(focus_tags) or "none") + ".",
-            f"Return at most {self.max_suggestions} tags.",
         ]
+        if self.use_focus_groups:
+            # Groups with fields == () are explicitly disabled: their tags
+            # never reach the LLM prompt's focus areas.
+            focus_tags = [
+                tag
+                for group in self.focus_groups.values()
+                if group.fields != ()
+                for tag in group.tags
+                if isinstance(tag, str) and tag.strip()
+            ]
+            lines.append("Focus areas: " + (", ".join(focus_tags) or "none") + ".")
+        lines.append(f"Return at most {self.max_suggestions} tags.")
         if self.tag_policy == "only-existing":
             lines.append(
                 "Tag policy: ONLY choose from the provided existing tag "

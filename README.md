@@ -47,6 +47,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | AI model                 | `[ai] model`                | `WALLATAG_AI_MODEL`                |
 | AI confidence threshold  | `[ai] confidence_threshold` | `WALLATAG_AI_CONFIDENCE_THRESHOLD` |
 | AI API key               | `[ai] api_key`              | `WALLATAG_AI_API_KEY`              |
+| Use focus groups         | `[ai] use_focus_groups`     | `WALLATAG_AI_USE_FOCUS_GROUPS`     |
 | Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
 | Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
 | Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
@@ -84,7 +85,7 @@ activates one group; the default is all groups.
   silently clear it).
 - Per-source match fields: the keyword tagger matches against the article's
   `title`, `url`, `domain_name` and `content` fields by default. Which fields
-  are checked is configurable **per source** — the vocabulary matcher and each
+  are checked is configurable **per source**, the vocabulary matcher and each
   focus group are independent:
   - `[vocabulary] fields` (env `WALLATAG_VOCABULARY_FIELDS`) restricts the
     existing-tag vocabulary matcher (which fields existing labels are matched
@@ -93,15 +94,18 @@ activates one group; the default is all groups.
     that group's keywords to its own subset; `--focus NAME` and `--tag-policy`
     are unaffected, and each group keeps its own fields.
   - A missing key means all four fields; an empty list `[]` (or `""` via env)
-    disables that source entirely — it never matches (explicit on/off switches
-    arrive later). Field names are validated strictly (exact, case-sensitive):
-    only `title`, `url`, `domain_name`, `content` are accepted, anything else
-    is a ConfigError. Env values are comma-separated (e.g. `title,url`); a
-    non-empty value that parses to nothing (only separators or whitespace) is
-    rejected. The LLM tagger has no equivalent: it reads its prompt fields
-    directly and is untouched by this setting.
+    disables that source entirely, it never matches. For a focus group, the
+    disable is uniform across BOTH taggers: a group with `fields = []` also
+    drops out of the LLM tagger's focus areas (its tags never appear in the
+    LLM system prompt). Field names are validated strictly (exact,
+    case-sensitive): only `title`, `url`, `domain_name`, `content` are
+    accepted, anything else is a ConfigError. Env values are comma-separated
+    (e.g. `title,url`); a non-empty value that parses to nothing (only
+    separators or whitespace) is rejected. The vocabulary matcher is keyword
+    only: the LLM tagger has no per-field restriction equivalent and is
+    untouched by `[vocabulary] fields`.
 - Empty values for `WALLATAG_TAG_POLICY` and `WALLATAG_MAX_SUGGESTIONS` are
-  not clears — they raise a ConfigError — so remove those variables
+  not clears, they raise a ConfigError, so remove those variables
   (`dokku config:unset`) rather than setting them to `""` (unlike
   `WALLATAG_IGNORE_TAGS`, `WALLATAG_DB`, and `WALLATAG_AI_API_KEY`, where
   empty means clear).
@@ -113,6 +117,15 @@ activates one group; the default is all groups.
   it is sent as an `Authorization: Bearer <api_key>` header on every LLM
   request, which is only needed for keyed openai-compatible providers (OpenAI,
   OpenRouter, ...); unset or empty means no auth header.
+- `[ai] use_focus_groups` (default `true`, env `WALLATAG_AI_USE_FOCUS_GROUPS`,
+  accepts `true`/`1`/`yes` or `false`/`0`/`no`; values are matched
+  case-insensitively and surrounding whitespace is ignored) controls
+  whether focus groups influence LLM tagging. When `true` (default) the LLM
+  system prompt carries a "Focus areas" line built from the enabled focus
+  groups (groups with `fields = []` are excluded). When `false`, the LLM
+  ignores focus groups entirely, the "Focus areas" line is omitted from the
+  prompt, so focus-group keywords remain meaningful only for the keyword
+  tagger (keyword-only mode).
 
 Focus groups can be defined or overridden via environment variables too:
 `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS` and
@@ -125,7 +138,7 @@ Names may contain underscores: only the trailing suffix is stripped, so
 `tags` field set (mind the nesting). Values are comma-separated (items
 stripped of whitespace, empty items dropped, e.g. `fix,_frigo`); a non-empty
 value that parses to nothing (only separators or whitespace) is rejected, and
-an empty value clears (disables) that field — for `_FIELDS`, `""` disables the
+an empty value clears (disables) that field, for `_FIELDS`, `""` disables the
 group's keyword matching entirely. Group names are case-insensitive and
 groups merge by name: an env var overrides the same-named TOML group
 per-field (only the fields it sets),
@@ -220,7 +233,7 @@ Block values apply to Prefect-scheduled runs only: `dokku run wallatag ...`
 manually. No secrets end up in git either way.
 
 The release phase auto-creates the shared `Wallabag Credentials` block too
-(deploy/release.py), under the block document name `wallabag` — the same block
+(deploy/release.py), under the block document name `wallabag`, the same block
 document that the morning-digest project reads, so one block on the Prefect
 server serves both projects. On first creation it is seeded from the
 `WALLATAG_*` container env vars when all five are set (`WALLATAG_URL`,

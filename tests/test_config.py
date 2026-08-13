@@ -535,6 +535,113 @@ class AiConfigEnvTest(unittest.TestCase):
             )
 
 
+class AiUseFocusGroupsTomlTest(unittest.TestCase):
+    """[ai] use_focus_groups: strict boolean, default True, trio-independent."""
+
+    def _load(self, toml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_false_disables(self):
+        config = self._load("[ai]\nuse_focus_groups = false\n")
+        self.assertFalse(config.ai.use_focus_groups)
+
+    def test_absent_defaults_true(self):
+        config = self._load("")
+        self.assertTrue(config.ai.use_focus_groups)
+        # An empty [ai] table also keeps the default True.
+        config = self._load("[ai]\n")
+        self.assertTrue(config.ai.use_focus_groups)
+
+    def test_explicit_true(self):
+        config = self._load("[ai]\nuse_focus_groups = true\n")
+        self.assertTrue(config.ai.use_focus_groups)
+
+    def test_string_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[ai]\nuse_focus_groups = "yes"\n')
+        message = str(ctx.exception)
+        self.assertIn("use_focus_groups", message)
+        self.assertIn("boolean", message)
+
+    def test_number_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[ai]\nuse_focus_groups = 1\n")
+        self.assertIn("use_focus_groups", str(ctx.exception))
+
+    def test_independent_of_trio(self):
+        # use_focus_groups alone, without provider/base_url/model, is valid
+        # (LLM stays disabled but the flag is applied), like api_key.
+        config = self._load("[ai]\nuse_focus_groups = false\n")
+        self.assertFalse(config.ai.use_focus_groups)
+        self.assertEqual(config.ai.provider, "")
+
+    def test_default_true_keeps_existing_ai_behavior(self):
+        # A full [ai] block without the flag keeps the default True.
+        config = self._load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n'
+        )
+        self.assertTrue(config.ai.use_focus_groups)
+
+
+class AiUseFocusGroupsEnvTest(unittest.TestCase):
+    """WALLATAG_AI_USE_FOCUS_GROUPS overlays [ai] use_focus_groups."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_overrides_toml_true_to_false(self):
+        config = self._env_load(
+            "[ai]\nuse_focus_groups = true\n",
+            {"WALLATAG_AI_USE_FOCUS_GROUPS": "false"},
+        )
+        self.assertFalse(config.ai.use_focus_groups)
+
+    def test_env_true_values(self):
+        for value in ("true", "1", "yes", "TRUE"):
+            config = self._env_load(
+                "", {"WALLATAG_AI_USE_FOCUS_GROUPS": value}
+            )
+            self.assertTrue(config.ai.use_focus_groups, value)
+
+    def test_env_false_values(self):
+        for value in ("false", "0", "no", "False"):
+            config = self._env_load(
+                "", {"WALLATAG_AI_USE_FOCUS_GROUPS": value}
+            )
+            self.assertFalse(config.ai.use_focus_groups, value)
+
+    def test_env_invalid_values_raise(self):
+        for value in ("banana", ""):
+            with self.assertRaises(ConfigError) as ctx:
+                self._env_load("", {"WALLATAG_AI_USE_FOCUS_GROUPS": value})
+            self.assertIn("WALLATAG_AI_USE_FOCUS_GROUPS", str(ctx.exception))
+
+    def test_env_without_trio_valid(self):
+        # Provider absent (no trio): config loads fine and the flag applies.
+        config = self._env_load("", {"WALLATAG_AI_USE_FOCUS_GROUPS": "false"})
+        self.assertFalse(config.ai.use_focus_groups)
+        self.assertEqual(config.ai.provider, "")
+
+    def test_env_overrides_toml_with_numeric_zero(self):
+        # Same env-wins-over-TOML path as test_env_overrides_toml_true_to_false,
+        # but with the numeric "0" alias instead of "false": still False, and
+        # pins that the numeric alias is accepted on the override path.
+        config = self._env_load(
+            "[ai]\nuse_focus_groups = true\n",
+            {"WALLATAG_AI_USE_FOCUS_GROUPS": "0"},
+        )
+        self.assertFalse(config.ai.use_focus_groups)
+
+
 class TaggerEnvTest(unittest.TestCase):
     """WALLATAG_* env vars overlay [tagger] settings (env wins over TOML)."""
 

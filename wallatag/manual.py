@@ -190,7 +190,7 @@ def _edit_working_list(entry: dict, original_suggestions: list):
 def _pick_indices(count: int, *, verb: str = "drop") -> list[int]:
     """Ask for comma-separated 1-based numbers; empty = all.
 
-    Typing 'q' aborts the sub-prompt (raises _Abort) — it is never treated as
+    Typing 'q' aborts the sub-prompt (raises _Abort), it is never treated as
     index content. Invalid/out-of-range numbers are ignored; if nothing valid
     was given, a message is printed and the prompt repeats.
     """

@@ -31,6 +31,7 @@ _ENV_AI_BASE_URL = "WALLATAG_AI_BASE_URL"
 _ENV_AI_MODEL = "WALLATAG_AI_MODEL"
 _ENV_AI_CONFIDENCE_THRESHOLD = "WALLATAG_AI_CONFIDENCE_THRESHOLD"
 _ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
+_ENV_AI_USE_FOCUS_GROUPS = "WALLATAG_AI_USE_FOCUS_GROUPS"
 _ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
 _ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
 _ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
@@ -108,6 +109,10 @@ class AiConfig:
     Authorization header. It is NOT part of the atomic provider/base_url/model
     trio, so a config with only the trio (or only api_key) is valid. Like all
     config, the key must never be printed or logged.
+
+    ``use_focus_groups`` toggles whether focus groups influence LLM tagging;
+    False = keyword-only mode for focus groups (the LLM prompt omits the
+    "Focus areas" line entirely).
     """
 
     provider: str = ""
@@ -115,6 +120,7 @@ class AiConfig:
     model: str = ""
     confidence_threshold: float = 0.7
     api_key: str = ""
+    use_focus_groups: bool = True
 
 
 @dataclass(frozen=True)
@@ -193,7 +199,7 @@ def _parse_comma_separated(context: str, key: str, value: str) -> tuple[str, ...
 
     Items are stripped of surrounding whitespace and empty items are dropped,
     so ``""`` yields ``()`` (used to clear a TOML list). A non-empty value
-    that parses to ``()`` — i.e. only separators/whitespace — is rejected
+    that parses to ``()``, i.e. only separators/whitespace, is rejected
     instead of silently clearing the list, since that is almost certainly a
     typo. Shared by ``WALLATAG_IGNORE_TAGS`` and the
     ``WALLATAG_FOCUS_<NAME>_*`` vars. ``context``/``key`` name the source in
@@ -206,6 +212,25 @@ def _parse_comma_separated(context: str, key: str, value: str) -> tuple[str, ...
             "got only separators/whitespace"
         )
     return parsed
+
+
+def _parse_bool_env(context: str, key: str, value: str) -> bool:
+    """Parse an env-var boolean, case-insensitively, with strict validation.
+
+    Accepts ``true``/``1``/``yes`` -> True and ``false``/``0``/``no`` -> False
+    (any casing); surrounding whitespace is trimmed before matching, so padded
+    values like ``" yes "`` or ``"true "`` are accepted (consistent with
+    ``_parse_comma_separated``). Anything else, including ``""``, raises
+    ConfigError naming the key, mirroring the existing env error styles.
+    ``context``/``key`` name the source in error messages (e.g. the [ai]
+    section and the env var).
+    """
+    folded = value.strip().casefold()
+    if folded in ("true", "1", "yes"):
+        return True
+    if folded in ("false", "0", "no"):
+        return False
+    raise ConfigError(f"{context}: {key} must be true or false, got {value!r}")
 
 
 def _validate_match_fields(
@@ -284,6 +309,8 @@ def _parse_ai(raw: dict) -> AiConfig:
     explicitly rejected (``confidence_threshold = true`` is not a threshold).
     ``api_key`` is optional and independent of the trio: it is str()-coerced
     like the other string fields and empty/unset simply means no auth header.
+    ``use_focus_groups`` defaults to True and must be a strict boolean; False
+    makes focus groups keyword-only (the LLM prompt omits the focus areas).
     """
     # The isinstance check runs on the RAW value BEFORE any `or {}`
     # normalization: falsy non-tables (`ai = ""`, `ai = []`) must raise, not
@@ -297,6 +324,10 @@ def _parse_ai(raw: dict) -> AiConfig:
     base_url = ai_raw.get("base_url", "") or ""
     model = ai_raw.get("model", "") or ""
     api_key = ai_raw.get("api_key", "") or ""
+
+    use_focus_groups = ai_raw.get("use_focus_groups", True)
+    if not isinstance(use_focus_groups, bool):
+        raise ConfigError("use_focus_groups must be a boolean (true or false)")
 
     confidence = ai_raw.get("confidence_threshold", 0.7)
     if (
@@ -324,6 +355,7 @@ def _parse_ai(raw: dict) -> AiConfig:
         model=str(model),
         confidence_threshold=confidence,
         api_key=str(api_key),
+        use_focus_groups=use_focus_groups,
     )
 
 
@@ -468,6 +500,15 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         # A present-but-empty WALLATAG_AI_API_KEY clears the TOML value,
         # matching the WALLATAG_DB="" pattern.
         ai = replace(ai, api_key=api_key)
+
+    use_focus_groups_raw = env.get(_ENV_AI_USE_FOCUS_GROUPS)
+    if use_focus_groups_raw is not None:
+        ai = replace(
+            ai,
+            use_focus_groups=_parse_bool_env(
+                "ai", _ENV_AI_USE_FOCUS_GROUPS, use_focus_groups_raw
+            ),
+        )
 
     tagger = config.tagger
     ignore_tags_raw = env.get(_ENV_IGNORE_TAGS)

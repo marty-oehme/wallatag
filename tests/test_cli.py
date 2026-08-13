@@ -418,6 +418,35 @@ class BuildTaggerTest(unittest.TestCase):
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
 
+    def test_ai_use_focus_groups_false_wired_to_tagger(self):
+        # TOML `use_focus_groups = false` flows through load_config ->
+        # _build_tagger into LLMTagger.use_focus_groups.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    "[ai]\n"
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                    "use_focus_groups = false\n"
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(config_path=str(path), env={})
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertFalse(tagger.use_focus_groups)
+        self.assertIs(llm_client, client_cls.return_value)
+
+    def test_ai_use_focus_groups_default_true_wired_to_tagger(self):
+        config = _ai_cfg()
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertTrue(tagger.use_focus_groups)
+
     def test_ai_provider_empty_with_partial_ai_still_keyword(self):
         # Threshold-only [ai]: provider is empty -> keyword tagger, no client.
         config = dataclasses.replace(Config(), ai=AiConfig(confidence_threshold=0.9))
