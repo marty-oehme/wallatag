@@ -1327,5 +1327,148 @@ fields = ["title", "content"]
         self.assertIn("_FIELDS", message)
 
 
+class TaggerEnableSwitchTomlTest(unittest.TestCase):
+    """[tagger] enable_vocabulary / enable_rules / enable_llm switches."""
+
+    def _load(self, toml_text: str) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_defaults_when_switches_absent(self):
+        # No switches in [tagger]: vocabulary and rules on, LLM OFF (opt-in).
+        config = self._load("[tagger]\nmax_suggestions = 5\n")
+        self.assertTrue(config.tagger.enable_vocabulary)
+        self.assertTrue(config.tagger.enable_rules)
+        self.assertFalse(config.tagger.enable_llm)
+        # An empty config (no [tagger] at all) keeps the same defaults.
+        config = self._load("")
+        self.assertTrue(config.tagger.enable_vocabulary)
+        self.assertTrue(config.tagger.enable_rules)
+        self.assertFalse(config.tagger.enable_llm)
+
+    def test_explicit_values_reflected(self):
+        config = self._load(
+            "[tagger]\n"
+            "enable_vocabulary = false\n"
+            "enable_rules = false\n"
+            "enable_llm = true\n"
+        )
+        self.assertFalse(config.tagger.enable_vocabulary)
+        self.assertFalse(config.tagger.enable_rules)
+        self.assertTrue(config.tagger.enable_llm)
+
+    def test_explicit_true_defaults_preserved(self):
+        config = self._load(
+            "[tagger]\n"
+            "enable_vocabulary = true\n"
+            "enable_rules = true\n"
+            "enable_llm = false\n"
+        )
+        self.assertTrue(config.tagger.enable_vocabulary)
+        self.assertTrue(config.tagger.enable_rules)
+        self.assertFalse(config.tagger.enable_llm)
+
+    def test_string_raises_for_all_three(self):
+        for key in ("enable_vocabulary", "enable_rules", "enable_llm"):
+            with self.assertRaises(ConfigError) as ctx:
+                self._load(f'[tagger]\n{key} = "yes"\n')
+            message = str(ctx.exception)
+            self.assertIn(key, message)
+            self.assertIn("boolean", message)
+
+    def test_number_raises_for_all_three(self):
+        # bool is an int subclass in TOML too: `= 1` / `= 0` must not parse.
+        for key in ("enable_vocabulary", "enable_rules", "enable_llm"):
+            with self.assertRaises(ConfigError) as ctx:
+                self._load(f"[tagger]\n{key} = 1\n")
+            self.assertIn(key, str(ctx.exception))
+            with self.assertRaises(ConfigError) as ctx:
+                self._load(f"[tagger]\n{key} = 0\n")
+            self.assertIn(key, str(ctx.exception))
+
+
+class TaggerEnableSwitchEnvTest(unittest.TestCase):
+    """WALLATAG_ENABLE_VOCABULARY / _RULES / _LLM overlay the [tagger] switches."""
+
+    def _env_load(self, toml_text: str, env: dict) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_true_values_for_llm(self):
+        for value in ("true", "1", "yes", "TRUE", " Yes "):
+            config = self._env_load("", {"WALLATAG_ENABLE_LLM": value})
+            self.assertTrue(config.tagger.enable_llm, value)
+
+    def test_env_false_values_for_llm(self):
+        for value in ("false", "0", "no", "False", " NO "):
+            config = self._env_load("", {"WALLATAG_ENABLE_LLM": value})
+            self.assertFalse(config.tagger.enable_llm, value)
+
+    def test_env_invalid_values_raise_for_llm(self):
+        for value in ("banana", ""):
+            with self.assertRaises(ConfigError) as ctx:
+                self._env_load("", {"WALLATAG_ENABLE_LLM": value})
+            self.assertIn("WALLATAG_ENABLE_LLM", str(ctx.exception))
+
+    def test_env_switches_for_vocabulary_and_rules(self):
+        config = self._env_load(
+            "",
+            {
+                "WALLATAG_ENABLE_VOCABULARY": "false",
+                "WALLATAG_ENABLE_RULES": "0",
+            },
+        )
+        self.assertFalse(config.tagger.enable_vocabulary)
+        self.assertFalse(config.tagger.enable_rules)
+        # Unset -> default.
+        self.assertFalse(config.tagger.enable_llm)
+        config = self._env_load(
+            "",
+            {
+                "WALLATAG_ENABLE_VOCABULARY": "TRUE",
+                "WALLATAG_ENABLE_RULES": "1",
+            },
+        )
+        self.assertTrue(config.tagger.enable_vocabulary)
+        self.assertTrue(config.tagger.enable_rules)
+
+    def test_env_invalid_values_raise_for_vocabulary_and_rules(self):
+        for key, var in (
+            ("enable_vocabulary", "WALLATAG_ENABLE_VOCABULARY"),
+            ("enable_rules", "WALLATAG_ENABLE_RULES"),
+        ):
+            for value in ("banana", ""):
+                with self.assertRaises(ConfigError) as ctx:
+                    self._env_load("", {var: value})
+                self.assertIn(var, str(ctx.exception))
+
+    def test_env_overrides_toml(self):
+        config = self._env_load(
+            "[tagger]\n"
+            "enable_vocabulary = false\n"
+            "enable_rules = true\n"
+            "enable_llm = false\n",
+            {
+                "WALLATAG_ENABLE_VOCABULARY": "true",
+                "WALLATAG_ENABLE_RULES": "false",
+                "WALLATAG_ENABLE_LLM": "true",
+            },
+        )
+        self.assertTrue(config.tagger.enable_vocabulary)
+        self.assertFalse(config.tagger.enable_rules)
+        self.assertTrue(config.tagger.enable_llm)
+
+    def test_env_llm_true_alone_on_defaults_config(self):
+        # No [tagger] switches anywhere: the env var alone flips enable_llm.
+        config = self._env_load("", {"WALLATAG_ENABLE_LLM": "true"})
+        self.assertTrue(config.tagger.enable_llm)
+        self.assertTrue(config.tagger.enable_vocabulary)
+        self.assertTrue(config.tagger.enable_rules)
+
+
 if __name__ == "__main__":
     unittest.main()

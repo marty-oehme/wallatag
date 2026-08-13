@@ -35,6 +35,9 @@ _ENV_AI_USE_FOCUS_GROUPS = "WALLATAG_AI_USE_FOCUS_GROUPS"
 _ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
 _ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
 _ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
+_ENV_ENABLE_VOCABULARY = "WALLATAG_ENABLE_VOCABULARY"
+_ENV_ENABLE_RULES = "WALLATAG_ENABLE_RULES"
+_ENV_ENABLE_LLM = "WALLATAG_ENABLE_LLM"
 _ENV_FOCUS_PREFIX = "WALLATAG_FOCUS_"
 _ENV_FOCUS_KEYWORDS_SUFFIX = "_KEYWORDS"
 _ENV_FOCUS_TAGS_SUFFIX = "_TAGS"
@@ -93,15 +96,27 @@ class TaggerConfig:
     # Tags treated as untagged: articles carrying ONLY these tags are still
     # fetched. Empty default = only fully untagged articles are fetched.
     ignore_tags: tuple[str, ...] = ()
+    # Per-source enable switches for the keyword tagger. enable_vocabulary
+    # gates the existing-tag vocabulary matcher; enable_rules gates focus-group
+    # rule matching. Both default to True (existing behavior).
+    enable_vocabulary: bool = True
+    enable_rules: bool = True
+    # enable_llm gates LLM classification. DELIBERATELY opt-in (default
+    # False): a configured [ai] provider trio alone no longer activates the
+    # LLM tagger; it requires enable_llm = true (or
+    # WALLATAG_ENABLE_LLM=true) as well.
+    enable_llm: bool = False
 
 
 @dataclass(frozen=True)
 class AiConfig:
     """LLM tagger configuration.
 
-    The LLM tagger is active iff ``provider`` is non-empty; a fully default
-    ``AiConfig()`` (or a config that leaves all three of provider/base_url/
-    model unset) means the LLM tagger is disabled and KeywordTagger is used.
+    The LLM tagger is active iff ``provider`` is non-empty AND
+    ``[tagger] enable_llm`` is true (LLM tagging is opt-in; ``enable_llm``
+    defaults to false). A fully default ``AiConfig()`` (or a config that
+    leaves all three of provider/base_url/model unset) means the LLM tagger
+    is disabled and KeywordTagger is used.
 
     ``api_key`` is optional: when set (non-empty) the LLM client sends it as a
     bearer token (``Authorization: Bearer <api_key>``) on every request for
@@ -301,10 +316,11 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
 def _parse_ai(raw: dict) -> AiConfig:
     """Parse and validate the [ai] section into an AiConfig.
 
-    The LLM tagger is active iff ``provider`` is non-empty, so an absent or
-    empty [ai] table yields defaults (LLM disabled). provider, base_url and
-    model are an atomic trio: setting ANY one of them requires all three to be
-    non-empty, and the provider must be a known value. confidence_threshold
+    The LLM tagger is active iff ``provider`` is non-empty AND
+    ``[tagger] enable_llm`` is true, so an absent or empty [ai] table yields
+    defaults (LLM disabled regardless). provider, base_url and model are an
+    atomic trio: setting ANY one of them requires all three to be non-empty,
+    and the provider must be a known value. confidence_threshold
     defaults to 0.7 and must be a number in (0, 1]; the bool-is-number trap is
     explicitly rejected (``confidence_threshold = true`` is not a threshold).
     ``api_key`` is optional and independent of the trio: it is str()-coerced
@@ -394,6 +410,19 @@ def _parse_toml_config(raw: dict) -> Config:
         else ()
     )
 
+    # Per-source enable switches, strict booleans (mirrors _parse_ai's
+    # use_focus_groups). enable_vocabulary/enable_rules default to True
+    # (existing behavior); enable_llm is opt-in and defaults to False.
+    enable_vocabulary = tagger_raw.get("enable_vocabulary", True)
+    if not isinstance(enable_vocabulary, bool):
+        raise ConfigError("enable_vocabulary must be a boolean (true or false)")
+    enable_rules = tagger_raw.get("enable_rules", True)
+    if not isinstance(enable_rules, bool):
+        raise ConfigError("enable_rules must be a boolean (true or false)")
+    enable_llm = tagger_raw.get("enable_llm", False)
+    if not isinstance(enable_llm, bool):
+        raise ConfigError("enable_llm must be a boolean (true or false)")
+
     focus_raw = raw.get("focus", {}) or {}
     if not isinstance(focus_raw, dict):
         raise ConfigError("section [focus] must be a table")
@@ -426,6 +455,9 @@ def _parse_toml_config(raw: dict) -> Config:
             tag_policy=tag_policy,
             focus_groups=_parse_focus_groups(focus_raw),
             ignore_tags=ignore_tags,
+            enable_vocabulary=enable_vocabulary,
+            enable_rules=enable_rules,
+            enable_llm=enable_llm,
         ),
         ai=_parse_ai(raw),
         vocabulary=VocabularyConfig(fields=vocabulary_fields),
@@ -553,6 +585,32 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 f"non-negative integer, got {max_suggestions_raw!r}"
             )
         tagger = replace(tagger, max_suggestions=max_suggestions)
+
+    # Per-source enable switches, parsed strictly as booleans (same accepted
+    # values as WALLATAG_AI_USE_FOCUS_GROUPS: true/1/yes, false/0/no,
+    # case-insensitive).
+    enable_vocabulary_raw = env.get(_ENV_ENABLE_VOCABULARY)
+    if enable_vocabulary_raw is not None:
+        tagger = replace(
+            tagger,
+            enable_vocabulary=_parse_bool_env(
+                "tagger", _ENV_ENABLE_VOCABULARY, enable_vocabulary_raw
+            ),
+        )
+    enable_rules_raw = env.get(_ENV_ENABLE_RULES)
+    if enable_rules_raw is not None:
+        tagger = replace(
+            tagger,
+            enable_rules=_parse_bool_env(
+                "tagger", _ENV_ENABLE_RULES, enable_rules_raw
+            ),
+        )
+    enable_llm_raw = env.get(_ENV_ENABLE_LLM)
+    if enable_llm_raw is not None:
+        tagger = replace(
+            tagger,
+            enable_llm=_parse_bool_env("tagger", _ENV_ENABLE_LLM, enable_llm_raw),
+        )
 
     # Vocabulary match fields: WALLATAG_VOCABULARY_FIELDS (comma-separated,
     # same parsing as WALLATAG_IGNORE_TAGS). "" clears the TOML list -> the

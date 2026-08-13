@@ -276,6 +276,99 @@ class ValidationTest(unittest.TestCase):
             make_tagger({}, max_suggestions=True)
 
 
+class KeywordTaggerEnableSwitchTest(unittest.TestCase):
+    """enable_vocabulary / enable_rules off-switches gate the two sources."""
+
+    def test_enable_vocabulary_false_drops_vocabulary_keeps_rules(self):
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["Pomodoro"],
+            enable_vocabulary=False,
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+        # Only the rule-derived tag survives; the vocabulary label is gone.
+        self.assertEqual([s.tag for s in result], ["productivity"])
+        self.assertEqual([s.source for s in result], ["rules"])
+
+    def test_enable_rules_false_drops_rules_keeps_vocabulary(self):
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["Pomodoro"],
+            enable_rules=False,
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+        self.assertEqual([s.tag for s in result], ["Pomodoro"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_both_false_yields_empty(self):
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["Pomodoro"],
+            enable_vocabulary=False,
+            enable_rules=False,
+        )
+        self.assertEqual(tagger.suggest(entry(title="pomodoro focus")), [])
+
+    def test_enable_rules_false_also_wins_over_only_existing(self):
+        # enable_rules=False drops rules even under tag_policy="all"; combined
+        # with "only-existing" both gates agree and the result is vocabulary
+        # only (rules are dropped by the policy AND the switch).
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="only-existing",
+            existing_tags=["Pomodoro"],
+            enable_rules=False,
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+        self.assertEqual([s.tag for s in result], ["Pomodoro"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_defaults_keep_both_sources(self):
+        # No kwargs -> existing behavior (both sources fire).
+        tagger = KeywordTagger(
+            {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))},
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            existing_tags=["Pomodoro"],
+        )
+        self.assertTrue(tagger.enable_vocabulary)
+        self.assertTrue(tagger.enable_rules)
+        result = tagger.suggest(entry(title="pomodoro focus"))
+        self.assertEqual([s.tag for s in result], ["Pomodoro", "productivity"])
+        self.assertEqual([s.source for s in result], ["vocabulary", "rules"])
+
+    def test_non_bool_enable_vocabulary_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            KeywordTagger(
+                {},
+                max_suggestions=10,
+                tag_policy="prefer-existing",
+                enable_vocabulary=1,
+            )
+        self.assertIn("enable_vocabulary", str(ctx.exception))
+
+    def test_non_bool_enable_rules_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            KeywordTagger(
+                {},
+                max_suggestions=10,
+                tag_policy="prefer-existing",
+                enable_rules="no",
+            )
+        self.assertIn("enable_rules", str(ctx.exception))
+
+
 class FakeLLMClient:
     """Stub LLMClientLike: returns canned JSON and records the prompts."""
 

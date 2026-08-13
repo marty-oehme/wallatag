@@ -51,6 +51,9 @@ Values are merged from lowest to highest precedence: later sources win:
 | Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
 | Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
 | Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
+| Vocabulary matching      | `[tagger] enable_vocabulary`| `WALLATAG_ENABLE_VOCABULARY`       |
+| Focus-group rules        | `[tagger] enable_rules`     | `WALLATAG_ENABLE_RULES`            |
+| LLM classification       | `[tagger] enable_llm`       | `WALLATAG_ENABLE_LLM`              |
 | Vocabulary match fields  | `[vocabulary] fields`       | `WALLATAG_VOCABULARY_FIELDS`       |
 | Focus groups             | `[focus.<name>]` keywords/tags/fields | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`, `WALLATAG_FOCUS_<NAME>_FIELDS` |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
@@ -110,13 +113,24 @@ activates one group; the default is all groups.
   `WALLATAG_IGNORE_TAGS`, `WALLATAG_DB`, and `WALLATAG_AI_API_KEY`, where
   empty means clear).
 - `[ai]` enables the LLM tagger: `provider` (`ollama` or `openai-compatible`),
-  `base_url`, and `model`; it is active iff `provider` is set, otherwise the
-  keyword tagger is used. `confidence_threshold` (default 0.7) gates headless
-  apply, further limited by `--tag-policy`. LLM suggestions carry source `llm`
-  and are recorded in the SQLite decision log. `api_key` is optional: when set
-  it is sent as an `Authorization: Bearer <api_key>` header on every LLM
-  request, which is only needed for keyed openai-compatible providers (OpenAI,
-  OpenRouter, ...); unset or empty means no auth header.
+  `base_url`, and `model`; it is active iff `provider` is set **and**
+  `[tagger] enable_llm = true` (or `WALLATAG_ENABLE_LLM=true`), otherwise the
+  keyword tagger is used. LLM tagging is opt-in: `enable_llm` defaults to
+  `false`, so configuring `[ai]` alone no longer activates the LLM tagger —
+  it also requires the switch. `confidence_threshold` (default 0.7) gates
+  headless apply, further limited by `--tag-policy`. LLM suggestions carry
+  source `llm` and are recorded in the SQLite decision log. `api_key` is
+  optional: when set it is sent as an `Authorization: Bearer <api_key>` header
+  on every LLM request, which is only needed for keyed openai-compatible
+  providers (OpenAI, OpenRouter, ...); unset or empty means no auth header.
+- Per-source off-switches for the keyword tagger (both default `true`):
+  `[tagger] enable_vocabulary = false` (env `WALLATAG_ENABLE_VOCABULARY`)
+  disables existing-tag vocabulary matching; `[tagger] enable_rules = false`
+  (env `WALLATAG_ENABLE_RULES`) disables focus-group rule matching. The
+  switches are strict booleans (env accepts `true`/`1`/`yes` or
+  `false`/`0`/`no`, case-insensitive) and compose with the existing
+  `tag_policy` gate (`only-existing` still drops rule suggestions; an
+  off-switch disables its source regardless of policy).
 - `[ai] use_focus_groups` (default `true`, env `WALLATAG_AI_USE_FOCUS_GROUPS`,
   accepts `true`/`1`/`yes` or `false`/`0`/`no`; values are matched
   case-insensitively and surrounding whitespace is ignored) controls

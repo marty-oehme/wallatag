@@ -342,6 +342,8 @@ def _entry(eid, title):
 
 def _ai_cfg(provider="ollama", base_url="http://localhost:11434", model="qwen2.5:3b",
             threshold=0.7):
+    # The [ai] trio AND the opt-in enable_llm switch: this helper builds the
+    # fully LLM-enabled config (provider trio alone is no longer enough).
     return dataclasses.replace(
         Config(),
         wallabag=WallabagConfig(
@@ -357,6 +359,7 @@ def _ai_cfg(provider="ollama", base_url="http://localhost:11434", model="qwen2.5
             model=model,
             confidence_threshold=threshold,
         ),
+        tagger=TaggerConfig(enable_llm=True),
     )
 
 
@@ -365,7 +368,7 @@ def config_focus_group():
 
 
 class BuildTaggerTest(unittest.TestCase):
-    """_build_tagger picks LLMTagger iff [ai] provider is configured."""
+    """_build_tagger picks LLMTagger iff [ai] provider AND enable_llm are set."""
 
     def test_ai_configured_selects_llm_tagger(self):
         config = dataclasses.replace(
@@ -374,6 +377,7 @@ class BuildTaggerTest(unittest.TestCase):
                 max_suggestions=3,
                 tag_policy="only-existing",
                 focus_groups={"a": config_focus_group()},
+                enable_llm=True,
             ),
         )
         with patch("wallatag.cli.LLMClient") as client_cls:
@@ -430,6 +434,9 @@ class BuildTaggerTest(unittest.TestCase):
                     'base_url = "http://localhost:11434"\n'
                     'model = "qwen2.5:3b"\n'
                     "use_focus_groups = false\n"
+                    "\n"
+                    "[tagger]\n"
+                    "enable_llm = true\n"
                 ),
                 encoding="utf-8",
             )
@@ -506,6 +513,75 @@ class BuildTaggerTest(unittest.TestCase):
             "content": "label k",
         }
         self.assertEqual(tagger.suggest(entry), [])
+
+    # --- per-source enable switches (issue ba1332b) ---
+
+    def _load_toml(self, text: str) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(text, encoding="utf-8")
+            return load_config(config_path=str(path), env={})
+
+    AI_TOML = (
+        "[ai]\n"
+        'provider = "ollama"\n'
+        'base_url = "http://localhost:11434"\n'
+        'model = "qwen2.5:3b"\n'
+    )
+
+    def test_ai_plus_enable_llm_true_selects_llm_tagger(self):
+        # [ai] fully configured AND enable_llm = true -> LLMTagger.
+        config = self._load_toml(self.AI_TOML + "\n[tagger]\nenable_llm = true\n")
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertIs(llm_client, client_cls.return_value)
+
+    def test_ai_without_enable_llm_selects_keyword_tagger(self):
+        # NEW opt-in behavior: [ai] alone (enable_llm absent, default false)
+        # no longer activates the LLM tagger.
+        config = self._load_toml(self.AI_TOML)
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+        client_cls.assert_not_called()
+
+    def test_ai_with_enable_llm_false_selects_keyword_tagger(self):
+        config = self._load_toml(
+            self.AI_TOML + "\n[tagger]\nenable_llm = false\n"
+        )
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+        client_cls.assert_not_called()
+
+    def test_enable_llm_true_without_ai_selects_keyword_tagger(self):
+        # The switch alone cannot enable the LLM: the provider trio is still
+        # required.
+        config = self._load_toml("[tagger]\nenable_llm = true\n")
+        tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+
+    def test_keyword_tagger_receives_enable_switches_from_config(self):
+        config = self._load_toml(
+            "[tagger]\nenable_vocabulary = false\nenable_rules = false\n"
+        )
+        tagger, llm_client = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+        self.assertFalse(tagger.enable_vocabulary)
+        self.assertFalse(tagger.enable_rules)
+        # The switch flags land on the tagger AND actually gate suggest().
+        self.assertEqual(tagger.suggest({"title": "python", "content": "x"}), [])
+
+    def test_keyword_tagger_default_switches_enabled(self):
+        config = Config()
+        tagger, _ = _build_tagger(config, ["python"])
+        self.assertTrue(tagger.enable_vocabulary)
+        self.assertTrue(tagger.enable_rules)
 
 
 class CmdRunAiSelectionTest(unittest.TestCase):
@@ -601,6 +677,27 @@ class StatusAiLineTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("ai: provider=ollama model=qwen2.5:3b", text)
         self.assertIn("(confidence_threshold=0.8)", text)
+
+    def test_status_marks_llm_inactive_when_enable_llm_absent(self):
+        # [ai] trio configured but enable_llm absent (default false): status
+        # must make explicit that the LLM tagger is NOT active.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    '[ai]\n'
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("(llm enabled=no; set [tagger] enable_llm = true)", text)
 
     def test_status_ai_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:

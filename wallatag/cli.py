@@ -130,12 +130,12 @@ def _build_tagger(
 ) -> tuple[KeywordTagger | LLMTagger, LLMClient | None]:
     """Build the tagger selected by config; returns (tagger, llm_client).
 
-    The LLM tagger is active iff ``config.ai.provider`` is non-empty (config
-    parsing guarantees the trio is complete then); otherwise KeywordTagger is
-    used. The returned ``llm_client`` (when not None) owns a session and MUST
+    The LLM tagger is active iff ``config.ai.provider`` is non-empty AND
+    ``config.tagger.enable_llm`` is true; otherwise KeywordTagger is used.
+    The returned ``llm_client`` (when not None) owns a session and MUST
     be closed by the caller alongside the wallabag client and store.
     """
-    if config.ai.provider:
+    if config.ai.provider and config.tagger.enable_llm:
         llm_client = LLMClient(
             config.ai.provider,
             config.ai.base_url,
@@ -158,6 +158,8 @@ def _build_tagger(
         tag_policy=config.tagger.tag_policy,
         existing_tags=existing_tags,
         vocabulary_fields=config.vocabulary.fields,
+        enable_vocabulary=config.tagger.enable_vocabulary,
+        enable_rules=config.tagger.enable_rules,
     )
     return tagger, None
 
@@ -302,10 +304,17 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
     print(f"tagger: policy={tagger.tag_policy} max_suggestions={tagger.max_suggestions}")
     ai = config.ai
     if ai.provider:
-        print(
-            f"ai: provider={ai.provider} model={ai.model} "
-            f"(confidence_threshold={ai.confidence_threshold})"
-        )
+        if tagger.enable_llm:
+            print(
+                f"ai: provider={ai.provider} model={ai.model} "
+                f"(confidence_threshold={ai.confidence_threshold})"
+            )
+        else:
+            print(
+                f"ai: provider={ai.provider} model={ai.model} "
+                f"(confidence_threshold={ai.confidence_threshold}) "
+                f"(llm enabled=no; set [tagger] enable_llm = true)"
+            )
     else:
         print("ai: not configured")
     if config.max_articles is not None:

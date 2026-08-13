@@ -95,6 +95,13 @@ class KeywordTagger:
     the same ordering: vocabulary suggestions first, then rule suggestions,
     with case-insensitive first-wins dedup; the policies differ only in that
     "only-existing" drops rule suggestions entirely.
+
+    Two per-source off-switches (keyword-only, both default True):
+    ``enable_vocabulary=False`` disables the existing-tag vocabulary matcher
+    (no ``source="vocabulary"`` suggestions, whatever ``vocabulary_fields``
+    says); ``enable_rules=False`` disables focus-group rule matching (no
+    ``source="rules"`` suggestions, whatever the groups say). Both are
+    strict booleans; anything else raises ValueError at construction.
     """
 
     # Default set of article fields matched against when a source does not
@@ -110,6 +117,8 @@ class KeywordTagger:
         tag_policy: str,
         existing_tags: Iterable[str] = (),
         vocabulary_fields: Iterable[str] = _FIELDS,
+        enable_vocabulary: bool = True,
+        enable_rules: bool = True,
     ) -> None:
         if tag_policy not in VALID_TAG_POLICIES:
             raise ValueError(
@@ -122,6 +131,10 @@ class KeywordTagger:
             or max_suggestions < 0
         ):
             raise ValueError("max_suggestions must be a non-negative integer")
+        if not isinstance(enable_vocabulary, bool):
+            raise ValueError("enable_vocabulary must be a boolean")
+        if not isinstance(enable_rules, bool):
+            raise ValueError("enable_rules must be a boolean")
         # Materialize ONCE before validating: vocabulary_fields is only
         # declared Iterable, so a one-shot generator would otherwise be
         # consumed by the validation loop and the stored tuple would come out
@@ -142,6 +155,8 @@ class KeywordTagger:
         # casing (wallabag labels as provided).
         self.existing_tags = list(existing_tags)
         self.vocabulary_fields = vocabulary_fields
+        self.enable_vocabulary = enable_vocabulary
+        self.enable_rules = enable_rules
 
     def _field_needles(self, entry: dict, fields) -> tuple[str, ...]:
         """Casefolded per-field text to match against, fields kept separate.
@@ -205,14 +220,17 @@ class KeywordTagger:
         return suggestions
 
     def suggest(self, entry: dict) -> list[TagSuggestion]:
-        vocabulary = self._vocabulary_suggestions(
-            self._field_needles(entry, self.vocabulary_fields)
+        vocabulary = (
+            self._vocabulary_suggestions(self._field_needles(entry, self.vocabulary_fields))
+            if self.enable_vocabulary
+            else []
         )
 
-        # "only-existing" drops rule-derived suggestions entirely.
+        # "only-existing" drops rule-derived suggestions entirely; enable_rules
+        # provides an explicit off-switch that composes as a strict superset.
         rules = (
             self._rule_suggestions(entry)
-            if self.tag_policy != "only-existing"
+            if self.enable_rules and self.tag_policy != "only-existing"
             else []
         )
 

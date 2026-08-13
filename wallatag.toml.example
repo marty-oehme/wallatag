@@ -23,6 +23,12 @@ path = "/data/wallatag.db"
 max_suggestions = 5
 tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
 ignore_tags = ["fix", "_frigo"]       # tags treated as untagged: articles carrying ONLY these are still fetched
+# Per-source enable switches for the tagging mechanisms (strict booleans;
+# env overrides: WALLATAG_ENABLE_VOCABULARY / WALLATAG_ENABLE_RULES /
+# WALLATAG_ENABLE_LLM, values true/1/yes or false/0/no, case-insensitive).
+enable_vocabulary = true              # existing-tag vocabulary matching
+enable_rules = true                   # focus-group rule matching
+enable_llm = false                    # LLM tagging is opt-in: set true to enable (requires [ai] provider/base_url/model)
 
 # [vocabulary] fields: which article fields the existing-tag vocabulary
 # matcher checks. Default (absent key): title, url, domain_name, content.
