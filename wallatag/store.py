@@ -104,6 +104,24 @@ class Store:
         )
         return cur.fetchone() is not None
 
+    def unmark_seen(self, entry_id: int) -> bool:
+        """Remove a pick-up marker so the article is presented again on the next run.
+
+        Used to defer articles whose tagging failed (e.g. LLM unavailable): the
+        article stays in the queue instead of being permanently lost. Returns
+        True if a row was deleted; False if it was not seen (or in history-less
+        mode).
+        """
+        if entry_id is None:
+            raise ValueError("entry_id must be an integer")
+        if self._conn is None:
+            return False
+        cur = self._conn.execute(
+            "DELETE FROM seen WHERE entry_id = ?", (entry_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
     # -- decisions -------------------------------------------------------
 
     def record_decision(

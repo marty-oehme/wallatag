@@ -404,6 +404,88 @@ class LLMErrorTest(AutoBase):
         self.assertTrue(any("LLM tagging failed 2" in m for m in messages))
 
 
+class LLMDeferralTest(AutoBase):
+    """LLM failures defer the article: its seen marker is removed so the next
+    run presents it again instead of losing it permanently."""
+
+    def test_llm_failure_unmarks_article_in_real_store(self):
+        # (a) After the LLM failure the articles are NOT seen anymore.
+        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_auto(
+                    client, tagger=RaisingTagger(), store=store
+                )
+                self.assertFalse(store.is_seen(1))
+                self.assertFalse(store.is_seen(2))
+            finally:
+                store.close()
+
+        self.assertEqual((summary.skipped, summary.llm_failed), (2, 2))
+
+    def test_llm_failure_counts(self):
+        # (b) one article, one LLM failure: llm_failed and skipped are both 1.
+        client = FakeClient(entries=[entry(1, "first")])
+        summary, _ = self.run_auto(client, tagger=RaisingTagger())
+        self.assertEqual(summary.llm_failed, 1)
+        self.assertEqual(summary.skipped, 1)
+        self.assertEqual(summary.tagged, 0)
+
+    def test_summary_line_llm_failure_suffix(self):
+        # (c) the summary line gains the ", N llm failures" suffix (plural
+        # "failures" even for 1, keeping it greppable).
+        summary = AutoSummary(presented=1, tagged=0, skipped=1, llm_failed=1)
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 0 articles (0 tags applied), skipped 1, 1 llm failures",
+        )
+        summary.llm_failed = 2
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 0 articles (0 tags applied), skipped 1, 2 llm failures",
+        )
+
+    def test_summary_line_dry_run_llm_failure_suffix(self):
+        summary = AutoSummary(presented=1, tagged=0, skipped=1, llm_failed=1)
+        self.assertEqual(
+            summary_line(summary, dry_run=True),
+            "dry run: would tag 0 articles (0 tags), skipped 1, 1 llm failures",
+        )
+
+    def test_summary_line_combines_feed_error_and_llm_failure(self):
+        # Both failure suffixes stack, in order, after the base "run: tagged
+        # ..." wording: ", feed error" first, then ", N llm failures".
+        summary = AutoSummary(
+            presented=2, tagged=1, tags_applied=2, skipped=2,
+            llm_failed=2, feed_error=True,
+        )
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 1 articles (2 tags applied), skipped 2, "
+            "feed error, 2 llm failures",
+        )
+
+    def test_dry_run_llm_failure_has_no_side_effects(self):
+        # (d) dry run marks nothing, so there is nothing to unmark.
+        client = FakeClient(entries=[entry(1, "first")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_auto(
+                    client, tagger=RaisingTagger(), store=store, dry_run=True
+                )
+            finally:
+                store.close()
+
+            with sqlite3.connect(db) as conn:
+                seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+            self.assertEqual(seen, 0)
+        self.assertEqual(summary.llm_failed, 1)
+
+
 class DecisionsTest(AutoBase):
     def test_accept_rows_written_with_sources(self):
         client = FakeClient(

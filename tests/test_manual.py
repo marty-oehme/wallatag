@@ -679,6 +679,55 @@ class LLMErrorTest(ManualBase):
         self.assertIn("LLM tagging failed 2", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
+    def test_llm_error_unmarks_article_from_store(self):
+        # Deferral: after an LLM failure the article's seen marker is removed,
+        # so the next session presents it again instead of losing it.
+        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            err = io.StringIO()
+            with patch("builtins.input", side_effect=["q"]), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err):
+                summary = run_manual(client, RaisingTagger(), store, Config())
+
+            self.assertFalse(store.is_seen(1))
+            self.assertFalse(store.is_seen(2))
+            self.assertEqual((summary.presented, summary.tagged), (2, 0))
+            self.assertIn("LLM tagging failed 1", err.getvalue())
+            store.close()
+
+    def test_llm_error_dry_run_defers_nothing(self):
+        # Dry-run counterpart of the deferral test: dry run never marks an
+        # article (mark_seen is skipped), so an LLM failure must not unmark
+        # anything either — is_seen stays exactly as it was (nothing marked,
+        # nothing unmarked).
+        client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            err = io.StringIO()
+            try:
+                with patch("builtins.input", side_effect=["q"]), \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(err), \
+                     patch.object(
+                         store, "unmark_seen", wraps=store.unmark_seen
+                     ) as unmark:
+                    summary = run_manual(
+                        client, RaisingTagger(), store, Config(), dry_run=True
+                    )
+
+                self.assertFalse(unmark.called)
+                # Nothing was marked, so nothing was unmarked.
+                self.assertFalse(store.is_seen(1))
+                self.assertFalse(store.is_seen(2))
+                self.assertEqual((summary.presented, summary.tagged), (2, 0))
+                self.assertIn("LLM tagging failed 1", err.getvalue())
+            finally:
+                store.close()
+
 
 class EofExitTest(ManualBase):
     def test_eof_clean_exit_0(self):

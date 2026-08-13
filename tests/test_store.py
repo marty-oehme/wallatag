@@ -93,6 +93,42 @@ class MarkSeenTest(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class UnmarkSeenTest(unittest.TestCase):
+    """Deferral: remove a pick-up marker so the article is presented again."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = Store(db_path(self._tmp.name))
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_unmark_seen_after_mark_removes_row(self):
+        self.assertTrue(self.store.mark_seen(1))
+        self.assertTrue(self.store.is_seen(1))
+        self.assertTrue(self.store.unmark_seen(1))
+        self.assertFalse(self.store.is_seen(1))
+
+    def test_unmark_seen_when_not_seen_returns_false(self):
+        self.assertFalse(self.store.unmark_seen(1))
+
+    def test_unmark_seen_history_less_returns_false(self):
+        store = Store(None)
+        self.assertFalse(store.unmark_seen(1))
+        store.close()
+
+    def test_unmark_seen_none_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            self.store.unmark_seen(None)
+
+    def test_unmark_then_mark_again_allows_repickup(self):
+        # The deferred article can be marked again on the next run.
+        self.store.mark_seen(7)
+        self.store.unmark_seen(7)
+        self.assertTrue(self.store.mark_seen(7))
+
+
 class DecisionsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

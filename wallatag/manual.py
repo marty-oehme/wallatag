@@ -99,6 +99,8 @@ def run_manual(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> 
             except LLMError as exc:
                 # A model failure skips the article; the session keeps going.
                 print(f"LLM tagging failed {entry_id}: {exc}", file=sys.stderr)
+                if not dry_run:
+                    store.unmark_seen(entry_id)  # defer: keep the article in the queue
                 continue
             try:
                 action, working = _edit_working_list(entry, suggestions)
