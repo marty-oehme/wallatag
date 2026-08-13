@@ -23,9 +23,17 @@ wallatag.tagger or the pipeline modules.
 
 from __future__ import annotations
 
+import random
+import time
+
 import requests
 
 from wallatag.config import VALID_AI_PROVIDERS
+
+# HTTP statuses that may succeed on a retry (rate limit, overload, gateway
+# hiccup). Anything else (other 4xx statuses, non-JSON bodies, missing or
+# non-string content) is a config/protocol error that retrying cannot fix.
+_TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
 class LLMError(Exception):
@@ -51,6 +59,17 @@ class LLMClient:
     errors, non-2xx HTTP status, non-JSON bodies, missing/malformed content) in
     ``LLMError`` so the tagger and pipelines only ever have to handle one
     exception type.
+
+    Transient failures are retried with exponential backoff plus jitter:
+    ``retries`` (default 2) is the number of retries AFTER the first attempt
+    (total attempts = retries + 1), and ``backoff_base`` (default 1.0s) seeds
+    the delay (``backoff_base * 2**attempt``, jittered by 0.5-1.5x). ONLY
+    transient failures are retried: transport errors (``requests.
+    RequestException``) and the HTTP statuses in ``_TRANSIENT_STATUSES``
+    (408, 429, 500, 502, 503, 504). Config/protocol errors (other 4xx
+    statuses, non-JSON bodies, missing or non-string content) raise
+    immediately, because retrying cannot help them. Response parsing happens
+    strictly AFTER the retry loop and is never retried.
     """
 
     def __init__(
@@ -62,6 +81,8 @@ class LLMClient:
         api_key: str = "",
         timeout: float = 30.0,
         session: requests.Session | None = None,
+        retries: int = 2,
+        backoff_base: float = 1.0,
     ) -> None:
         if provider not in VALID_AI_PROVIDERS:
             raise ValueError(
@@ -72,6 +93,10 @@ class LLMClient:
             raise ValueError("base_url must not be empty")
         if not model:
             raise ValueError("model must not be empty")
+        if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
+            raise ValueError("retries must be a non-negative integer")
+        if not backoff_base > 0:
+            raise ValueError("backoff_base must be positive")
         self.provider: str = provider
         self.base_url: str = base_url.rstrip("/")
         self.model: str = model
@@ -80,6 +105,8 @@ class LLMClient:
         self.session: requests.Session = (
             session if session is not None else requests.Session()
         )
+        self.retries: int = retries
+        self.backoff_base: float = backoff_base
 
     def _endpoint(self) -> str:
         """Chat completions URL for this provider flavor."""
@@ -108,12 +135,26 @@ class LLMClient:
             return text
         return text.replace(self.api_key, "***")
 
+    def _backoff_delay(self, attempt: int) -> float:
+        """Delay before retry ``attempt`` (0-based): exponential + jitter.
+
+        The first retry (attempt 0) waits ``backoff_base * 1``, the second
+        ``backoff_base * 2``, ... each multiplied by a random 0.5-1.5 jitter so
+        synchronized clients do not stampede the provider.
+        """
+        return self.backoff_base * (2 ** attempt) * random.uniform(0.5, 1.5)
+
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         """POST a chat completion and return the assistant message content.
 
         The payload is OpenAI-shaped: model, system+user messages, and a hard
         ``temperature`` of 0 with streaming disabled so the model's output is
         deterministic and a single parseable JSON body.
+
+        Transient failures (transport errors, ``_TRANSIENT_STATUSES`` HTTP
+        codes) are retried up to ``self.retries`` times with exponential
+        backoff and jitter; everything else raises immediately. Response
+        parsing happens only AFTER the retry loop and is never retried.
         """
         url = self._endpoint()
         headers: dict[str, str] = {}
@@ -131,14 +172,27 @@ class LLMClient:
             "temperature": 0,
             "stream": False,
         }
-        try:
-            resp = self.session.post(
-                url, json=payload, headers=headers, timeout=self.timeout
-            )
-        except requests.RequestException as exc:
-            raise LLMError(f"LLM request failed: {exc}") from exc
-        if not 200 <= resp.status_code < 300:
-            raise LLMError(self._http_error(resp), status=resp.status_code)
+        for attempt in range(self.retries + 1):
+            try:
+                resp = self.session.post(
+                    url, json=payload, headers=headers, timeout=self.timeout
+                )
+            except requests.RequestException as exc:
+                if attempt < self.retries:
+                    time.sleep(self._backoff_delay(attempt))
+                    continue
+                raise LLMError(
+                    f"LLM request failed after {self.retries + 1} attempts: "
+                    f"{self._redact(str(exc))}"
+                ) from exc
+            if resp.status_code in _TRANSIENT_STATUSES and attempt < self.retries:
+                time.sleep(self._backoff_delay(attempt))
+                continue
+            if not 200 <= resp.status_code < 300:
+                # Non-transient status (or retries exhausted): a config/protocol
+                # error, or the last attempt; retrying cannot help, raise now.
+                raise LLMError(self._http_error(resp), status=resp.status_code)
+            break
         try:
             body = resp.json()
         except ValueError as exc:
