@@ -275,6 +275,63 @@ apply to Prefect-scheduled runs only: `dokku run wallatag ...`
 `WALLATAG_*` vars in the `config:set` above if you also run wallatag manually.
 No secrets end up in git either way.
 
+### Prefect UI configuration (Variables)
+
+Scalar settings and focus groups can also be configured from the Prefect UI
+(Variables page) instead of container env vars — no redeploy needed, and the
+values stay visible and editable in the UI. Create a variable in the UI or
+with the CLI:
+
+```sh
+prefect variable set WALLATAG_TAG_POLICY all
+prefect variable set WALLATAG_ENABLE_LLM true
+```
+
+The 9 scalar variables (names mirror the env vars exactly):
+
+| Variable | Meaning |
+| -------- | ------- |
+| `WALLATAG_TAG_POLICY` | `only-existing` \| `prefer-existing` \| `all` |
+| `WALLATAG_MAX_SUGGESTIONS` | tag suggestions per article (int) |
+| `WALLATAG_IGNORE_TAGS` | comma-separated tags treated as untagged |
+| `WALLATAG_ENABLE_VOCABULARY` | existing-tag vocabulary matching on/off (bool) |
+| `WALLATAG_ENABLE_RULES` | focus-group rule matching on/off (bool) |
+| `WALLATAG_ENABLE_LLM` | LLM tagging on/off (bool) |
+| `WALLATAG_AI_CONFIDENCE_THRESHOLD` | LLM apply gate (float, default 0.7) |
+| `WALLATAG_AI_USE_FOCUS_GROUPS` | focus groups in the LLM prompt on/off (bool) |
+| `WALLATAG_VOCABULARY_FIELDS` | vocabulary match fields (comma-separated) |
+
+Booleans are normalized to `true`/`false`, numbers to their plain string form
+— the same values the env vars accept. Focus groups go in ONE variable,
+`WALLATAG_FOCUS_GROUPS`, as a JSON object (all three keys optional, values are
+lists of strings; an empty `keywords`/`tags` list omits that field, `fields:
+[]` disables the group exactly like `WALLATAG_FOCUS_<NAME>_FIELDS=""`):
+
+```sh
+prefect variable set WALLATAG_FOCUS_GROUPS '{"methods": {"keywords": ["howto", "tutorial"], "tags": ["dev"], "fields": ["title", "url"]}, "languages": {"tags": ["english"]}}'
+```
+
+It is translated to the usual `WALLATAG_FOCUS_<NAME>_KEYWORDS`/`_TAGS`/`_FIELDS`
+env convention (group names are lowercased). The JSON value is validated
+strictly: unknown keys (typo protection, e.g. `keywrods`), non-list fields and
+empty strings make the run fail loudly instead of silently changing tagging.
+An empty-string `WALLATAG_FOCUS_GROUPS` value (e.g. clearing the field in the
+UI) also fails the run loudly — it is not a valid JSON object — so to remove
+focus groups entirely, delete the variable rather than blanking it out.
+
+Precedence for Prefect-scheduled runs, lowest to highest: `wallatag.toml`
+defaults → blocks → container env vars (`dokku config:set`) → Prefect
+Variables (scalar settings + `WALLATAG_FOCUS_GROUPS`) → CLI options
+(`--tag-policy`/`--focus`). So a variable overrides the container env var for
+that setting; the focus JSON overrides same-named `WALLATAG_FOCUS_<NAME>_*`
+env vars for the fields it emits, per-field (an empty `keywords`/`tags` list
+omits that env var entirely, so the container env var survives); and CLI flags
+still win. Variables set only partially fall through:
+a missing variable leaves the container env / TOML value in place for that
+setting, so you can migrate settings to the UI one at a time. Secrets never
+come from variables — `WALLATAG_CLIENT_SECRET`, `WALLATAG_PASSWORD` and
+`WALLATAG_AI_API_KEY` stay in `dokku config:set` and the credentials blocks.
+
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.
 

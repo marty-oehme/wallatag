@@ -338,6 +338,358 @@ class PrefectFlowsTest(unittest.TestCase):
                 self.prefect_flows.wallatag_batch.fn(max_articles=50)
         self.assertIn("timed out after 1800s", str(ctx.exception))
 
+    def test_variable_names_exact_no_secrets(self) -> None:
+        self.assertEqual(
+            set(self.prefect_flows.WALLATAG_VARIABLES),
+            {
+                "WALLATAG_TAG_POLICY",
+                "WALLATAG_MAX_SUGGESTIONS",
+                "WALLATAG_IGNORE_TAGS",
+                "WALLATAG_ENABLE_VOCABULARY",
+                "WALLATAG_ENABLE_RULES",
+                "WALLATAG_ENABLE_LLM",
+                "WALLATAG_AI_CONFIDENCE_THRESHOLD",
+                "WALLATAG_AI_USE_FOCUS_GROUPS",
+                "WALLATAG_VOCABULARY_FIELDS",
+            },
+        )
+        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 9)
+        self.assertEqual(
+            len(set(self.prefect_flows.WALLATAG_VARIABLES)),
+            len(self.prefect_flows.WALLATAG_VARIABLES),
+        )
+        joined = "|".join(self.prefect_flows.WALLATAG_VARIABLES)
+        for secret in ("CLIENT_SECRET", "PASSWORD", "API_KEY"):
+            self.assertNotIn(secret, joined)
+
+    def test_variable_env_normalizes_values(self) -> None:
+        values = {
+            "WALLATAG_TAG_POLICY": "all",
+            "WALLATAG_MAX_SUGGESTIONS": 7,
+            "WALLATAG_AI_CONFIDENCE_THRESHOLD": 0.8,
+            "WALLATAG_ENABLE_LLM": True,
+            "WALLATAG_ENABLE_RULES": False,
+            "WALLATAG_IGNORE_TAGS": "fix,_frigo",
+        }
+
+        def fake_get(name, default=None):
+            return values.get(name, default)
+
+        with patch("prefect_flows.Variable.get", side_effect=fake_get):
+            env = self.prefect_flows.variable_env()
+        self.assertEqual(
+            env,
+            {
+                "WALLATAG_TAG_POLICY": "all",
+                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.8",
+                "WALLATAG_ENABLE_LLM": "true",
+                "WALLATAG_ENABLE_RULES": "false",
+                "WALLATAG_IGNORE_TAGS": "fix,_frigo",
+            },
+        )
+
+    def test_variable_env_skips_none(self) -> None:
+        with patch("prefect_flows.Variable.get", return_value=None):
+            env = self.prefect_flows.variable_env()
+        self.assertEqual(env, {})
+
+    def test_variable_env_fail_open(self) -> None:
+        with patch(
+            "prefect_flows.Variable.get",
+            side_effect=Exception("prefect server unreachable"),
+        ), contextlib.redirect_stdout(io.StringIO()) as out:
+            env = self.prefect_flows.variable_env()
+        self.assertEqual(env, {})
+        self.assertIn("prefect variables not available", out.getvalue())
+
+    def test_variable_env_preserves_partial_set_on_read_failure(self) -> None:
+        calls = {"n": 0}
+
+        def fake_get(name, default=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "prefer-existing"
+            if calls["n"] == 2:
+                return 7
+            raise Exception("prefect server unreachable")
+
+        with patch("prefect_flows.Variable.get", side_effect=fake_get), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            env = self.prefect_flows.variable_env()
+        # Values read before the failure are kept; later names fall through
+        # to the container env / TOML, and the warning is still printed.
+        self.assertEqual(
+            env,
+            {
+                "WALLATAG_TAG_POLICY": "prefer-existing",
+                "WALLATAG_MAX_SUGGESTIONS": "7",
+            },
+        )
+        self.assertEqual(calls["n"], 3)
+        self.assertIn("prefect variables not available", out.getvalue())
+
+    def test_focus_groups_env_emits_joined_env_vars(self) -> None:
+        raw = {
+            "methods": {
+                "keywords": ["howto", "tutorial"],
+                "tags": ["dev"],
+                "fields": ["title", "url"],
+            }
+        }
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(
+            env,
+            {
+                "WALLATAG_FOCUS_methods_KEYWORDS": "howto,tutorial",
+                "WALLATAG_FOCUS_methods_TAGS": "dev",
+                "WALLATAG_FOCUS_methods_FIELDS": "title,url",
+            },
+        )
+
+    def test_focus_groups_env_omits_empty_keywords_tags(self) -> None:
+        raw = {"methods": {"keywords": [], "tags": []}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(env, {})
+
+    def test_focus_groups_env_empty_fields_list_disables_group(self) -> None:
+        raw = {"methods": {"keywords": ["howto"], "fields": []}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(
+            env,
+            {
+                "WALLATAG_FOCUS_methods_KEYWORDS": "howto",
+                "WALLATAG_FOCUS_methods_FIELDS": "",
+            },
+        )
+
+    def test_focus_groups_env_absent_fields_key_omits_fields_var(self) -> None:
+        raw = {"methods": {"keywords": ["howto"]}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(env, {"WALLATAG_FOCUS_methods_KEYWORDS": "howto"})
+
+    def test_focus_groups_env_parses_json_string(self) -> None:
+        raw = '{"methods": {"keywords": ["a", "b"], "fields": []}}'
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(
+            env,
+            {
+                "WALLATAG_FOCUS_methods_KEYWORDS": "a,b",
+                "WALLATAG_FOCUS_methods_FIELDS": "",
+            },
+        )
+
+    def test_focus_groups_env_none_returns_empty(self) -> None:
+        with patch("prefect_flows.Variable.get", return_value=None):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(env, {})
+
+    def test_focus_groups_env_fail_open_on_read_error(self) -> None:
+        with patch(
+            "prefect_flows.Variable.get",
+            side_effect=Exception("prefect server unreachable"),
+        ), contextlib.redirect_stdout(io.StringIO()) as out:
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(env, {})
+        self.assertIn("prefect variables not available", out.getvalue())
+
+    def test_focus_groups_env_rejects_malformed_values(self) -> None:
+        cases = [
+            ["methods"],
+            {"methods": ["howto"]},
+            {"methods": {"keywords": ["howto", " "]}},
+            {"methods": {"keywrods": ["howto"]}},
+            {"methods": {"keywords": "howto"}},
+            {"methods": {"keywords": [1]}},
+            {"methods": {"fields": {}}},
+            42,
+            "not json at all",
+        ]
+        for raw in cases:
+            with self.subTest(raw=raw), patch(
+                "prefect_flows.Variable.get", return_value=raw
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    self.prefect_flows.focus_groups_env()
+                self.assertIn("WALLATAG_FOCUS_GROUPS", str(ctx.exception))
+
+    def test_focus_groups_env_rejects_casefold_duplicate_names(self) -> None:
+        raw = {
+            "Methods": {"keywords": ["upper"]},
+            "methods": {"keywords": ["lower"]},
+        }
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.prefect_flows.focus_groups_env()
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn("'Methods'", message)
+        self.assertIn("'methods'", message)
+        self.assertIn("case-insensitively", message)
+
+    def test_focus_groups_env_rejects_non_string_group_name(self) -> None:
+        raw = {1: {"keywords": ["howto"]}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.prefect_flows.focus_groups_env()
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn("group names must be strings", message)
+
+    def test_focus_groups_env_empty_string_value_fails_loud(self) -> None:
+        with patch("prefect_flows.Variable.get", return_value=""):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.prefect_flows.focus_groups_env()
+        self.assertIn("WALLATAG_FOCUS_GROUPS", str(ctx.exception))
+
+    def test_focus_groups_env_sorted_order_determinism(self) -> None:
+        raw = {
+            "zeta": {"tags": ["z"]},
+            "alpha": {"keywords": ["a"]},
+            "methods": {"keywords": ["m"], "fields": ["title"]},
+        }
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(
+            list(env.keys()),
+            [
+                "WALLATAG_FOCUS_alpha_KEYWORDS",
+                "WALLATAG_FOCUS_methods_KEYWORDS",
+                "WALLATAG_FOCUS_methods_FIELDS",
+                "WALLATAG_FOCUS_zeta_TAGS",
+            ],
+        )
+
+    def test_flow_variable_env_beats_container_env(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        def fake_get(name, default=None):
+            if name == "WALLATAG_IGNORE_TAGS":
+                return "from-var"
+            return default
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch("prefect_flows.wallabag_env_from_block", return_value={}), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_IGNORE_TAGS": "from-env"},
+                 clear=True,
+             ), \
+             patch("prefect_flows.Variable.get", side_effect=fake_get), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # Prefect Variables override container env vars (os.environ) for the
+        # same setting; the winning value is what reaches the subprocess.
+        self.assertEqual(captured["env"]["WALLATAG_IGNORE_TAGS"], "from-var")
+
+    def test_flow_focus_groups_json_beats_per_group_env_var(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        def fake_get(name, default=None):
+            if name == "WALLATAG_FOCUS_GROUPS":
+                return {"methods": {"keywords": ["from-json"]}}
+            return default
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch("prefect_flows.wallabag_env_from_block", return_value={}), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_FOCUS_methods_KEYWORDS": "from-env"},
+                 clear=True,
+             ), \
+             patch("prefect_flows.Variable.get", side_effect=fake_get), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        self.assertEqual(
+            captured["env"]["WALLATAG_FOCUS_methods_KEYWORDS"], "from-json"
+        )
+
+    def test_flow_tag_policy_param_still_wins_over_variable(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["args"] = args[0]
+            captured["env"] = kwargs["env"]
+            return completed
+
+        def fake_get(name, default=None):
+            if name == "WALLATAG_TAG_POLICY":
+                return "prefer-existing"
+            return default
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch("prefect_flows.wallabag_env_from_block", return_value={}), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch("prefect_flows.Variable.get", side_effect=fake_get), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(max_articles=50, tag_policy="all")
+
+        # The variable value still lands in the env, but the flow param wins
+        # via the --tag-policy CLI flag (CLI options outrank variables).
+        self.assertIn("--tag-policy", captured["args"])
+        self.assertEqual(captured["env"]["WALLATAG_TAG_POLICY"], "prefer-existing")
+
+    def test_flow_unchanged_when_variable_get_raises(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return completed
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch("prefect_flows.wallabag_env_from_block", return_value={}), \
+             patch.dict(
+                 os.environ,
+                 {"WALLATAG_IGNORE_TAGS": "from-env"},
+                 clear=True,
+             ), \
+             patch(
+                 "prefect_flows.Variable.get",
+                 side_effect=Exception("prefect server unreachable"),
+             ), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.prefect_flows.wallatag_batch.fn(max_articles=50)
+
+        # With Variable.get failing (no server), the flow behaves exactly as
+        # before this feature: container env wins and warnings are printed.
+        self.assertEqual(captured["env"], {"WALLATAG_IGNORE_TAGS": "from-env"})
+        self.assertIn("prefect variables not available", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
