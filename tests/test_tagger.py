@@ -952,6 +952,34 @@ class LLMTaggerPromptTest(unittest.TestCase):
 
         prompt = client.system_prompts[0]
         self.assertIn("ONLY choose from the provided existing tag vocabulary", prompt)
+        # Issue 3d24a04: the prefer-existing rule must NOT appear alongside the
+        # only-existing policy line (they contradict each other).
+        self.assertNotIn("prefer the same tags that already exist", prompt)
+
+    def test_system_prompt_prefer_existing_keeps_vocabulary_rule(self):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(
+            client, tag_policy="prefer-existing", existing_tags=["python"]
+        ).suggest(entry(title="x"))
+
+        prompt = client.system_prompts[0]
+        self.assertIn(
+            "prefer the same tags that already exist; only add new ones if they "
+            "really don't fit and are an important part of the text",
+            prompt,
+        )
+        self.assertNotIn("ONLY choose from the provided existing tag vocabulary", prompt)
+
+    def test_system_prompt_all_policy_omits_vocabulary_rule(self):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, tag_policy="all", existing_tags=["python"]).suggest(
+            entry(title="x")
+        )
+
+        prompt = client.system_prompts[0]
+        self.assertNotIn("prefer the same tags that already exist", prompt)
+        self.assertNotIn("ONLY choose from the provided existing tag vocabulary", prompt)
+        self.assertIn("new tags beyond the vocabulary are welcome", prompt)
 
     def test_user_prompt_contains_cleaned_content_and_metadata(self):
         client = FakeLLMClient("[]")

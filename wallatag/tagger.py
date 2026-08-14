@@ -412,10 +412,16 @@ class LLMTagger:
         lines = [
             "You are a tagging assistant for a personal read-it-later archive.",
             "Existing tag vocabulary: " + (", ".join(existing_tags) or "none") + ".",
-            # The vocabulary-preference rule is verbatim from the issue spec.
-            "prefer the same tags that already exist; only add new ones if they "
-            "really don't fit and are an important part of the text",
         ]
+        if self.tag_policy == "prefer-existing":
+            # The vocabulary-preference rule is verbatim from the issue spec.
+            # Only emitted under prefer-existing: under only-existing it would
+            # contradict the "ONLY choose from the provided vocabulary" policy
+            # line, and under "all" new tags are explicitly welcome.
+            lines.append(
+                "prefer the same tags that already exist; only add new ones if "
+                "they really don't fit and are an important part of the text"
+            )
         if self.use_focus_groups:
             # Groups with fields == () are explicitly disabled: their tags
             # never reach the LLM prompt's focus areas.
