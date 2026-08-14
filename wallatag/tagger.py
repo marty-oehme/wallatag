@@ -20,6 +20,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import sys
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Protocol
 
@@ -330,6 +331,12 @@ class LLMTagger:
     (explicitly disabled) are excluded from the focus areas, their tags never
     reach the prompt, while groups with ``fields is None`` or a non-empty
     tuple contribute their tags as before.
+
+    With ``verbose=True``, ``suggest()`` dumps the full system prompt, the
+    full user prompt and the raw model response (untruncated) to stderr with
+    a ``[debug]`` prefix, so an interactive ``wallatag manual --verbose`` run
+    shows exactly what is sent to and returned by the model. Default False:
+    no extra output is produced.
     """
 
     def __init__(
@@ -342,6 +349,7 @@ class LLMTagger:
         existing_tags: Iterable[str] = (),
         confidence_threshold: float = 0.7,
         use_focus_groups: bool = True,
+        verbose: bool = False,
     ) -> None:
         if tag_policy not in VALID_TAG_POLICIES:
             raise ValueError(
@@ -366,6 +374,8 @@ class LLMTagger:
             )
         if not isinstance(use_focus_groups, bool):
             raise ValueError("use_focus_groups must be a boolean")
+        if not isinstance(verbose, bool):
+            raise ValueError("verbose must be a boolean")
         self.client = client
         self.focus_groups = dict(focus_groups)
         self.max_suggestions = max_suggestions
@@ -373,6 +383,7 @@ class LLMTagger:
         self.existing_tags = list(existing_tags)
         self.confidence_threshold = float(confidence_threshold)
         self.use_focus_groups = use_focus_groups
+        self.verbose = verbose
 
     def _system_prompt(self) -> str:
         """Build the system prompt: role, vocabulary rule, focus, policy."""
@@ -465,11 +476,39 @@ class LLMTagger:
             )
         return result
 
+    def _debug_dump(
+        self,
+        entry: dict,
+        system_prompt: str,
+        user_prompt: str,
+        body: str,
+    ) -> None:
+        """Dump the prompts and the raw model response to stderr (verbose).
+
+        Every line is ``[debug]``-prefixed so multi-line prompts stay
+        readable, and nothing is truncated: the user sees exactly what was
+        sent to and returned by the model. Only ever called when
+        ``self.verbose`` is True.
+        """
+        header = f"[debug] LLM entry {entry.get('id')}"
+        for label, content in (
+            ("system prompt", system_prompt),
+            ("user prompt", user_prompt),
+            ("response", body),
+        ):
+            print(f"{header} {label}:", file=sys.stderr)
+            for line in content.splitlines() or [""]:
+                print(f"[debug]   {line}", file=sys.stderr)
+
     def suggest(self, entry: dict) -> list[TagSuggestion]:
         """Suggest tags for one entry; lets LLMError propagate to the caller."""
         system_prompt = self._system_prompt()
         user_prompt = self._user_prompt(entry)
         body = self.client.complete(system_prompt, user_prompt)
+        if self.verbose:
+            # Dump BEFORE parsing so a malformed/error response is still
+            # visible to an interactive verbose run.
+            self._debug_dump(entry, system_prompt, user_prompt, body)
         suggestions = [
             TagSuggestion(
                 tag=item["tag"],

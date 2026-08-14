@@ -158,6 +158,7 @@ def _build_tagger(
             existing_tags=existing_tags,
             confidence_threshold=config.ai.confidence_threshold,
             use_focus_groups=config.ai.use_focus_groups,
+            verbose=config.verbose,
         )
         fallback_tagger = None
         if config.ai.fallback_on_fail:

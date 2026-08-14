@@ -1,5 +1,7 @@
 """Tests for wallatag.tagger: the KeywordTagger and LLMTagger engines."""
 
+import contextlib
+import io
 import unittest
 
 from wallatag.config import FocusGroup
@@ -593,6 +595,7 @@ def make_llm_tagger(
     existing_tags=(),
     confidence_threshold=0.7,
     use_focus_groups=True,
+    verbose=False,
 ):
     return LLMTagger(
         client,
@@ -602,6 +605,7 @@ def make_llm_tagger(
         existing_tags=existing_tags,
         confidence_threshold=confidence_threshold,
         use_focus_groups=use_focus_groups,
+        verbose=verbose,
     )
 
 
@@ -963,6 +967,47 @@ class LLMTaggerFocusAreasTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             make_llm_tagger(FakeLLMClient("[]"), use_focus_groups=1)
         self.assertIn("use_focus_groups", str(ctx.exception))
+
+
+class LLMTaggerVerboseTest(unittest.TestCase):
+    """verbose=True dumps the full prompt + raw response to stderr."""
+
+    def test_verbose_dumps_prompts_and_response_to_stderr(self):
+        body = '[{"tag": "python", "confidence": 0.9}]'
+        client = FakeLLMClient(body)
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+            make_llm_tagger(client, verbose=True).suggest(
+                entry(title="Python tutorial", content="<p>hello world</p>")
+            )
+
+        dumped = stderr.getvalue()
+        # Header names the entry id; the full prompts and raw body are present.
+        self.assertIn("LLM entry 1 system prompt:", dumped)
+        self.assertIn(
+            "You are a tagging assistant for a personal read-it-later archive.",
+            dumped,
+        )
+        self.assertIn("LLM entry 1 user prompt:", dumped)
+        self.assertIn("Title: Python tutorial", dumped)
+        self.assertIn("LLM entry 1 response:", dumped)
+        self.assertIn(body, dumped)
+        # The debug dump is stderr-only: stdout stays clean.
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_default_verbose_false_silent(self):
+        client = FakeLLMClient('[{"tag": "python", "confidence": 0.9}]')
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+            make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_non_bool_verbose_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            make_llm_tagger(FakeLLMClient("[]"), verbose=1)
+        self.assertIn("verbose", str(ctx.exception))
 
 
 class LLMTaggerValidationTest(unittest.TestCase):
