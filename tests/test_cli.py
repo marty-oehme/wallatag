@@ -381,13 +381,14 @@ class BuildTaggerTest(unittest.TestCase):
             ),
         )
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client = _build_tagger(config, ["python", "rust"])
+            tagger, llm_client, fallback = _build_tagger(config, ["python", "rust"])
 
         client_cls.assert_called_once_with(
             "ollama", "http://localhost:11434", "qwen2.5:3b", api_key=""
         )
         self.assertIs(llm_client, client_cls.return_value)
         self.assertIsInstance(tagger, LLMTagger)
+        self.assertIsNone(fallback)
         self.assertEqual(tagger.confidence_threshold, 0.8)
         self.assertEqual(tagger.max_suggestions, 3)
         self.assertEqual(tagger.tag_policy, "only-existing")
@@ -418,9 +419,10 @@ class BuildTaggerTest(unittest.TestCase):
 
     def test_no_ai_selects_keyword_tagger(self):
         config = Config()
-        tagger, llm_client = _build_tagger(config, ["python"])
+        tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
+        self.assertIsNone(fallback)
 
     def test_ai_use_focus_groups_false_wired_to_tagger(self):
         # TOML `use_focus_groups = false` flows through load_config ->
@@ -442,7 +444,7 @@ class BuildTaggerTest(unittest.TestCase):
             )
             config = load_config(config_path=str(path), env={})
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client = _build_tagger(config, ["python"])
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, LLMTagger)
         self.assertFalse(tagger.use_focus_groups)
         self.assertIs(llm_client, client_cls.return_value)
@@ -450,14 +452,14 @@ class BuildTaggerTest(unittest.TestCase):
     def test_ai_use_focus_groups_default_true_wired_to_tagger(self):
         config = _ai_cfg()
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client = _build_tagger(config, ["python"])
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, LLMTagger)
         self.assertTrue(tagger.use_focus_groups)
 
     def test_ai_provider_empty_with_partial_ai_still_keyword(self):
         # Threshold-only [ai]: provider is empty -> keyword tagger, no client.
         config = dataclasses.replace(Config(), ai=AiConfig(confidence_threshold=0.9))
-        tagger, llm_client = _build_tagger(config, [])
+        tagger, llm_client, fallback = _build_tagger(config, [])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
 
@@ -468,14 +470,14 @@ class BuildTaggerTest(unittest.TestCase):
                 '[vocabulary]\nfields = ["title", "url"]\n', encoding="utf-8"
             )
             config = load_config(config_path=str(path), env={})
-            tagger, llm_client = _build_tagger(config, [])
+            tagger, llm_client, fallback = _build_tagger(config, [])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
         self.assertEqual(tagger.vocabulary_fields, ("title", "url"))
 
     def test_keyword_tagger_default_vocabulary_fields_all_four(self):
         config = Config()
-        tagger, _ = _build_tagger(config, [])
+        tagger, _, fallback = _build_tagger(config, [])
         self.assertEqual(
             tagger.vocabulary_fields, ("title", "url", "domain_name", "content")
         )
@@ -501,9 +503,10 @@ class BuildTaggerTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config = load_config(config_path=str(path), env={})
-            tagger, llm_client = _build_tagger(config, ["label"])
+            tagger, llm_client, fallback = _build_tagger(config, ["label"])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
+        self.assertIsNone(fallback)
         self.assertEqual(tagger.vocabulary_fields, ())
         self.assertEqual(tagger.focus_groups["x"].fields, ())
         entry = {
@@ -533,7 +536,7 @@ class BuildTaggerTest(unittest.TestCase):
         # [ai] fully configured AND enable_llm = true -> LLMTagger.
         config = self._load_toml(self.AI_TOML + "\n[tagger]\nenable_llm = true\n")
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client = _build_tagger(config, ["python"])
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, LLMTagger)
         self.assertIs(llm_client, client_cls.return_value)
 
@@ -542,7 +545,7 @@ class BuildTaggerTest(unittest.TestCase):
         # no longer activates the LLM tagger.
         config = self._load_toml(self.AI_TOML)
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client = _build_tagger(config, ["python"])
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
         client_cls.assert_not_called()
@@ -552,7 +555,7 @@ class BuildTaggerTest(unittest.TestCase):
             self.AI_TOML + "\n[tagger]\nenable_llm = false\n"
         )
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client = _build_tagger(config, ["python"])
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
         client_cls.assert_not_called()
@@ -561,17 +564,19 @@ class BuildTaggerTest(unittest.TestCase):
         # The switch alone cannot enable the LLM: the provider trio is still
         # required.
         config = self._load_toml("[tagger]\nenable_llm = true\n")
-        tagger, llm_client = _build_tagger(config, ["python"])
+        tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
+        self.assertIsNone(fallback)
 
     def test_keyword_tagger_receives_enable_switches_from_config(self):
         config = self._load_toml(
             "[tagger]\nenable_vocabulary = false\nenable_rules = false\n"
         )
-        tagger, llm_client = _build_tagger(config, ["python"])
+        tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
+        self.assertIsNone(fallback)
         self.assertFalse(tagger.enable_vocabulary)
         self.assertFalse(tagger.enable_rules)
         # The switch flags land on the tagger AND actually gate suggest().
@@ -579,9 +584,119 @@ class BuildTaggerTest(unittest.TestCase):
 
     def test_keyword_tagger_default_switches_enabled(self):
         config = Config()
-        tagger, _ = _build_tagger(config, ["python"])
+        tagger, _, fallback = _build_tagger(config, ["python"])
         self.assertTrue(tagger.enable_vocabulary)
         self.assertTrue(tagger.enable_rules)
+
+    # --- [ai] fallback_on_fail (issue d5535d0) ---
+
+    def test_fallback_on_fail_builds_keyword_fallback(self):
+        # [ai] trio + enable_llm + fallback_on_fail -> 3-tuple whose third
+        # element is a KeywordTagger mirroring the keyword-mode construction.
+        config = dataclasses.replace(
+            _ai_cfg(threshold=0.8),
+            tagger=TaggerConfig(
+                max_suggestions=3,
+                tag_policy="only-existing",
+                focus_groups={"a": config_focus_group()},
+                enable_llm=True,
+            ),
+            ai=AiConfig(
+                provider="ollama",
+                base_url="http://localhost:11434",
+                model="qwen2.5:3b",
+                confidence_threshold=0.8,
+                fallback_on_fail=True,
+            ),
+        )
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client, fallback = _build_tagger(config, ["python", "rust"])
+
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertIs(llm_client, client_cls.return_value)
+        self.assertIsInstance(fallback, KeywordTagger)
+        # Same construction params as a normal keyword-mode run: same focus
+        # groups, max_suggestions, tag_policy, existing tags, and the
+        # enable_vocabulary/enable_rules switches.
+        self.assertEqual(fallback.focus_groups, tagger.focus_groups)
+        self.assertEqual(fallback.max_suggestions, 3)
+        self.assertEqual(fallback.tag_policy, "only-existing")
+        self.assertEqual(fallback.existing_tags, ["python", "rust"])
+        self.assertTrue(fallback.enable_vocabulary)
+        self.assertTrue(fallback.enable_rules)
+
+    def test_fallback_on_fail_default_false_no_fallback(self):
+        # Same config minus fallback_on_fail (default false): 3rd element None.
+        config = _ai_cfg()
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertIs(llm_client, client_cls.return_value)
+        self.assertIsNone(fallback)
+
+    def test_fallback_on_fail_explicit_false_no_fallback(self):
+        config = dataclasses.replace(
+            _ai_cfg(),
+            ai=dataclasses.replace(_ai_cfg().ai, fallback_on_fail=False),
+        )
+        with patch("wallatag.cli.LLMClient") as client_cls:
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertIsNone(fallback)
+
+    def test_fallback_on_fail_without_enable_llm_ignored(self):
+        # No enable_llm -> KeywordTagger as the tagger and NO fallback at all
+        # (a keyword fallback behind a keyword tagger would be a no-op).
+        config = dataclasses.replace(
+            Config(),
+            ai=AiConfig(
+                provider="ollama",
+                base_url="http://localhost:11434",
+                model="qwen2.5:3b",
+                fallback_on_fail=True,
+            ),
+        )
+        tagger, llm_client, fallback = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, KeywordTagger)
+        self.assertIsNone(llm_client)
+        self.assertIsNone(fallback)
+
+    def test_fallback_respects_enable_switches_and_vocabulary_fields(self):
+        # The fallback KeywordTagger receives enable_vocabulary/enable_rules
+        # and vocabulary_fields from config, exactly like the non-LLM branch.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    "[ai]\n"
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                    "fallback_on_fail = true\n"
+                    "\n"
+                    "[tagger]\n"
+                    "enable_llm = true\n"
+                    "enable_vocabulary = false\n"
+                    "enable_rules = false\n"
+                    "\n"
+                    "[vocabulary]\n"
+                    'fields = ["title"]\n'
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(config_path=str(path), env={})
+        with patch("wallatag.cli.LLMClient"):
+            tagger, llm_client, fallback = _build_tagger(config, ["python"])
+        self.assertIsInstance(tagger, LLMTagger)
+        self.assertIsNotNone(llm_client)
+        self.assertIsInstance(fallback, KeywordTagger)
+        self.assertFalse(fallback.enable_vocabulary)
+        self.assertFalse(fallback.enable_rules)
+        self.assertEqual(fallback.vocabulary_fields, ("title",))
+        # The switches actually gate the fallback's suggest(): nothing matches.
+        self.assertEqual(
+            fallback.suggest({"title": "python", "content": "x"}), []
+        )
 
 
 class CmdRunAiSelectionTest(unittest.TestCase):
@@ -698,6 +813,92 @@ class StatusAiLineTest(unittest.TestCase):
             text = out.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("(llm enabled=no; set [tagger] enable_llm = true)", text)
+
+    def test_status_marks_fallback_when_fallback_on_fail(self):
+        # [ai] fallback_on_fail=true with the LLM enabled: the ai line gains a
+        # compact "(llm fallback on)" marker appended after the confidence
+        # marker; the rest of the enabled-line format is unchanged.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    '[ai]\n'
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                    'confidence_threshold = 0.8\n'
+                    'fallback_on_fail = true\n'
+                    '\n'
+                    '[tagger]\n'
+                    'enable_llm = true\n'
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "ai: provider=ollama model=qwen2.5:3b "
+            "(confidence_threshold=0.8) (llm fallback on)",
+            text,
+        )
+
+    def test_status_marks_fallback_even_when_llm_disabled(self):
+        # fallback_on_fail=true with enable_llm absent (default false): the
+        # fallback marker is appended after the enable_llm note.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    '[ai]\n'
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                    'fallback_on_fail = true\n'
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "(llm enabled=no; set [tagger] enable_llm = true) (llm fallback on)",
+            text,
+        )
+
+    def test_status_no_fallback_marker_when_false(self):
+        # fallback_on_fail absent (default false): the enabled ai line is
+        # byte-identical to the pre-change output (no fallback marker).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                (
+                    '[ai]\n'
+                    'provider = "ollama"\n'
+                    'base_url = "http://localhost:11434"\n'
+                    'model = "qwen2.5:3b"\n'
+                    'confidence_threshold = 0.8\n'
+                    '\n'
+                    '[tagger]\n'
+                    'enable_llm = true\n'
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "ai: provider=ollama model=qwen2.5:3b "
+            "(confidence_threshold=0.8)\n",
+            text,
+        )
+        self.assertNotIn("llm fallback", text)
 
     def test_status_ai_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:

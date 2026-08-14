@@ -127,13 +127,21 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
 
 def _build_tagger(
     config: Config, existing_tags: list[str]
-) -> tuple[KeywordTagger | LLMTagger, LLMClient | None]:
-    """Build the tagger selected by config; returns (tagger, llm_client).
+) -> tuple[KeywordTagger | LLMTagger, LLMClient | None, KeywordTagger | None]:
+    """Build the tagger selected by config; returns
+    (tagger, llm_client, fallback_tagger).
 
     The LLM tagger is active iff ``config.ai.provider`` is non-empty AND
     ``config.tagger.enable_llm`` is true; otherwise KeywordTagger is used.
     The returned ``llm_client`` (when not None) owns a session and MUST
     be closed by the caller alongside the wallabag client and store.
+
+    When the LLM tagger is active AND ``config.ai.fallback_on_fail`` is true,
+    ``fallback_tagger`` is a KeywordTagger built exactly like a normal
+    keyword-mode run (same focus groups, max_suggestions, tag_policy,
+    existing tags, vocabulary fields and enable_vocabulary/enable_rules
+    switches): the pipelines use it to tag an article the LLM failed on,
+    per-article. Otherwise ``fallback_tagger`` is None.
     """
     if config.ai.provider and config.tagger.enable_llm:
         llm_client = LLMClient(
@@ -151,7 +159,22 @@ def _build_tagger(
             confidence_threshold=config.ai.confidence_threshold,
             use_focus_groups=config.ai.use_focus_groups,
         )
-        return tagger, llm_client
+        fallback_tagger = None
+        if config.ai.fallback_on_fail:
+            # Keyword-mode fallback for articles the LLM fails on: mirror the
+            # non-LLM branch construction so it behaves exactly like a normal
+            # keyword-mode run (enable_vocabulary/enable_rules/tag_policy all
+            # apply).
+            fallback_tagger = KeywordTagger(
+                config.tagger.focus_groups,
+                max_suggestions=config.tagger.max_suggestions,
+                tag_policy=config.tagger.tag_policy,
+                existing_tags=existing_tags,
+                vocabulary_fields=config.vocabulary.fields,
+                enable_vocabulary=config.tagger.enable_vocabulary,
+                enable_rules=config.tagger.enable_rules,
+            )
+        return tagger, llm_client, fallback_tagger
     tagger = KeywordTagger(
         config.tagger.focus_groups,
         max_suggestions=config.tagger.max_suggestions,
@@ -161,7 +184,7 @@ def _build_tagger(
         enable_vocabulary=config.tagger.enable_vocabulary,
         enable_rules=config.tagger.enable_rules,
     )
-    return tagger, None
+    return tagger, None, None
 
 
 def cmd_manual(config: Config, args: argparse.Namespace) -> int:
@@ -192,7 +215,7 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
         print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
         client.close()
         return 2
-    tagger, llm_client = _build_tagger(config, existing_tags)
+    tagger, llm_client, fallback_tagger = _build_tagger(config, existing_tags)
     # Store creation is guarded so a sqlite failure (e.g. unwritable path)
     # reports cleanly and never leaks the client connection.
     store = None
@@ -205,7 +228,14 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
             llm_client.close()
         return 2
     try:
-        summary = run_manual(client, tagger, store, config, dry_run=args.no_apply)
+        summary = run_manual(
+            client,
+            tagger,
+            store,
+            config,
+            dry_run=args.no_apply,
+            fallback_tagger=fallback_tagger,
+        )
     except KeyboardInterrupt:
         # Clean exit on Ctrl-C: exit 130, close resources via finally.
         print("interrupted: exiting", file=sys.stderr)
@@ -260,7 +290,7 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
         print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
         client.close()
         return 2
-    tagger, llm_client = _build_tagger(config, existing_tags)
+    tagger, llm_client, fallback_tagger = _build_tagger(config, existing_tags)
     # Store creation is guarded so a sqlite failure (e.g. unwritable path)
     # reports cleanly and never leaks the client connection.
     store = None
@@ -273,7 +303,14 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
             llm_client.close()
         return 2
     try:
-        summary = run_auto(client, tagger, store, config, dry_run=args.no_apply)
+        summary = run_auto(
+            client,
+            tagger,
+            store,
+            config,
+            dry_run=args.no_apply,
+            fallback_tagger=fallback_tagger,
+        )
     except KeyboardInterrupt:
         # Clean exit on Ctrl-C: exit 130, close resources via finally.
         print("interrupted: exiting", file=sys.stderr)
@@ -304,16 +341,22 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
     print(f"tagger: policy={tagger.tag_policy} max_suggestions={tagger.max_suggestions}")
     ai = config.ai
     if ai.provider:
+        # (llm fallback on) mirrors the parenthetical marker style of the
+        # enable_llm note below; it appears only when [ai] fallback_on_fail
+        # is set, so non-fallback runs stay byte-identical.
+        fallback_marker = " (llm fallback on)" if ai.fallback_on_fail else ""
         if tagger.enable_llm:
             print(
                 f"ai: provider={ai.provider} model={ai.model} "
                 f"(confidence_threshold={ai.confidence_threshold})"
+                f"{fallback_marker}"
             )
         else:
             print(
                 f"ai: provider={ai.provider} model={ai.model} "
                 f"(confidence_threshold={ai.confidence_threshold}) "
                 f"(llm enabled=no; set [tagger] enable_llm = true)"
+                f"{fallback_marker}"
             )
     else:
         print("ai: not configured")

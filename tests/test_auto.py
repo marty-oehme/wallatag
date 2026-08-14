@@ -142,12 +142,16 @@ class AutoBase(unittest.TestCase):
         for handler in list(root.handlers):
             root.removeHandler(handler)
 
-    def run_auto(self, client, tagger=None, store=None, cfg=None, dry_run=False):
+    def run_auto(self, client, tagger=None, store=None, cfg=None, dry_run=False,
+                 fallback_tagger=None):
         tagger = tagger if tagger is not None else make_tagger()
         store = store if store is not None else Store(None)
         cfg = cfg if cfg is not None else Config()
         with self.assertLogs("wallatag.auto", level="INFO") as cm:
-            summary = run_auto(client, tagger, store, cfg, dry_run=dry_run)
+            summary = run_auto(
+                client, tagger, store, cfg, dry_run=dry_run,
+                fallback_tagger=fallback_tagger,
+            )
         return summary, cm.output
 
     def cmd_run(self, client=None, cfg=None, args=None):
@@ -484,6 +488,320 @@ class LLMDeferralTest(AutoBase):
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
             self.assertEqual(seen, 0)
         self.assertEqual(summary.llm_failed, 1)
+
+
+class LLMFallbackTest(AutoBase):
+    """[ai] fallback_on_fail: the keyword tagger takes over per-article when
+    the LLM fails, and the fallback respects the keyword-mode switches."""
+
+    def test_fallback_suggests_and_tags(self):
+        # (a) LLM fails, the keyword fallback suggests -> the article is
+        # tagged via the normal apply path, counted as llm_fallback, and NOT
+        # unmarked (it stays seen like any successfully tagged article).
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, messages = self.run_auto(
+                    client,
+                    tagger=RaisingTagger(),
+                    store=store,
+                    fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+                )
+                self.assertTrue(store.is_seen(1))
+            finally:
+                store.close()
+
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped,
+             summary.llm_failed, summary.llm_fallback),
+            (1, 1, 0, 0, 1),
+        )
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertTrue(any("tagged 1" in m for m in messages))
+        line = summary_line(summary)
+        self.assertIn(", 1 via fallback", line)
+        self.assertNotIn("llm failures", line)
+
+    def test_fallback_empty_keeps_llm_failure_path(self):
+        # (b) The fallback yields nothing: exactly today's failure path —
+        # skipped, llm_failed, and the article unmarked when not dry_run.
+        client = FakeClient(entries=[entry(1, "unrelated soup")])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, messages = self.run_auto(
+                    client,
+                    tagger=RaisingTagger(),
+                    store=store,
+                    fallback_tagger=make_tagger(),  # no groups/tags -> nothing
+                )
+                self.assertFalse(store.is_seen(1))
+            finally:
+                store.close()
+
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped,
+             summary.llm_failed, summary.llm_fallback),
+            (1, 0, 1, 1, 0),
+        )
+        self.assertEqual(client.add_calls, [])
+        self.assertTrue(any("LLM tagging failed 1" in m for m in messages))
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 0 articles (0 tags applied), skipped 1, 1 llm failures",
+        )
+
+    def test_fallback_itself_failing_keeps_llm_failure_path(self):
+        # A fallback tagger that raises must be swallowed: [] and today's path.
+        class FailingFallback:
+            def suggest(self, entry):
+                raise RuntimeError("fallback exploded")
+
+        client = FakeClient(entries=[entry(1, "first")])
+        summary, messages = self.run_auto(
+            client, tagger=RaisingTagger(), fallback_tagger=FailingFallback()
+        )
+        self.assertEqual(
+            (summary.skipped, summary.llm_failed, summary.llm_fallback),
+            (1, 1, 0),
+        )
+        self.assertTrue(any("LLM tagging failed 1" in m for m in messages))
+
+    def test_no_fallback_default_unchanged(self):
+        # (c) No fallback (default): today's path, byte-identical summary.
+        client = FakeClient(entries=[entry(1, "first")])
+        summary, _ = self.run_auto(client, tagger=RaisingTagger())
+        self.assertEqual((summary.skipped, summary.llm_failed), (1, 1))
+        self.assertEqual(summary.llm_fallback, 0)
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 0 articles (0 tags applied), skipped 1, 1 llm failures",
+        )
+
+    def test_fallback_respects_enable_vocabulary_false(self):
+        # (d) A fallback with enable_vocabulary=False emits no source
+        # "vocabulary" suggestions: only rule suggestions apply, and the
+        # decision log records the "rules" source.
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        fallback = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="all",
+            existing_tags=["Pomodoro"],
+            enable_vocabulary=False,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_auto(
+                    client,
+                    tagger=RaisingTagger(),
+                    store=store,
+                    fallback_tagger=fallback,
+                )
+            finally:
+                store.close()
+
+            self.assertEqual(client.add_calls, [(1, ["productivity"])])
+            self.assertEqual(
+                decision_rows(db), [(1, "productivity", "accept", "rules")]
+            )
+        self.assertEqual((summary.tagged, summary.llm_fallback), (1, 1))
+        self.assertIn(", 1 via fallback", summary_line(summary))
+
+    def test_fallback_uses_keyword_sources_in_decisions(self):
+        # Fallback suggestions carry their real sources into the decision log
+        # (vocabulary + rules), exactly like a keyword-mode run.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro guide")], tags=["Pomodoro"]
+        )
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        fallback = make_tagger(
+            existing_tags=["Pomodoro"], groups=groups, tag_policy="all"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_auto(
+                    client,
+                    tagger=RaisingTagger(),
+                    store=store,
+                    fallback_tagger=fallback,
+                )
+            finally:
+                store.close()
+
+            self.assertEqual(summary.tags_applied, 2)
+            self.assertEqual(
+                decision_rows(db),
+                [
+                    (1, "Pomodoro", "accept", "vocabulary"),
+                    (1, "productivity", "accept", "rules"),
+                ],
+            )
+
+    def test_fallback_dry_run_has_no_side_effects(self):
+        # Dry-run fallback success: nothing is written and nothing is unmarked
+        # (nothing was marked in the first place).
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_auto(
+                    client,
+                    tagger=RaisingTagger(),
+                    store=store,
+                    dry_run=True,
+                    fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+                )
+            finally:
+                store.close()
+
+            with sqlite3.connect(db) as conn:
+                seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+            self.assertEqual(seen, 0)
+        self.assertEqual((summary.tagged, summary.llm_fallback), (1, 1))
+        self.assertEqual(client.add_calls, [])
+
+    def test_summary_line_via_fallback_suffix(self):
+        # (e) ", N via fallback" is appended after the llm-failures segment.
+        summary = AutoSummary(
+            presented=1, tagged=1, tags_applied=1, llm_fallback=2
+        )
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 1 articles (1 tags applied), skipped 0, 2 via fallback",
+        )
+        self.assertEqual(
+            summary_line(summary, dry_run=True),
+            "dry run: would tag 1 articles (1 tags), skipped 0, 2 via fallback",
+        )
+        # Both segments stack, fallback LAST.
+        summary = AutoSummary(
+            presented=2, tagged=1, tags_applied=1, skipped=1,
+            llm_failed=1, llm_fallback=1,
+        )
+        self.assertEqual(
+            summary_line(summary),
+            "run: tagged 1 articles (1 tags applied), skipped 1, "
+            "1 llm failures, 1 via fallback",
+        )
+
+    def test_fallback_per_article_scope(self):
+        # (g) Per-article scope: the LLM is still tried on subsequent articles.
+        # A stub whose suggest() raises once then succeeds proves the LLM keeps
+        # being used after a fallback.
+        calls = []
+
+        class FlakyTagger:
+            def suggest(self, entry):
+                calls.append(entry["id"])
+                if entry["id"] == 1:
+                    raise LLMError("model unavailable", status=500)
+                return []
+
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus"), entry(2, "second")]
+        )
+        summary, _ = self.run_auto(
+            client,
+            tagger=FlakyTagger(),
+            fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+        )
+        # Article 1: LLM failed -> fallback suggested Pomodoro -> tagged.
+        # Article 2: LLM (still tried) succeeded with no suggestions -> skipped.
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual((summary.tagged, summary.skipped), (1, 1))
+        self.assertEqual((summary.llm_failed, summary.llm_fallback), (0, 1))
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+
+    def test_fallback_not_counted_when_add_tags_fails(self):
+        # (a) The fallback suggested tags but add_tags raised: the article is
+        # seen-but-untagged (pre-existing apply-path behavior), so it must NOT
+        # be counted "via fallback" — no contradictory "1 via fallback" next
+        # to "tagged 0".
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            fail_first=1,  # the only add_tags call fails
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, messages = self.run_auto(
+                    client,
+                    tagger=RaisingTagger(),
+                    store=store,
+                    fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped,
+             summary.llm_failed, summary.llm_fallback),
+            (1, 0, 0, 0, 0),
+        )
+        self.assertEqual(client.add_calls, [])
+        self.assertTrue(any("tagging failed 1" in m for m in messages))
+        self.assertNotIn("via fallback", summary_line(summary))
+
+    def test_fallback_not_counted_when_deduped_tags_empty(self):
+        # (b) A fallback that reports suggestions whose tags dedupe to nothing
+        # (a truthy non-list iterable yielding no suggestions bypasses the
+        # `if not suggestions` check): the article is skipped and the fallback
+        # is NOT counted — no contradictory "skipped 1, 1 via fallback".
+        class EmptyTagsFallback:
+            def suggest(self, entry):
+                return (s for s in ())  # truthy, but yields no suggestions
+
+        client = FakeClient(entries=[entry(1, "first")])
+        summary, messages = self.run_auto(
+            client,
+            tagger=RaisingTagger(),
+            fallback_tagger=EmptyTagsFallback(),
+        )
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped,
+             summary.llm_failed, summary.llm_fallback),
+            (1, 0, 1, 0, 0),
+        )
+        self.assertEqual(client.add_calls, [])
+        self.assertNotIn("via fallback", summary_line(summary))
+        self.assertTrue(any("no suggestions: 1" in m for m in messages))
+
+    def test_fallback_rescued_logs_warning_not_error(self):
+        # (c) A rescued fallback is logged at WARNING, not ERROR: the article
+        # is still tagged, so ERROR is reserved for when the fallback also
+        # fails (or is not configured).
+        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        with self.assertLogs("wallatag.auto", level="INFO") as cm:
+            run_auto(
+                client,
+                RaisingTagger(),
+                Store(None),
+                Config(),
+                fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+            )
+        levels = {record.levelname for record in cm.records}
+        self.assertIn("WARNING", levels)
+        self.assertNotIn("ERROR", levels)
+        self.assertTrue(
+            any(
+                record.levelname == "WARNING"
+                and "LLM tagging failed 1" in record.getMessage()
+                and "keyword fallback applied" in record.getMessage()
+                for record in cm.records
+            )
+        )
 
 
 class DecisionsTest(AutoBase):

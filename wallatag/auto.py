@@ -20,6 +20,7 @@ import requests
 
 from wallatag.config import Config
 from wallatag.llm import LLMError
+from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class AutoSummary:
     tags_applied: int = 0
     skipped: int = 0
     llm_failed: int = 0
+    llm_fallback: int = 0
     feed_error: bool = False
     dry_run: bool = False
 
@@ -52,14 +54,29 @@ def summary_line(summary: AutoSummary, *, dry_run: bool = False) -> str:
         line += ", feed error"
     if summary.llm_failed > 0:
         line += f", {summary.llm_failed} llm failures"
+    if summary.llm_fallback > 0:
+        line += f", {summary.llm_fallback} via fallback"
     return line
 
 
-def run_auto(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> AutoSummary:
+def run_auto(
+    client,
+    tagger,
+    store,
+    cfg: Config,
+    *,
+    dry_run: bool = False,
+    fallback_tagger: KeywordTagger | None = None,
+) -> AutoSummary:
     """Run the headless batch loop; returns an AutoSummary.
 
     ``client`` only needs iter_untagged/get_tags/add_tags/close. ``store`` may
     be a history-less Store(None). In dry-run mode no writes happen at all.
+
+    ``fallback_tagger`` (optional, keyword-only) is the keyword tagger used
+    when the LLM tagger fails for an article ([ai] fallback_on_fail): it
+    behaves exactly like a normal keyword-mode run, per-article, and the LLM
+    is still tried on subsequent articles.
     """
     summary = AutoSummary(dry_run=dry_run)
     # The genexpr lives INSIDE the try: a genexpr evaluates its outermost
@@ -79,17 +96,51 @@ def run_auto(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> Au
                 store.mark_seen(entry_id)  # pick-up: dedupe concurrent runs
             summary.presented += 1
 
+            used_fallback = False
             try:
                 suggestions = tagger.suggest(entry)
             except LLMError as exc:
                 # A model failure is an article-level skip, not a feed failure:
-                # keep going with the rest of the run.
-                logger.error("LLM tagging failed %s: %s", entry_id, exc)
-                summary.skipped += 1
-                summary.llm_failed += 1
-                if not dry_run:
-                    store.unmark_seen(entry_id)  # defer: keep the article in the queue
-                continue
+                # keep going with the rest of the run. With [ai]
+                # fallback_on_fail configured, the keyword tagger takes over
+                # for THIS article only (the LLM is still tried on subsequent
+                # ones). The fallback is built exactly like a normal keyword-
+                # mode run, so enable_vocabulary/enable_rules/tag_policy all
+                # apply and its suggestions carry the usual "vocabulary"/
+                # "rules" sources into the shared apply path below.
+                if fallback_tagger is None:
+                    # No fallback: the failure is final for this article.
+                    logger.error("LLM tagging failed %s: %s", entry_id, exc)
+                    summary.skipped += 1
+                    summary.llm_failed += 1
+                    if not dry_run:
+                        store.unmark_seen(entry_id)  # defer: keep the article in the queue
+                    continue
+                try:
+                    suggestions = fallback_tagger.suggest(entry)
+                except Exception:
+                    suggestions = []
+                if not suggestions:
+                    # The fallback yielded nothing (or failed): keep today's
+                    # LLM-failure path (the article is NOT counted via
+                    # fallback).
+                    logger.error("LLM tagging failed %s: %s", entry_id, exc)
+                    summary.skipped += 1
+                    summary.llm_failed += 1
+                    if not dry_run:
+                        store.unmark_seen(entry_id)  # defer: keep the article in the queue
+                    continue
+                # The keyword fallback rescued this article: report the failure
+                # as a WARNING (the article is still tagged below), and count
+                # it as "via fallback" only once the apply path actually
+                # succeeds below — empty deduped tags or add_tags failures do
+                # NOT count.
+                logger.warning(
+                    "LLM tagging failed %s: %s (keyword fallback applied)",
+                    entry_id,
+                    exc,
+                )
+                used_fallback = True
             tags = sorted({suggestion.tag for suggestion in suggestions})
             logger.debug(
                 "entry %s: %s", entry_id, ", ".join(tags) or "(no suggestions)"
@@ -100,6 +151,8 @@ def run_auto(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> Au
                     logger.info("would tag %s: %s", entry_id, ", ".join(tags))
                     summary.tagged += 1
                     summary.tags_applied += len(tags)
+                    if used_fallback:
+                        summary.llm_fallback += 1
                 else:
                     logger.info("would skip %s", entry_id)
                     summary.skipped += 1
@@ -117,6 +170,8 @@ def run_auto(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> Au
             logger.info("tagged %s: %s", entry_id, ", ".join(tags))
             summary.tagged += 1
             summary.tags_applied += len(tags)
+            if used_fallback:
+                summary.llm_fallback += 1
             for suggestion in suggestions:
                 store.record_decision(
                     entry_id, suggestion.tag, "accept", suggestion.source

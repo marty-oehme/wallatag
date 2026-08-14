@@ -73,3 +73,9 @@ api_key = ""                      # optional: bearer token for openai-compatible
 # (the "Focus areas" line is omitted); focus-group keywords matter only for the
 # keyword tagger. Env override: WALLATAG_AI_USE_FOCUS_GROUPS (true/1/yes, false/0/no).
 use_focus_groups = true
+# When true and the LLM tagger fails for an article (after retries are
+# exhausted), the keyword tagger takes over for that article (per-article
+# scope; the LLM is still tried on subsequent articles). The fallback behaves
+# exactly like a normal keyword-mode run. Env override:
+# WALLATAG_AI_FALLBACK_ON_FAIL (true/1/yes, false/0/no).
+fallback_on_fail = false

@@ -392,6 +392,20 @@ class AiConfigTomlTest(unittest.TestCase):
                 '[ai]\nprovider = "ollama"\nmodel = "qwen2.5:3b"\n'
             )
 
+    def test_partial_trio_with_fallback_on_fail_still_raises(self):
+        # [ai] fallback_on_fail does NOT relax the atomic provider/base_url/
+        # model trio: a partial trio (provider + fallback_on_fail only) must
+        # still raise ConfigError.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load(
+                '[ai]\n'
+                'provider = "openai-compatible"\n'
+                'fallback_on_fail = true\n'
+            )
+        self.assertIn("provider", str(ctx.exception))
+        self.assertIn("base_url", str(ctx.exception))
+        self.assertIn("model", str(ctx.exception))
+
     def test_bad_provider_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load(
@@ -534,6 +548,21 @@ class AiConfigEnvTest(unittest.TestCase):
                 },
             )
 
+    def test_env_fallback_on_fail_does_not_relax_trio(self):
+        # fallback_on_fail via env does not make the provider trio optional:
+        # provider alone still raises, naming all three trio vars.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load(
+                "",
+                {
+                    "WALLATAG_AI_PROVIDER": "openai-compatible",
+                    "WALLATAG_AI_FALLBACK_ON_FAIL": "true",
+                },
+            )
+        self.assertIn("WALLATAG_AI_PROVIDER", str(ctx.exception))
+        self.assertIn("WALLATAG_AI_BASE_URL", str(ctx.exception))
+        self.assertIn("WALLATAG_AI_MODEL", str(ctx.exception))
+
 
 class AiUseFocusGroupsTomlTest(unittest.TestCase):
     """[ai] use_focus_groups: strict boolean, default True, trio-independent."""
@@ -640,6 +669,109 @@ class AiUseFocusGroupsEnvTest(unittest.TestCase):
             {"WALLATAG_AI_USE_FOCUS_GROUPS": "0"},
         )
         self.assertFalse(config.ai.use_focus_groups)
+
+
+class AiFallbackOnFailTomlTest(unittest.TestCase):
+    """[ai] fallback_on_fail: strict boolean, default False, trio-independent."""
+
+    def _load(self, toml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_explicit_true(self):
+        config = self._load("[ai]\nfallback_on_fail = true\n")
+        self.assertTrue(config.ai.fallback_on_fail)
+
+    def test_explicit_false(self):
+        config = self._load("[ai]\nfallback_on_fail = false\n")
+        self.assertFalse(config.ai.fallback_on_fail)
+
+    def test_absent_defaults_false(self):
+        config = self._load("")
+        self.assertFalse(config.ai.fallback_on_fail)
+        # An empty [ai] table also keeps the default False.
+        config = self._load("[ai]\n")
+        self.assertFalse(config.ai.fallback_on_fail)
+
+    def test_string_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[ai]\nfallback_on_fail = "yes"\n')
+        message = str(ctx.exception)
+        self.assertIn("fallback_on_fail", message)
+        self.assertIn("boolean", message)
+
+    def test_number_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[ai]\nfallback_on_fail = 1\n")
+        self.assertIn("fallback_on_fail", str(ctx.exception))
+
+    def test_independent_of_trio(self):
+        # fallback_on_fail alone, without provider/base_url/model, is valid
+        # (LLM stays disabled but the flag is applied), like api_key.
+        config = self._load("[ai]\nfallback_on_fail = true\n")
+        self.assertTrue(config.ai.fallback_on_fail)
+        self.assertEqual(config.ai.provider, "")
+
+    def test_default_false_keeps_existing_ai_behavior(self):
+        # A full [ai] block without the flag keeps the default False.
+        config = self._load(
+            '[ai]\n'
+            'provider = "ollama"\n'
+            'base_url = "http://localhost:11434"\n'
+            'model = "qwen2.5:3b"\n'
+        )
+        self.assertFalse(config.ai.fallback_on_fail)
+
+
+class AiFallbackOnFailEnvTest(unittest.TestCase):
+    """WALLATAG_AI_FALLBACK_ON_FAIL overlays [ai] fallback_on_fail."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_true_values(self):
+        for value in ("true", "1", "yes", "TRUE", " Yes "):
+            config = self._env_load(
+                "", {"WALLATAG_AI_FALLBACK_ON_FAIL": value}
+            )
+            self.assertTrue(config.ai.fallback_on_fail, value)
+
+    def test_env_false_values(self):
+        for value in ("false", "0", "no", "False", " NO "):
+            config = self._env_load(
+                "", {"WALLATAG_AI_FALLBACK_ON_FAIL": value}
+            )
+            self.assertFalse(config.ai.fallback_on_fail, value)
+
+    def test_env_invalid_values_raise(self):
+        for value in ("banana", ""):
+            with self.assertRaises(ConfigError) as ctx:
+                self._env_load("", {"WALLATAG_AI_FALLBACK_ON_FAIL": value})
+            self.assertIn("WALLATAG_AI_FALLBACK_ON_FAIL", str(ctx.exception))
+
+    def test_env_without_trio_valid(self):
+        # Provider absent (no trio): config loads fine and the flag applies.
+        config = self._env_load("", {"WALLATAG_AI_FALLBACK_ON_FAIL": "true"})
+        self.assertTrue(config.ai.fallback_on_fail)
+        self.assertEqual(config.ai.provider, "")
+
+    def test_env_overrides_toml(self):
+        # Env wins over the TOML value, both directions.
+        config = self._env_load(
+            "[ai]\nfallback_on_fail = false\n",
+            {"WALLATAG_AI_FALLBACK_ON_FAIL": "true"},
+        )
+        self.assertTrue(config.ai.fallback_on_fail)
+        config = self._env_load(
+            "[ai]\nfallback_on_fail = true\n",
+            {"WALLATAG_AI_FALLBACK_ON_FAIL": "0"},
+        )
+        self.assertFalse(config.ai.fallback_on_fail)
 
 
 class TaggerEnvTest(unittest.TestCase):

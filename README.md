@@ -48,6 +48,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | AI confidence threshold  | `[ai] confidence_threshold` | `WALLATAG_AI_CONFIDENCE_THRESHOLD` |
 | AI API key               | `[ai] api_key`              | `WALLATAG_AI_API_KEY`              |
 | Use focus groups         | `[ai] use_focus_groups`     | `WALLATAG_AI_USE_FOCUS_GROUPS`     |
+| AI fallback on failure   | `[ai] fallback_on_fail`     | `WALLATAG_AI_FALLBACK_ON_FAIL`     |
 | Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
 | Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
 | Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
@@ -140,6 +141,19 @@ activates one group; the default is all groups.
   ignores focus groups entirely, the "Focus areas" line is omitted from the
   prompt, so focus-group keywords remain meaningful only for the keyword
   tagger (keyword-only mode).
+- `[ai] fallback_on_fail` (default `false`, env
+  `WALLATAG_AI_FALLBACK_ON_FAIL`, accepts `true`/`1`/`yes` or
+  `false`/`0`/`no`; values are matched case-insensitively and surrounding
+  whitespace is ignored) enables a per-article keyword fallback: when the LLM
+  tagger fails for an article (an `LLMError` from `suggest` after retries are
+  exhausted), the keyword tagger takes over for THAT article — the LLM is
+  still tried on subsequent articles. The fallback behaves exactly like a
+  normal keyword-mode run: `enable_vocabulary`, `enable_rules` and
+  `tag_policy` all apply, and its suggestions carry the usual `vocabulary`/
+  `rules` sources into the decision log. A fallback that succeeds tags the
+  article as usual and is surfaced in the run summary as `N via fallback`; a
+  fallback that yields no suggestions (or itself fails) keeps today's
+  LLM-failure path (`skipped`/`llm failures`, article deferred).
 
 Focus groups can be defined or overridden via environment variables too:
 `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS` and

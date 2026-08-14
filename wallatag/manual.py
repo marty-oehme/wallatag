@@ -20,7 +20,7 @@ import requests
 
 from wallatag.config import Config
 from wallatag.llm import LLMError
-from wallatag.tagger import TagSuggestion
+from wallatag.tagger import KeywordTagger, TagSuggestion
 from wallatag.wallabag import WallabagError
 
 _SNIPPET_LENGTH = 200
@@ -68,11 +68,25 @@ def summary_line(summary: ManualSummary, *, dry_run: bool = False) -> str:
     )
 
 
-def run_manual(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> ManualSummary:
+def run_manual(
+    client,
+    tagger,
+    store,
+    cfg: Config,
+    *,
+    dry_run: bool = False,
+    fallback_tagger: KeywordTagger | None = None,
+) -> ManualSummary:
     """Run the interactive review loop; returns a ManualSummary.
 
     ``client`` only needs iter_untagged/add_tags/close. ``store`` may be a
     history-less Store(None). In dry-run mode no writes happen at all.
+
+    ``fallback_tagger`` (optional, keyword-only) is the keyword tagger used
+    when the LLM tagger fails for an article ([ai] fallback_on_fail): its
+    suggestions enter the normal review flow for THAT article, the LLM is
+    still tried on subsequent articles, and no counter is surfaced (manual
+    mode reports nothing extra, consistent with today).
     """
     summary = ManualSummary()
     # The genexpr lives INSIDE the try: a genexpr evaluates its outermost
@@ -97,11 +111,25 @@ def run_manual(client, tagger, store, cfg: Config, *, dry_run: bool = False) -> 
             try:
                 suggestions = tagger.suggest(entry)
             except LLMError as exc:
-                # A model failure skips the article; the session keeps going.
-                print(f"LLM tagging failed {entry_id}: {exc}", file=sys.stderr)
-                if not dry_run:
-                    store.unmark_seen(entry_id)  # defer: keep the article in the queue
-                continue
+                # A model failure skips the article unless a keyword fallback
+                # is configured ([ai] fallback_on_fail); the session keeps
+                # going either way.
+                deferred = True  # dropped unless the keyword fallback rescues it
+                if fallback_tagger is not None:
+                    # Per-article fallback: the keyword tagger takes over for
+                    # THIS article only — the LLM is still tried on subsequent
+                    # articles. Its suggestions carry the usual "vocabulary"/
+                    # "rules" sources and enter the normal review flow below.
+                    try:
+                        suggestions = fallback_tagger.suggest(entry)
+                    except Exception:
+                        suggestions = []
+                    deferred = not suggestions
+                if deferred:
+                    print(f"LLM tagging failed {entry_id}: {exc}", file=sys.stderr)
+                    if not dry_run:
+                        store.unmark_seen(entry_id)  # defer: keep the article in the queue
+                    continue
             try:
                 action, working = _edit_working_list(entry, suggestions)
             except _Quit:

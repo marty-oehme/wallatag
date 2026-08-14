@@ -32,6 +32,7 @@ _ENV_AI_MODEL = "WALLATAG_AI_MODEL"
 _ENV_AI_CONFIDENCE_THRESHOLD = "WALLATAG_AI_CONFIDENCE_THRESHOLD"
 _ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
 _ENV_AI_USE_FOCUS_GROUPS = "WALLATAG_AI_USE_FOCUS_GROUPS"
+_ENV_AI_FALLBACK_ON_FAIL = "WALLATAG_AI_FALLBACK_ON_FAIL"
 _ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
 _ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
 _ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
@@ -128,6 +129,13 @@ class AiConfig:
     ``use_focus_groups`` toggles whether focus groups influence LLM tagging;
     False = keyword-only mode for focus groups (the LLM prompt omits the
     "Focus areas" line entirely).
+
+    ``fallback_on_fail`` (default False) toggles the per-article keyword
+    fallback: when True and the LLM tagger fails for an article (LLMError
+    propagates from ``suggest`` after retries are exhausted), the keyword
+    tagger takes over for THAT article. The fallback behaves exactly like a
+    normal keyword-mode run (enable_vocabulary/enable_rules/tag_policy all
+    apply); the LLM is still tried on subsequent articles.
     """
 
     provider: str = ""
@@ -136,6 +144,7 @@ class AiConfig:
     confidence_threshold: float = 0.7
     api_key: str = ""
     use_focus_groups: bool = True
+    fallback_on_fail: bool = False
 
 
 @dataclass(frozen=True)
@@ -327,6 +336,8 @@ def _parse_ai(raw: dict) -> AiConfig:
     like the other string fields and empty/unset simply means no auth header.
     ``use_focus_groups`` defaults to True and must be a strict boolean; False
     makes focus groups keyword-only (the LLM prompt omits the focus areas).
+    ``fallback_on_fail`` defaults to False and must be a strict boolean too;
+    True enables the per-article keyword fallback when the LLM tagger fails.
     """
     # The isinstance check runs on the RAW value BEFORE any `or {}`
     # normalization: falsy non-tables (`ai = ""`, `ai = []`) must raise, not
@@ -344,6 +355,10 @@ def _parse_ai(raw: dict) -> AiConfig:
     use_focus_groups = ai_raw.get("use_focus_groups", True)
     if not isinstance(use_focus_groups, bool):
         raise ConfigError("use_focus_groups must be a boolean (true or false)")
+
+    fallback_on_fail = ai_raw.get("fallback_on_fail", False)
+    if not isinstance(fallback_on_fail, bool):
+        raise ConfigError("fallback_on_fail must be a boolean (true or false)")
 
     confidence = ai_raw.get("confidence_threshold", 0.7)
     if (
@@ -372,6 +387,7 @@ def _parse_ai(raw: dict) -> AiConfig:
         confidence_threshold=confidence,
         api_key=str(api_key),
         use_focus_groups=use_focus_groups,
+        fallback_on_fail=fallback_on_fail,
     )
 
 
@@ -539,6 +555,15 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             ai,
             use_focus_groups=_parse_bool_env(
                 "ai", _ENV_AI_USE_FOCUS_GROUPS, use_focus_groups_raw
+            ),
+        )
+
+    fallback_on_fail_raw = env.get(_ENV_AI_FALLBACK_ON_FAIL)
+    if fallback_on_fail_raw is not None:
+        ai = replace(
+            ai,
+            fallback_on_fail=_parse_bool_env(
+                "ai", _ENV_AI_FALLBACK_ON_FAIL, fallback_on_fail_raw
             ),
         )
 
