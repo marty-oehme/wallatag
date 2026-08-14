@@ -5,6 +5,7 @@ import contextlib
 import dataclasses
 import io
 import logging
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -384,12 +385,13 @@ class FakeClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30, ignored_tags=()):
+    def iter_untagged(self, per_page=30, ignored_tags=(), ignored_regex=()):
         # Faithful to WallabagClient.iter_untagged: drop entries whose tags
-        # are non-empty and not all in the ignore-any list.
+        # are non-empty and not all in the ignore-any list (literal or regex).
         ignored = frozenset(t.casefold() for t in ignored_tags)
+        patterns = tuple(re.compile(p, re.IGNORECASE) for p in ignored_regex)
         for item in self.entries:
-            if _should_fetch(_tag_labels(item.get("tags")), ignored):
+            if _should_fetch(_tag_labels(item.get("tags")), ignored, patterns):
                 yield dict(item)
 
     def get_tags(self):

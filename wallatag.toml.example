@@ -23,6 +23,19 @@ path = "/data/wallatag.db"
 max_suggestions = 5
 tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
 ignore_tags = ["fix", "_frigo"]       # tags treated as untagged: articles carrying ONLY these are still fetched
+# Optional regex patterns (Python re syntax) matched IN ADDITION to ignore_tags:
+# a tag counts as ignored if it equals a literal entry OR matches any pattern.
+# Patterns are substring matches (re.search); anchor with ^...$ for a full-tag
+# match — e.g. "(?-i:^fix$)" matches only the exact tag "fix", while an
+# unanchored "(?-i:fix)" would also match tags like "prefixfix". Matching is
+# case-insensitive by default; use inline (?-i:...) for case-sensitive
+# sections — regexes read the raw tag label, so the override works. Invalid or
+# empty/whitespace-only patterns are rejected at load. Env override:
+# WALLATAG_IGNORE_TAGS_REGEX (comma-separated; like
+# WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX, the value is split on every comma and
+# each fragment is validated independently, so a comma inside a regex can
+# SILENTLY change matching — regexes containing commas must use TOML).
+ignore_tags_regex = []
 # Per-source enable switches for the tagging mechanisms (strict booleans;
 # env overrides: WALLATAG_ENABLE_VOCABULARY / WALLATAG_ENABLE_RULES /
 # WALLATAG_ENABLE_LLM, values true/1/yes or false/0/no, case-insensitive).

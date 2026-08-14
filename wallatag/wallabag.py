@@ -8,6 +8,7 @@ on ``requests``.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -69,16 +70,25 @@ def _tag_labels(raw_tags: object) -> list[str]:
     return labels
 
 
-def _should_fetch(labels: list[str], ignored: frozenset[str]) -> bool:
+def _should_fetch(
+    labels: list[str],
+    ignored: frozenset[str],
+    patterns: tuple[re.Pattern, ...] = (),
+) -> bool:
     """True iff an entry whose tags normalize to ``labels`` should be fetched.
 
     Fetched iff there are no labels OR every label is in the ``ignored`` set
-    (already casefolded). Comparison is exact full-string; both sides are
-    casefolded so ``"Fix"`` in the ignore list matches tag ``"fix"``.
+    (already casefolded) OR matches at least one ``patterns`` regex
+    (``re.search``; the patterns carry their own flags, compiled with
+    ``re.IGNORECASE`` by the caller). Exact literals are casefolded on both
+    sides; regexes match against the RAW label string.
     """
     if not labels:
         return True
-    return all(label.casefold() in ignored for label in labels)
+    return all(
+        label.casefold() in ignored or any(p.search(label) for p in patterns)
+        for label in labels
+    )
 
 
 class WallabagClient:
@@ -272,41 +282,64 @@ class WallabagClient:
         )
 
     def untagged_entries(
-        self, page: int = 1, per_page: int = 30, ignored_tags: tuple[str, ...] = ()
+        self,
+        page: int = 1,
+        per_page: int = 30,
+        ignored_tags: tuple[str, ...] = (),
+        ignored_regex: tuple[str, ...] = (),
     ) -> EntryPage:
         """Like get_entries, but only items that should be fetched.
 
         An item is fetched iff it has no tags OR every one of its tags is in
         ``ignored_tags`` (an "ignore-any" list: articles carrying ONLY ignored
-        tags are still fetched, e.g. maintenance tags like ``fix``). Matching
-        is exact full-string and case-insensitive (``str.casefold()`` on both
-        sides, matching the engine's case-insensitive convention). The API has
-        no server-side "no tags" filter, so this filters client-side while
-        preserving total/page/pages.
+        tags are still fetched, e.g. maintenance tags like ``fix``) OR matches
+        at least one ``ignored_regex`` pattern. Literal matching is exact
+        full-string and case-insensitive (``str.casefold()`` on both sides,
+        matching the engine's case-insensitive convention); regex matching
+        applies ``re.IGNORECASE`` (the patterns are compiled once per call)
+        against the RAW tag label, so inline flags like ``(?-i:...)`` survive.
+        The API has no server-side "no tags" filter, so this filters
+        client-side while preserving total/page/pages.
         """
-        full = self.get_entries(page=page, per_page=per_page)
         ignored = frozenset(tag.casefold() for tag in ignored_tags)
+        patterns = tuple(re.compile(p, re.IGNORECASE) for p in ignored_regex)
+        return self._untagged_page(page, per_page, ignored, patterns)
+
+    def _untagged_page(
+        self,
+        page: int,
+        per_page: int,
+        ignored: frozenset[str],
+        patterns: tuple[re.Pattern, ...],
+    ) -> EntryPage:
+        """Fetch one page and filter to fetchable items (shared filter)."""
+        full = self.get_entries(page=page, per_page=per_page)
         items = [
             item
             for item in full.items
-            if _should_fetch(_tag_labels(item.get("tags")), ignored)
+            if _should_fetch(_tag_labels(item.get("tags")), ignored, patterns)
         ]
         return EntryPage(
             items=items, total=full.total, page=full.page, pages=full.pages
         )
 
     def iter_untagged(
-        self, per_page: int = 30, ignored_tags: tuple[str, ...] = ()
+        self,
+        per_page: int = 30,
+        ignored_tags: tuple[str, ...] = (),
+        ignored_regex: tuple[str, ...] = (),
     ) -> Iterator[dict]:
         """Yield fetchable entries across all pages, in order.
 
-        ``ignored_tags`` is the ignore-any list; see ``untagged_entries``.
+        ``ignored_tags`` is the ignore-any list and ``ignored_regex`` the
+        parallel regex patterns; see ``untagged_entries``. Both are compiled
+        once here, before the page loop.
         """
+        ignored = frozenset(tag.casefold() for tag in ignored_tags)
+        patterns = tuple(re.compile(p, re.IGNORECASE) for p in ignored_regex)
         page_num = 1
         while True:
-            page = self.untagged_entries(
-                page=page_num, per_page=per_page, ignored_tags=ignored_tags
-            )
+            page = self._untagged_page(page_num, per_page, ignored, patterns)
             yield from page.items
             if not page.pages or page_num >= page.pages:
                 return

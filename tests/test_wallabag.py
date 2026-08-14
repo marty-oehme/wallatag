@@ -428,6 +428,87 @@ class EntriesTest(WallabagClientTestCase):
         self.assertEqual([e["id"] for e in page.items], [1])
         self.assertEqual(page.total, 2)
 
+    def test_untagged_entries_ignored_regex_matrix(self):
+        # The ignore-any matrix with regex patterns: an article is fetched iff
+        # it has no tags OR every tag matches at least one pattern.
+        items = [
+            entry(1, ["todo"]),          # matches "todo|fix" -> fetched
+            entry(2, ["fix"]),           # matches -> fetched
+            entry(3, ["todo", "other"]),  # non-matching tag present -> dropped
+            entry(4, ["other"]),         # non-matching -> dropped
+        ]
+        payload = entries_payload(items, total=4, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(ignored_regex=("todo|fix",))
+
+        self.assertEqual([e["id"] for e in page.items], [1, 2])
+        # Client-side filtering; the API-level counts are preserved.
+        self.assertEqual(page.total, 4)
+        self.assertEqual(page.pages, 1)
+
+    def test_untagged_entries_ignored_regex_case_insensitive(self):
+        # re.IGNORECASE is applied by the caller: pattern "TODO" matches the
+        # raw tag "todo".
+        items = [entry(1, ["todo"]), entry(2, ["todo", "other"])]
+        payload = entries_payload(items, total=2, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(ignored_regex=("TODO",))
+
+        self.assertEqual([e["id"] for e in page.items], [1])
+        self.assertEqual(page.total, 2)
+
+    def test_untagged_entries_ignored_regex_inline_flag_override(self):
+        # Inline (?-i:...) survives: the caller compiles with re.IGNORECASE
+        # but the inline case-sensitive section wins, so "(?-i:todo)" does NOT
+        # match the tag "TODO".
+        items = [entry(1, ["TODO"]), entry(2, ["todo"])]
+        payload = entries_payload(items, total=2, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(ignored_regex=("(?-i:todo)",))
+
+        self.assertEqual([e["id"] for e in page.items], [2])
+        self.assertEqual(page.total, 2)
+
+    def test_untagged_entries_ignored_tags_and_regex_combined(self):
+        # Literal ignore_tags and ignored_regex compose: a tag counts as
+        # ignored iff it equals a literal entry OR matches a pattern.
+        items = [
+            entry(1, ["fix", "todo"]),   # fix literal + todo regex -> fetched
+            entry(2, ["fix", "other"]),  # other matches neither -> dropped
+        ]
+        payload = entries_payload(items, total=2, pages=1)
+        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+
+        page = self.client.untagged_entries(
+            ignored_tags=["fix"], ignored_regex=("^todo$",)
+        )
+
+        self.assertEqual([e["id"] for e in page.items], [1])
+        self.assertEqual(page.total, 2)
+
+    def test_iter_untagged_with_ignored_regex_pages(self):
+        page1 = entries_payload(
+            [entry(1, ["todo"]), entry(2, ["other"])], total=3, page=1, pages=2
+        )
+        page2 = entries_payload(
+            [entry(3, ["fix"]), entry(4, ["other"])], total=3, page=2, pages=2
+        )
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD),
+            FakeResponse(200, page1),
+            FakeResponse(200, page2),
+        )
+
+        entries = list(
+            self.client.iter_untagged(per_page=2, ignored_regex=("todo|fix",))
+        )
+
+        self.assertEqual([e["id"] for e in entries], [1, 3])
+        self.assertEqual(len(self.api_calls("/api/entries.json")), 2)
+
     def test_per_page_too_large_raises_valueerror(self):
         with self.assertRaises(ValueError):
             self.client.get_entries(per_page=31)

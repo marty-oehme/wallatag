@@ -52,6 +52,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
 | Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
 | Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
+| Ignored tag patterns     | `[tagger] ignore_tags_regex`| `WALLATAG_IGNORE_TAGS_REGEX`       |
 | Vocabulary matching      | `[tagger] enable_vocabulary`| `WALLATAG_ENABLE_VOCABULARY`       |
 | Focus-group rules        | `[tagger] enable_rules`     | `WALLATAG_ENABLE_RULES`            |
 | LLM classification       | `[tagger] enable_llm`       | `WALLATAG_ENABLE_LLM`              |
@@ -102,6 +103,19 @@ pattern (an empty regex matches everything, so it is rejected).
   (comma-separated string, e.g. `fix,_frigo`); an empty value clears the list
   (whitespace-only or comma-only values are rejected, since they would
   silently clear it).
+- `[tagger] ignore_tags_regex`: list of Python regex patterns (default empty)
+  matched against each tag *in addition to* the literal `ignore_tags` list. A
+  tag counts as ignored if it equals a literal entry OR matches any pattern,
+  so articles carrying ONLY tags that are literal-ignored or match a pattern
+  are still fetched. Patterns are substring matches (`re.search`), so anchor
+  with `^...$` for full-tag matching. Matching is case-insensitive by default;
+  case-sensitive sections are possible with inline `(?-i:...)` overrides
+  (regexes read the raw tag label, so the override works). Patterns are
+  validated at load time: an invalid or empty/whitespace-only pattern is a
+  `ConfigError` naming the key (an empty regex matches everything, so it is
+  rejected). Override with `WALLATAG_IGNORE_TAGS_REGEX` (comma-separated, e.g.
+  `^todo$,(?-i:^fix$)`); an empty value clears the list (whitespace-only or
+  comma-only values are rejected).
 - Per-source match fields: the keyword tagger matches against the article's
   `title`, `url`, `domain_name` and `content` fields by default. Which fields
   are checked is configurable *per source*, the vocabulary matcher and each
@@ -191,7 +205,10 @@ every comma and each fragment is then validated INDEPENDENTLY, so the split
 can SILENTLY change matching with no error (e.g. `"^a,b$"` becomes the two
 patterns `^a` and `b$`, both valid) — use TOML `keywords_regex` for
 comma-containing patterns. The `WALLATAG_FOCUS_GROUPS` JSON variable rejects
-comma-containing `keywords_regex` items loudly for the same reason. Group
+comma-containing `keywords_regex` items loudly for the same reason. The same
+rule applies to `WALLATAG_IGNORE_TAGS_REGEX`: its value is split on every
+comma and each fragment validated independently, so regexes containing a
+literal comma must be configured via TOML `[tagger] ignore_tags_regex`. Group
 names are case-insensitive and
 groups merge by name: an env var overrides the same-named TOML group
 per-field (only the fields it sets),

@@ -10,6 +10,7 @@ import contextlib
 import dataclasses
 import io
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -53,12 +54,13 @@ class FakeClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30, ignored_tags=()):
+    def iter_untagged(self, per_page=30, ignored_tags=(), ignored_regex=()):
         # Faithful to WallabagClient.iter_untagged: drop entries whose tags
-        # are non-empty and not all in the ignore-any list.
+        # are non-empty and not all in the ignore-any list (literal or regex).
         ignored = frozenset(t.casefold() for t in ignored_tags)
+        patterns = tuple(re.compile(p, re.IGNORECASE) for p in ignored_regex)
         for item in self.entries:
-            if _should_fetch(_tag_labels(item.get("tags")), ignored):
+            if _should_fetch(_tag_labels(item.get("tags")), ignored, patterns):
                 yield dict(item)
 
     def get_tags(self):
@@ -80,7 +82,7 @@ class FailingFeedClient:
         self.add_calls = []
         self.closed = False
 
-    def iter_untagged(self, per_page=30, ignored_tags=()):
+    def iter_untagged(self, per_page=30, ignored_tags=(), ignored_regex=()):
         yield entry(1, "first")
         yield entry(2, "second")
         raise WallabagError("network died")
@@ -105,7 +107,7 @@ class EagerFailingClient:
     def __init__(self):
         self.closed = False
 
-    def iter_untagged(self, per_page=30, ignored_tags=()):
+    def iter_untagged(self, per_page=30, ignored_tags=(), ignored_regex=()):
         raise WallabagError("cannot connect")
 
     def get_tags(self):
@@ -209,9 +211,12 @@ class NextFlowTest(ManualBase):
 class IgnoredTagsTest(ManualBase):
     """[tagger] ignore_tags flows through run_manual to the client filter."""
 
-    def _cfg(self, ignore_tags=()):
+    def _cfg(self, ignore_tags=(), ignore_tags_regex=()):
         return dataclasses.replace(
-            Config(), tagger=TaggerConfig(ignore_tags=ignore_tags)
+            Config(),
+            tagger=TaggerConfig(
+                ignore_tags=ignore_tags, ignore_tags_regex=ignore_tags_regex
+            ),
         )
 
     def test_ignored_tag_article_is_presented_and_tagged(self):
@@ -277,6 +282,54 @@ class IgnoredTagsTest(ManualBase):
                     [""],
                     tagger=make_tagger(existing_tags=["Pomodoro"]),
                     store=store,
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(summary.presented, 0)
+
+    def test_ignored_regex_tag_article_is_presented_and_tagged(self):
+        # ignore_tags_regex=("todo|fix",): an article tagged ["todo"] is
+        # still fetched (its only tag matches a pattern).
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["todo"])],
+            tags=["Pomodoro"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client,
+                    [""],  # enter = next
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    cfg=self._cfg(ignore_tags_regex=("todo|fix",)),
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertEqual((summary.presented, summary.tagged), (1, 1))
+
+    def test_mixed_tags_regex_article_not_presented(self):
+        # A tag matching neither a literal entry nor a regex pattern
+        # disqualifies the article.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus", tags=["todo", "something"])],
+            tags=["Pomodoro"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, _ = self.run_manual(
+                    client,
+                    [""],
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    cfg=self._cfg(ignore_tags_regex=("todo|fix",)),
                 )
             finally:
                 store.close()

@@ -200,6 +200,68 @@ class IgnoreTagsTomlTest(unittest.TestCase):
         self.assertIn("non-string", message)
 
 
+class IgnoreTagsRegexTomlTest(unittest.TestCase):
+    """[tagger] ignore_tags_regex: regex patterns for tags treated as untagged."""
+
+    def _load(self, toml_text: str) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_ignore_tags_regex_parsed(self):
+        config = self._load(
+            '[tagger]\nignore_tags_regex = ["^todo$", "(?-i:fix)"]\n'
+        )
+        self.assertEqual(
+            config.tagger.ignore_tags_regex, ("^todo$", "(?-i:fix)")
+        )
+        # The raw strings are stored, not compiled: re.IGNORECASE is applied
+        # by the client, and inline flags must survive intact.
+
+    def test_ignore_tags_regex_absent_defaults_empty(self):
+        # No ignore_tags_regex key -> () with no error (a no-op).
+        config = self._load('[tagger]\ntag_policy = "all"\n')
+        self.assertEqual(config.tagger.ignore_tags_regex, ())
+
+    def test_ignore_tags_regex_empty_array_defaults_empty(self):
+        config = self._load("[tagger]\nignore_tags_regex = []\n")
+        self.assertEqual(config.tagger.ignore_tags_regex, ())
+
+    def test_ignore_tags_regex_string_raises(self):
+        # A plain string must be rejected, never split into characters.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[tagger]\nignore_tags_regex = "^todo"\n')
+        message = str(ctx.exception)
+        self.assertIn("ignore_tags_regex", message)
+        self.assertIn("list of strings", message)
+
+    def test_ignore_tags_regex_non_string_element_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[tagger]\nignore_tags_regex = [1, 2]\n")
+        message = str(ctx.exception)
+        self.assertIn("ignore_tags_regex", message)
+        self.assertIn("non-string", message)
+
+    def test_invalid_ignore_tags_regex_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[tagger]\nignore_tags_regex = ["^["]\n')
+        message = str(ctx.exception)
+        # The error names the key and the offending pattern.
+        self.assertIn("ignore_tags_regex", message)
+        self.assertIn("'^['", message)
+        self.assertIn("unterminated", message)
+
+    def test_empty_ignore_tags_regex_pattern_raises(self):
+        # An empty regex matches everything: rejected as a footgun.
+        for bad in ('[""]', '["   "]'):
+            with self.assertRaises(ConfigError) as ctx:
+                self._load(f"[tagger]\nignore_tags_regex = {bad}\n")
+            message = str(ctx.exception)
+            self.assertIn("ignore_tags_regex", message)
+            self.assertIn("empty or whitespace-only", message)
+
+
 class FocusGroupValidationTest(unittest.TestCase):
     """Malformed [focus.<name>] keywords/tags must fail with ConfigError."""
 
@@ -1009,6 +1071,66 @@ class TaggerEnvTest(unittest.TestCase):
         with self.assertRaises(ConfigError) as ctx:
             self._env_load("", {"WALLATAG_IGNORE_TAGS": ","})
         self.assertIn("WALLATAG_IGNORE_TAGS", str(ctx.exception))
+
+    def test_env_ignore_tags_regex_parsed(self):
+        config = self._env_load(
+            "", {"WALLATAG_IGNORE_TAGS_REGEX": "^todo$,(?-i:fix)"}
+        )
+        self.assertEqual(
+            config.tagger.ignore_tags_regex, ("^todo$", "(?-i:fix)")
+        )
+
+    def test_env_ignore_tags_regex_strips_whitespace_and_drops_empties(self):
+        config = self._env_load(
+            "", {"WALLATAG_IGNORE_TAGS_REGEX": " ^todo$ ,fix,"}
+        )
+        self.assertEqual(config.tagger.ignore_tags_regex, ("^todo$", "fix"))
+
+    def test_env_ignore_tags_regex_empty_clears_toml(self):
+        # A present-but-empty WALLATAG_IGNORE_TAGS_REGEX clears the TOML list,
+        # matching the WALLATAG_IGNORE_TAGS="" pattern.
+        config = self._env_load(
+            '[tagger]\nignore_tags_regex = ["^todo$"]\n',
+            {"WALLATAG_IGNORE_TAGS_REGEX": ""},
+        )
+        self.assertEqual(config.tagger.ignore_tags_regex, ())
+
+    def test_env_ignore_tags_regex_invalid_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_IGNORE_TAGS_REGEX": "^["})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_IGNORE_TAGS_REGEX", message)
+        self.assertIn("'^['", message)
+
+    def test_env_whitespace_only_ignore_tags_regex_raises(self):
+        # " " parses to () which would silently clear the list: reject it.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_IGNORE_TAGS_REGEX": " "})
+        self.assertIn("WALLATAG_IGNORE_TAGS_REGEX", str(ctx.exception))
+
+    def test_env_comma_only_ignore_tags_regex_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_IGNORE_TAGS_REGEX": ","})
+        self.assertIn("WALLATAG_IGNORE_TAGS_REGEX", str(ctx.exception))
+
+    def test_env_ignore_tags_regex_comma_in_pattern_splits_and_raises(self):
+        # A regex containing a comma is not expressible via the env var: it is
+        # split and the fragments fail to compile. Use TOML for such patterns.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_IGNORE_TAGS_REGEX": "[a,b]"})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_IGNORE_TAGS_REGEX", message)
+        self.assertIn("'[a'", message)
+
+    def test_env_ignore_tags_regex_comma_splits_silently(self):
+        # Documented surprise, same as keywords_regex: the value is split on
+        # every comma and each fragment is validated INDEPENDENTLY, so "^a,b$"
+        # becomes two VALID patterns with no error — the matching semantics
+        # change silently. Comma-containing regexes must use TOML.
+        config = self._env_load(
+            "", {"WALLATAG_IGNORE_TAGS_REGEX": "^a,b$"}
+        )
+        self.assertEqual(config.tagger.ignore_tags_regex, ("^a", "b$"))
 
     def test_env_empty_tag_policy_raises(self):
         # A present-but-empty WALLATAG_TAG_POLICY is invalid, not a clear:

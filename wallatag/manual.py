@@ -96,7 +96,9 @@ def run_manual(
         unseen = (
             entry
             for entry in client.iter_untagged(
-                per_page=30, ignored_tags=cfg.tagger.ignore_tags
+                per_page=30,
+                ignored_tags=cfg.tagger.ignore_tags,
+                ignored_regex=cfg.tagger.ignore_tags_regex,
             )
             if not store.is_seen(entry["id"])
         )

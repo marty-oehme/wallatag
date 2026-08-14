@@ -35,6 +35,7 @@ _ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
 _ENV_AI_USE_FOCUS_GROUPS = "WALLATAG_AI_USE_FOCUS_GROUPS"
 _ENV_AI_FALLBACK_ON_FAIL = "WALLATAG_AI_FALLBACK_ON_FAIL"
 _ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
+_ENV_IGNORE_TAGS_REGEX = "WALLATAG_IGNORE_TAGS_REGEX"
 _ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
 _ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
 _ENV_ENABLE_VOCABULARY = "WALLATAG_ENABLE_VOCABULARY"
@@ -107,6 +108,10 @@ class TaggerConfig:
     # Tags treated as untagged: articles carrying ONLY these tags are still
     # fetched. Empty default = only fully untagged articles are fetched.
     ignore_tags: tuple[str, ...] = ()
+    # Regex patterns for tags treated as untagged, parallel to ignore_tags: an
+    # article carrying ONLY tags that are literal-ignored or match a pattern is
+    # still fetched. Empty default.
+    ignore_tags_regex: tuple[str, ...] = ()
     # Per-source enable switches for the keyword tagger. enable_vocabulary
     # gates the existing-tag vocabulary matcher; enable_rules gates focus-group
     # rule matching. Both default to True (existing behavior).
@@ -235,9 +240,10 @@ def _parse_comma_separated(context: str, key: str, value: str) -> tuple[str, ...
     so ``""`` yields ``()`` (used to clear a TOML list). A non-empty value
     that parses to ``()``, i.e. only separators/whitespace, is rejected
     instead of silently clearing the list, since that is almost certainly a
-    typo. Shared by ``WALLATAG_IGNORE_TAGS`` and the
-    ``WALLATAG_FOCUS_<NAME>_*`` vars. ``context``/``key`` name the source in
-    error messages, mirroring the ``_parse_string_list`` convention.
+    typo. Shared by ``WALLATAG_IGNORE_TAGS``, ``WALLATAG_IGNORE_TAGS_REGEX``,
+    ``WALLATAG_VOCABULARY_FIELDS`` and the ``WALLATAG_FOCUS_<NAME>_*`` vars.
+    ``context``/``key`` name the source in error messages, mirroring the
+    ``_parse_string_list`` convention.
     """
     parsed = tuple(item.strip() for item in value.split(",") if item.strip())
     if value != "" and not parsed:
@@ -287,20 +293,23 @@ def _validate_match_fields(
     return fields
 
 
-def _compile_focus_regex(
+def _validate_regexes(
     context: str, key: str, patterns: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """Validate a tuple of focus-group regex patterns; return it unchanged.
+    """Validate a tuple of regex patterns; return it unchanged.
 
-    Both the TOML path and the env path call it so a bad pattern fails loudly
-    instead of silently never/always matching. Patterns are stored raw (matching
-    reads the raw article fields), so only compilability is validated here, with
-    no flags: matching applies ``re.IGNORECASE`` itself and inline flags like
+    Generic across config contexts: focus-group ``keywords_regex`` and
+    ``[tagger] ignore_tags_regex`` both call it (via the TOML path and the env
+    path) so a bad pattern fails loudly instead of silently never/always
+    matching. Patterns are stored raw (matching reads the raw article
+    fields/tags), so only compilability is validated here, with no flags:
+    matching applies ``re.IGNORECASE`` itself and inline flags like
     ``(?-i:...)`` must survive intact. Empty or whitespace-only patterns are
     rejected before compiling: an empty regex matches everything, which is
     almost certainly a mistake. ``context``/``key`` name the source in error
-    messages (e.g. ``focus group 'methods'`` and ``keywords_regex``), mirroring
-    the ``_validate_match_fields`` convention.
+    messages (e.g. ``focus group 'methods'``/``keywords_regex`` or
+    ``tagger``/``ignore_tags_regex``), mirroring the ``_validate_match_fields``
+    convention.
     """
     for pattern in patterns:
         if not isinstance(pattern, str) or not pattern.strip():
@@ -363,7 +372,7 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
         # keywords (list of strings), then validated: invalid or
         # empty/whitespace-only patterns are ConfigErrors at parse time.
         keywords_regex = (
-            _compile_focus_regex(
+            _validate_regexes(
                 f"focus group {name!r}",
                 "keywords_regex",
                 _parse_string_list(
@@ -488,6 +497,21 @@ def _parse_toml_config(raw: dict) -> Config:
         else ()
     )
 
+    # Regex patterns for ignored tags, parallel to ignore_tags. Parsed like
+    # keywords_regex (list of strings), then validated: invalid or
+    # empty/whitespace-only patterns are ConfigErrors at load time, so a bad
+    # pattern never reaches the client.
+    ignore_tags_regex_raw = tagger_raw.get("ignore_tags_regex")
+    ignore_tags_regex = (
+        _validate_regexes(
+            "tagger",
+            "ignore_tags_regex",
+            _parse_string_list("tagger", "ignore_tags_regex", ignore_tags_regex_raw),
+        )
+        if ignore_tags_regex_raw is not None
+        else ()
+    )
+
     # Per-source enable switches, strict booleans (mirrors _parse_ai's
     # use_focus_groups). enable_vocabulary/enable_rules default to True
     # (existing behavior); enable_llm is opt-in and defaults to False.
@@ -533,6 +557,7 @@ def _parse_toml_config(raw: dict) -> Config:
             tag_policy=tag_policy,
             focus_groups=_parse_focus_groups(focus_raw),
             ignore_tags=ignore_tags,
+            ignore_tags_regex=ignore_tags_regex,
             enable_vocabulary=enable_vocabulary,
             enable_rules=enable_rules,
             enable_llm=enable_llm,
@@ -639,6 +664,20 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             tagger,
             ignore_tags=_parse_comma_separated(
                 "tagger", _ENV_IGNORE_TAGS, ignore_tags_raw
+            ),
+        )
+    ignore_tags_regex_raw = env.get(_ENV_IGNORE_TAGS_REGEX)
+    if ignore_tags_regex_raw is not None:
+        # Comma-separated string; empty string clears the TOML value. Items
+        # are stripped and empties dropped, then compilability is validated.
+        tagger = replace(
+            tagger,
+            ignore_tags_regex=_validate_regexes(
+                "tagger",
+                _ENV_IGNORE_TAGS_REGEX,
+                _parse_comma_separated(
+                    "tagger", _ENV_IGNORE_TAGS_REGEX, ignore_tags_regex_raw
+                ),
             ),
         )
     tag_policy = env.get(_ENV_TAG_POLICY)
@@ -774,7 +813,7 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         elif field == "keywords_regex":
             group = replace(
                 group,
-                keywords_regex=_compile_focus_regex(
+                keywords_regex=_validate_regexes(
                     "focus group",
                     key,
                     _parse_comma_separated("focus group", key, env[key]),
