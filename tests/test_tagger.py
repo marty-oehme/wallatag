@@ -926,9 +926,11 @@ class LLMTaggerPromptTest(unittest.TestCase):
             "methods": FocusGroup(keywords=("gtd",), tags=("method",)),
         }
         client = FakeLLMClient("[]")
+        # focus areas are per-entry — the article must match
+        # both groups for both their tags to reach the prompt.
         make_llm_tagger(
             client, groups=groups, existing_tags=["rust", "python"]
-        ).suggest(entry(title="x"))
+        ).suggest(entry(title="python gtd"))
 
         prompt = client.system_prompts[0]
         self.assertIn("programming", prompt)
@@ -1011,11 +1013,11 @@ class LLMTaggerPromptTest(unittest.TestCase):
 
 
 class LLMTaggerFocusAreasTest(unittest.TestCase):
-    """use_focus_groups and fields=() control the "Focus areas" prompt line."""
+    """The "Focus areas" prompt line: use_focus_groups, fields=() and per-entry matching."""
 
-    def _prompt(self, **kwargs):
+    def _prompt(self, title="x", **kwargs):
         client = FakeLLMClient("[]")
-        make_llm_tagger(client, **kwargs).suggest(entry(title="x"))
+        make_llm_tagger(client, **kwargs).suggest(entry(title=title))
         return client.system_prompts[0]
 
     def test_use_focus_groups_false_omits_focus_areas_line(self):
@@ -1030,14 +1032,15 @@ class LLMTaggerFocusAreasTest(unittest.TestCase):
 
     def test_disabled_group_excluded_from_focus_areas(self):
         # fields=() group is excluded from the LLM focus areas; a normal
-        # group's tags are still present.
+        # group's tags are still present. The entry must match the enabled
+        # group (title "python" hits its keyword).
         groups = {
             "disabled": FocusGroup(
                 keywords=("pomodoro",), tags=("productivity",), fields=()
             ),
             "enabled": FocusGroup(keywords=("python",), tags=("programming",)),
         }
-        prompt = self._prompt(groups=groups)
+        prompt = self._prompt(groups=groups, title="python")
         self.assertIn("Focus areas: programming.", prompt)
         self.assertIn("programming", prompt)
         self.assertNotIn("productivity", prompt)
@@ -1063,24 +1066,98 @@ class LLMTaggerFocusAreasTest(unittest.TestCase):
         self.assertNotIn("Focus areas", prompt)
 
     def test_fields_none_tags_kept_in_focus_areas(self):
-        # Existing behavior pinned: fields=None groups contribute their tags.
+        # Existing behavior pinned: fields=None groups contribute their tags
+        # when the article matches (title "python" hits the keyword, issue).
         groups = {
             "default": FocusGroup(keywords=("python",), tags=("programming",)),
         }
-        prompt = self._prompt(groups=groups)
+        prompt = self._prompt(groups=groups, title="python")
         self.assertIn("Focus areas: programming.", prompt)
+
+    def test_non_matching_entry_yields_focus_areas_none(self):
+        # focus areas are per-entry. An article that matches no
+        # group sees "Focus areas: none." instead of every group's tags.
+        groups = {"langs": FocusGroup(keywords=("python",), tags=("programming",))}
+        prompt = self._prompt(groups=groups, title="cooking")
+        self.assertIn("Focus areas: none.", prompt)
+        self.assertNotIn("programming", prompt)
+
+    def test_fields_title_subset_matches_title_not_content(self):
+        # A group pinned to fields=("title",) fires only on title matches:
+        # "python" in the content alone must not list it, in the title it must.
+        groups = {
+            "langs": FocusGroup(
+                keywords=("python",), tags=("programming",), fields=("title",)
+            )
+        }
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, groups=groups).suggest(
+            entry(title="", content="learn python here")
+        )
+        self.assertIn("Focus areas: none.", client.system_prompts[0])
+        self.assertNotIn("programming", client.system_prompts[0])
+        prompt = self._prompt(groups=groups, title="python notes")
+        self.assertIn("Focus areas: programming.", prompt)
+
+    def test_regex_group_fires_in_focus_areas(self):
+        # Regexes count as matching: the group's tags are listed when the
+        # pattern matches, and omitted when it does not.
+        groups = {
+            "howto": FocusGroup(
+                keywords=(), tags=("howto",), keywords_regex=("^how.?to",)
+            )
+        }
+        prompt = self._prompt(groups=groups, title="How To X")
+        self.assertIn("Focus areas: howto.", prompt)
+        prompt = self._prompt(groups=groups, title="nothing")
+        self.assertIn("Focus areas: none.", prompt)
+
+    def test_default_fields_include_url_and_domain_name(self):
+        # Default matching covers all four fields, so a url hit or a
+        # domain_name hit fires the group for the LLM prompt just like it
+        # does for the keyword tagger.
+        groups = {
+            "prod": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, groups=groups).suggest(
+            entry(url="https://example.com/pomodoro")
+        )
+        self.assertIn("Focus areas: productivity.", client.system_prompts[0])
+        # domain_name-only hit: the title and url carry no keyword.
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, groups=groups).suggest(
+            entry(
+                title="x",
+                url="https://example.com/z",
+                domain_name="blog.pomodoro.example",
+            )
+        )
+        self.assertIn("Focus areas: productivity.", client.system_prompts[0])
+
+    def test_mixed_match_and_no_match_lists_only_matching_groups(self):
+        # Config order preserved: only the group the article matches is
+        # listed, the other group's tags stay out of the prompt.
+        groups = {
+            "a": FocusGroup(keywords=("python",), tags=("programming",)),
+            "b": FocusGroup(keywords=("gtd",), tags=("method",)),
+        }
+        prompt = self._prompt(groups=groups, title="python notes")
+        self.assertIn("Focus areas: programming.", prompt)
+        self.assertNotIn("method", prompt)
 
     def test_default_use_focus_groups_present(self):
         # Backward compat: constructing without use_focus_groups keeps the
-        # "Focus areas" line in the prompt.
+        # "Focus areas" line in the prompt, and a matching entry's group is
+        # actually listed.
         client = FakeLLMClient("[]")
         LLMTagger(
             client,
             focus_groups={"a": FocusGroup(keywords=("k",), tags=("t",))},
             max_suggestions=5,
             tag_policy="prefer-existing",
-        ).suggest(entry(title="x"))
-        self.assertIn("Focus areas", client.system_prompts[0])
+        ).suggest(entry(title="k"))
+        self.assertIn("Focus areas: t.", client.system_prompts[0])
 
     def test_non_bool_use_focus_groups_raises(self):
         with self.assertRaises(ValueError) as ctx:

@@ -64,6 +64,97 @@ def _existing_tag_keys(existing_tags: Iterable[str]) -> frozenset[str]:
     )
 
 
+_DEFAULT_MATCH_FIELDS = VALID_MATCH_FIELDS
+
+
+def _field_needles(entry: dict, fields) -> tuple[str, ...]:
+    """Casefolded per-field article text, fields kept separate.
+
+    ``fields`` names which article keys to read, so a source pinned to
+    ``("title",)`` never sees needles from the content field.
+    """
+    needles = []
+    for key in fields:
+        value = entry.get(key)
+        if isinstance(value, str) and value:
+            needles.append(value.casefold())
+    return tuple(needles)
+
+
+def _field_values(entry: dict, fields) -> tuple[str, ...]:
+    """Raw per-field article text for regex matching, fields kept separate.
+
+    Parallel to ``_field_needles`` but WITHOUT casefolding: regexes carry
+    their own case handling (compiled with ``re.IGNORECASE``), and inline
+    flags like ``(?-i:...)`` must see the original text to take effect.
+    """
+    values = []
+    for key in fields:
+        value = entry.get(key)
+        if isinstance(value, str) and value:
+            values.append(value)
+    return tuple(values)
+
+
+def _matches(needle: object, fields: tuple[str, ...]) -> bool:
+    """True if the (stripped, casefolded) needle is in at least one field.
+
+    Matching is per-field, so a multi-word needle never matches across
+    field boundaries. Blank/whitespace-only or non-string needles never
+    match.
+    """
+    if not isinstance(needle, str):
+        return False
+    folded = needle.strip().casefold()
+    return bool(folded) and any(folded in field for field in fields)
+
+
+def _compile_group_regexes(groups) -> dict[str, tuple[re.Pattern, ...]]:
+    """Compile each group's keywords_regex, validating them eagerly.
+
+    Shared by both taggers: the LLM prompt builder matches focus groups
+    with the same regex semantics as the keyword tagger's rules.
+    """
+    compiled: dict[str, tuple[re.Pattern, ...]] = {}
+    for name, group in groups.items():
+        patterns: list[re.Pattern] = []
+        for pattern in group.keywords_regex:
+            if not isinstance(pattern, str) or not pattern.strip():
+                raise ValueError(
+                    f"focus group {name!r}: keywords_regex contains an "
+                    f"empty, whitespace-only or non-string pattern {pattern!r}"
+                )
+            try:
+                patterns.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                raise ValueError(
+                    f"focus group {name!r}: keywords_regex contains invalid "
+                    f"regex {pattern!r}: {exc}"
+                ) from exc
+        compiled[name] = tuple(patterns)
+    return compiled
+
+
+def _group_fires(group, entry: dict, regexes: tuple[re.Pattern, ...]) -> bool:
+    """True if the article matches the group within its configured fields.
+
+    Same semantics as the keyword tagger's rule matching: the group's field
+    subset (None -> all four fields; () -> never fires), ANY literal keyword
+    matching (casefolded substring, per field) OR ANY regex searching the
+    RAW field values (re.IGNORECASE, per-field, never across fields).
+    """
+    group_fields = group.fields if group.fields is not None else _DEFAULT_MATCH_FIELDS
+    fields = _field_needles(entry, group_fields)
+    if any(_matches(kw, fields) for kw in group.keywords):
+        return True
+    if regexes:
+        values = _field_values(entry, group_fields)
+        return any(
+            pattern.search(field) for pattern in regexes for field in values
+        )
+    return False
+
+
 @dataclass(frozen=True)
 class TagSuggestion:
     tag: str
@@ -129,9 +220,10 @@ class KeywordTagger:
     """
 
     # Default set of article fields matched against when a source does not
-    # pin its own: aliased to config.VALID_MATCH_FIELDS so there is one source
-    # of truth (KeywordTagger.__init__ accepts only those names too).
-    _FIELDS = VALID_MATCH_FIELDS
+    # pin its own: aliased to the shared module constant (same value as
+    # config.VALID_MATCH_FIELDS) so there is one source of truth
+    # (KeywordTagger.__init__ accepts only those names too).
+    _FIELDS = _DEFAULT_MATCH_FIELDS
 
     def __init__(
         self,
@@ -173,29 +265,14 @@ class KeywordTagger:
                 )
         # dict preserves config insertion order -> deterministic iteration.
         self.focus_groups = dict(focus_groups)
-        # Pre-compile each group's regex patterns ONCE. config.py already
-        # validated compilability, so this ValueError is a backstop for groups
-        # constructed directly (mirroring the enable_* ValueError style).
-        # Compiled with re.IGNORECASE: regex matching is case-insensitive by
-        # default, with inline (?-i:...) overrides still working because
-        # matching reads the RAW field values, never the casefolded needles.
-        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = {}
-        for name, group in self.focus_groups.items():
-            compiled: list[re.Pattern] = []
-            for pattern in group.keywords_regex:
-                if not isinstance(pattern, str) or not pattern.strip():
-                    raise ValueError(
-                        f"focus group {name!r}: keywords_regex contains an "
-                        f"empty, whitespace-only or non-string pattern {pattern!r}"
-                    )
-                try:
-                    compiled.append(re.compile(pattern, re.IGNORECASE))
-                except re.error as exc:
-                    raise ValueError(
-                        f"focus group {name!r}: keywords_regex contains invalid "
-                        f"regex {pattern!r}: {exc}"
-                    ) from exc
-            self._group_regexes[name] = tuple(compiled)
+        # Pre-compile each group's regex patterns ONCE via the shared helper
+        # (the LLM prompt builder matches focus groups with the same
+        # semantics). config.py already validated compilability, so the
+        # ValueError backstop is for groups constructed directly (mirroring
+        # the enable_* ValueError style).
+        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = _compile_group_regexes(
+            self.focus_groups
+        )
         self.max_suggestions = max_suggestions
         self.tag_policy = tag_policy
         # Labels are normalized for matching but suggested in their original
@@ -212,12 +289,7 @@ class KeywordTagger:
         subset), so a source pinned to ``("title",)`` never sees needles from
         the content field.
         """
-        needles = []
-        for key in fields:
-            value = entry.get(key)
-            if isinstance(value, str) and value:
-                needles.append(value.casefold())
-        return tuple(needles)
+        return _field_needles(entry, fields)
 
     def _field_values(self, entry: dict, fields) -> tuple[str, ...]:
         """Raw per-field text for regex matching, fields kept separate.
@@ -226,12 +298,7 @@ class KeywordTagger:
         their own case handling (compiled with ``re.IGNORECASE``), and inline
         flags like ``(?-i:...)`` must see the original text to take effect.
         """
-        values = []
-        for key in fields:
-            value = entry.get(key)
-            if isinstance(value, str) and value:
-                values.append(value)
-        return tuple(values)
+        return _field_values(entry, fields)
 
     @staticmethod
     def _matches(needle: object, fields: tuple[str, ...]) -> bool:
@@ -241,10 +308,7 @@ class KeywordTagger:
         field boundaries. Blank/whitespace-only or non-string needles never
         match.
         """
-        if not isinstance(needle, str):
-            return False
-        folded = needle.strip().casefold()
-        return bool(folded) and any(folded in field for field in fields)
+        return _matches(needle, fields)
 
     def _vocabulary_suggestions(self, fields: tuple[str, ...]) -> list[TagSuggestion]:
         suggestions = []
@@ -272,24 +336,15 @@ class KeywordTagger:
         """
         suggestions = []
         for name, group in self.focus_groups.items():
-            group_fields = group.fields if group.fields is not None else self._FIELDS
-            fields = self._field_needles(entry, group_fields)
-            hit = any(self._matches(kw, fields) for kw in group.keywords)
-            if not hit and group.keywords_regex:
-                values = self._field_values(entry, group_fields)
-                hit = any(
-                    pattern.search(field)
-                    for pattern in self._group_regexes[name]
-                    for field in values
-                )
-            if hit:
-                for tag in group.tags:
-                    if isinstance(tag, str) and tag.strip():
-                        suggestions.append(
-                            TagSuggestion(
-                                tag=tag, source="rules", confidence=_RULE_CONFIDENCE
-                            )
+            if not _group_fires(group, entry, self._group_regexes[name]):
+                continue
+            for tag in group.tags:
+                if isinstance(tag, str) and tag.strip():
+                    suggestions.append(
+                        TagSuggestion(
+                            tag=tag, source="rules", confidence=_RULE_CONFIDENCE
                         )
+                    )
         return suggestions
 
     def suggest(self, entry: dict) -> list[TagSuggestion]:
@@ -334,9 +389,10 @@ class LLMTagger:
     can stub it and the pure filtering/parsing logic below stays deterministic.
 
     ``suggest()`` builds a system prompt that pins the model to the archive's
-    existing tag vocabulary (the issue's rule is embedded verbatim), the union
-    of all focus-group tags as preferred topics, and a strict JSON-only output
-    format. The model returns a JSON array of ``{"tag", "confidence"}``;
+    existing tag vocabulary (the issue's rule is embedded verbatim), the
+    focus-area tags of the groups the article matches as preferred topics,
+    and a strict JSON-only output format. The model returns a JSON array of
+    ``{"tag", "confidence"}``;
     suggestions below ``confidence_threshold`` are dropped inside ``suggest``
     (headless apply only ever sees above-threshold tags) and then gated by
     ``tag_policy``. An ``LLMError`` from the client propagates to the caller
@@ -344,10 +400,11 @@ class LLMTagger:
 
     Focus areas are controlled by ``use_focus_groups`` (default True). When
     False, the "Focus areas" line is omitted from the system prompt entirely:
-    focus groups become keyword-only. When True, groups with ``fields == ()``
-    (explicitly disabled) are excluded from the focus areas, their tags never
-    reach the prompt, while groups with ``fields is None`` or a non-empty
-    tuple contribute their tags as before.
+    focus groups become keyword-only. When True, the "Focus areas" line lists
+    only the groups the article ACTUALLY matches within their configured
+    fields (keywords OR regexes, reusing the keyword tagger's matching
+    semantics); groups with ``fields == ()`` never match, so their tags never
+    reach the prompt. Non-matching articles see "Focus areas: none.".
 
     With ``verbose=True``, ``suggest()`` dumps the full system prompt, the
     full user prompt and the raw model response (untruncated) to stderr with
@@ -395,6 +452,13 @@ class LLMTagger:
             raise ValueError("verbose must be a boolean")
         self.client = client
         self.focus_groups = dict(focus_groups)
+        # Pre-compile each group's regex patterns (shared with KeywordTagger)
+        # so _system_prompt can reuse the keyword tagger's matching semantics.
+        # config.py already validated compilability, so no practical behavior
+        # change at load time; the eager validation mirrors KeywordTagger.
+        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = _compile_group_regexes(
+            self.focus_groups
+        )
         self.max_suggestions = max_suggestions
         self.tag_policy = tag_policy
         self.existing_tags = list(existing_tags)
@@ -402,8 +466,13 @@ class LLMTagger:
         self.use_focus_groups = use_focus_groups
         self.verbose = verbose
 
-    def _system_prompt(self) -> str:
-        """Build the system prompt: role, vocabulary rule, focus, policy."""
+    def _system_prompt(self, entry: dict) -> str:
+        """Build the system prompt: role, vocabulary rule, focus, policy.
+
+        Focus areas are per-entry: only groups the article
+        actually matches within their configured fields are listed, reusing
+        the keyword tagger's matching semantics.
+        """
         existing_tags = [
             tag
             for tag in self.existing_tags
@@ -423,12 +492,14 @@ class LLMTagger:
                 "they really don't fit and are an important part of the text"
             )
         if self.use_focus_groups:
-            # Groups with fields == () are explicitly disabled: their tags
-            # never reach the LLM prompt's focus areas.
+            # focus areas are per-entry — only groups the
+            # article actually matches (within their configured fields,
+            # keywords OR regexes) are listed, reusing the keyword tagger's
+            # matching semantics. Groups with fields == () never match.
             focus_tags = [
                 tag
-                for group in self.focus_groups.values()
-                if group.fields != ()
+                for name, group in self.focus_groups.items()
+                if _group_fires(group, entry, self._group_regexes[name])
                 for tag in group.tags
                 if isinstance(tag, str) and tag.strip()
             ]
@@ -525,7 +596,7 @@ class LLMTagger:
 
     def suggest(self, entry: dict) -> list[TagSuggestion]:
         """Suggest tags for one entry; lets LLMError propagate to the caller."""
-        system_prompt = self._system_prompt()
+        system_prompt = self._system_prompt(entry)
         user_prompt = self._user_prompt(entry)
         body = self.client.complete(system_prompt, user_prompt)
         if self.verbose:

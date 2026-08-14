@@ -151,8 +151,8 @@ pattern (an empty regex matches everything, so it is rejected).
   accepts `true`/`1`/`yes` or `false`/`0`/`no`; values are matched
   case-insensitively and surrounding whitespace is ignored) controls
   whether focus groups influence LLM tagging. When `true` (default) the LLM
-  system prompt carries a "Focus areas" line built from the enabled focus
-  groups (groups with `fields = []` are excluded). When `false`, the LLM
+  system prompt carries a "Focus areas" line built from the focus groups the
+  article matches (groups with `fields = []` are excluded). When `false`, the LLM
   ignores focus groups entirely, the "Focus areas" line is omitted from the
   prompt, so focus-group keywords remain meaningful only for the keyword
   tagger (keyword-only mode).
