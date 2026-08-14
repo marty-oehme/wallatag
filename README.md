@@ -56,7 +56,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | Focus-group rules        | `[tagger] enable_rules`     | `WALLATAG_ENABLE_RULES`            |
 | LLM classification       | `[tagger] enable_llm`       | `WALLATAG_ENABLE_LLM`              |
 | Vocabulary match fields  | `[vocabulary] fields`       | `WALLATAG_VOCABULARY_FIELDS`       |
-| Focus groups             | `[focus.<name>]` keywords/tags/fields | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`, `WALLATAG_FOCUS_<NAME>_FIELDS` |
+| Focus groups             | `[focus.<name>]` keywords/tags/fields/keywords_regex | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`, `WALLATAG_FOCUS_<NAME>_FIELDS`, `WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX` |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
 `WALLATAG_DB` set to an empty string means history-less mode (no database at
@@ -68,6 +68,17 @@ secrets and is gitignored; only `wallatag.toml.example` is committed.
 
 `[focus.<name>]` tables define named keyword/tag rule groups. `--focus NAME`
 activates one group; the default is all groups.
+
+Each `[focus.<name>]` table also accepts an optional `keywords_regex` list
+(default empty): Python regex patterns matched against the group's fields *in
+addition to* the literal `keywords`. A group fires when ANY literal keyword
+matches OR ANY regex matches. Matching is per field, never across fields (same
+as literal keywords), and case-insensitive by default. Case-sensitive sections
+are possible with inline `(?-i:...)` overrides, e.g. `"(?-i:GTD)"` matches
+`GTD` but not `gtd` — regex matching reads the article fields raw, so the
+override works. Patterns are validated at load time: an invalid or
+empty/whitespace-only pattern is a `ConfigError` naming the group and the
+pattern (an empty regex matches everything, so it is rejected).
 
 ### Tagger settings
 
@@ -89,14 +100,14 @@ activates one group; the default is all groups.
   silently clear it).
 - Per-source match fields: the keyword tagger matches against the article's
   `title`, `url`, `domain_name` and `content` fields by default. Which fields
-  are checked is configurable **per source**, the vocabulary matcher and each
+  are checked is configurable *per source*, the vocabulary matcher and each
   focus group are independent:
   - `[vocabulary] fields` (env `WALLATAG_VOCABULARY_FIELDS`) restricts the
     existing-tag vocabulary matcher (which fields existing labels are matched
     against).
   - `[focus.<name>] fields` (env `WALLATAG_FOCUS_<NAME>_FIELDS`) restricts
-    that group's keywords to its own subset; `--focus NAME` and `--tag-policy`
-    are unaffected, and each group keeps its own fields.
+    that group's keywords AND regexes to its own subset; `--focus NAME` and
+    `--tag-policy` are unaffected, and each group keeps its own fields.
   - A missing key means all four fields; an empty list `[]` (or `""` via env)
     disables that source entirely, it never matches. For a focus group, the
     disable is uniform across BOTH taggers: a group with `fields = []` also
@@ -114,7 +125,7 @@ activates one group; the default is all groups.
   `WALLATAG_IGNORE_TAGS`, `WALLATAG_DB`, and `WALLATAG_AI_API_KEY`, where
   empty means clear).
 - `[ai]` enables the LLM tagger: `provider` (`ollama` or `openai-compatible`),
-  `base_url`, and `model`; it is active iff `provider` is set **and**
+  `base_url`, and `model`; it is active iff `provider` is set *and*
   `[tagger] enable_llm = true` (or `WALLATAG_ENABLE_LLM=true`), otherwise the
   keyword tagger is used. LLM tagging is opt-in: `enable_llm` defaults to
   `false`, so configuring `[ai]` alone no longer activates the LLM tagger —
@@ -156,18 +167,27 @@ activates one group; the default is all groups.
   LLM-failure path (`skipped`/`llm failures`, article deferred).
 
 Focus groups can be defined or overridden via environment variables too:
-`WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS` and
-`WALLATAG_FOCUS_<NAME>_FIELDS` map to a `[focus.<name>]` group's `keywords`,
-`tags` and `fields`. The group name is the text between the `WALLATAG_FOCUS_`
-prefix and the trailing `_KEYWORDS`/`_TAGS`/`_FIELDS` suffix, and those exact
-suffixes are required (`WALLATAG_FOCUS_<NAME>` with no suffix is ignored).
+`WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`,
+`WALLATAG_FOCUS_<NAME>_FIELDS` and `WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX` map
+to a `[focus.<name>]` group's `keywords`, `tags`, `fields` and `keywords_regex`.
+The group name is the text between the `WALLATAG_FOCUS_`
+prefix and the trailing `_KEYWORDS`/`_TAGS`/`_FIELDS`/`_KEYWORDS_REGEX` suffix,
+and those exact suffixes are required (`WALLATAG_FOCUS_<NAME>` with no suffix
+is ignored).
 Names may contain underscores: only the trailing suffix is stripped, so
 `WALLATAG_FOCUS_METHODS_KEYWORDS_TAGS` is group `methods_keywords` with its
 `tags` field set (mind the nesting). Values are comma-separated (items
 stripped of whitespace, empty items dropped, e.g. `fix,_frigo`); a non-empty
 value that parses to nothing (only separators or whitespace) is rejected, and
 an empty value clears (disables) that field, for `_FIELDS`, `""` disables the
-group's keyword matching entirely. Group names are case-insensitive and
+group's keyword matching entirely. A regex containing a literal comma cannot
+be expressed via `WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX`: the value is split on
+every comma and each fragment is then validated INDEPENDENTLY, so the split
+can SILENTLY change matching with no error (e.g. `"^a,b$"` becomes the two
+patterns `^a` and `b$`, both valid) — use TOML `keywords_regex` for
+comma-containing patterns. The `WALLATAG_FOCUS_GROUPS` JSON variable rejects
+comma-containing `keywords_regex` items loudly for the same reason. Group
+names are case-insensitive and
 groups merge by name: an env var overrides the same-named TOML group
 per-field (only the fields it sets),
 env-only groups are created with the missing field defaulting to empty, and
@@ -177,18 +197,18 @@ selection is unchanged and works on the merged result.
 ## Note on wallabag's native regex tagging rules
 
 wallabag has a built-in, regex-based tagging rules feature. It is managed in
-the wallabag UI, is applied **only to new entries at save time**, and has no
+the wallabag UI, is applied *only to new entries at save time*, and has no
 API: so it cannot back-fill existing entries or be scripted. Users who just
 want simple regex rulesets on new entries should use that feature directly.
 
 wallatag covers the gaps:
 
-- **Back-fill**: tagging articles that are already in the wallabag account.
-- **Vocabulary consistency**: sharing a common vocabulary across keyword rules
+- *Back-fill*: tagging articles that are already in the wallabag account.
+- *Vocabulary consistency*: sharing a common vocabulary across keyword rules
   and focus groups.
-- **Interactive review**: human-in-the-loop confirmation before tags are
+- *Interactive review*: human-in-the-loop confirmation before tags are
   applied (`manual`).
-- **AI tagging**: LLM-based suggestion.
+- *AI tagging*: LLM-based suggestion.
 
 ## Commands
 
@@ -205,7 +225,7 @@ that changes nothing.
 
 wallatag is hosted on a Dokku server and runs its own Prefect worker there. The
 `worker` process keeps the container alive and joins the `wallatag-pool` work
-pool; there is no web process. The Prefect **server** (on your incus host)
+pool; there is no web process. The Prefect *server* (on your incus host)
 schedules runs, stores results, and can notify you on failures; the worker in
 this container executes them by running the installed `wallatag run` against
 the wallabag API. A `git push dokku main` deploys the app and the flow together.
@@ -245,7 +265,7 @@ fields to the wallatag CLI as `WALLATAG_AI_*` env vars. Precedence for LLM
 settings, lowest to highest: `wallatag.toml` defaults → LLM credentials block
 (defaults for scheduled runs) → `WALLATAG_AI_*` env vars (`dokku config:set`)
 → CLI options (none exist for AI config today). So container env vars
-**override** the block: rotate or override credentials with `dokku config:set
+*override* the block: rotate or override credentials with `dokku config:set
 wallatag WALLATAG_AI_...` and the change takes effect on scheduled runs
 without touching the block, while editing the block in the Prefect UI changes
 the default. To CLEAR a block value, use `dokku config:unset` (e.g. `dokku
@@ -276,7 +296,7 @@ passes its non-empty fields to the wallatag CLI as `WALLATAG_*` env vars.
 Precedence for wallabag credentials, lowest to highest: `wallatag.toml`
 defaults → wallabag-credentials block (defaults for scheduled runs) →
 `WALLATAG_*` env vars (`dokku config:set`). So container env vars
-**override** the block: rotate or override credentials with `dokku config:set
+*override* the block: rotate or override credentials with `dokku config:set
 wallatag WALLATAG_...` and the change takes effect on scheduled runs without
 touching the block, while editing the block in the Prefect UI changes the
 default. To CLEAR a block value, use `dokku config:unset` (e.g. `dokku
@@ -317,18 +337,23 @@ The 9 scalar variables (names mirror the env vars exactly):
 
 Booleans are normalized to `true`/`false`, numbers to their plain string form
 — the same values the env vars accept. Focus groups go in ONE variable,
-`WALLATAG_FOCUS_GROUPS`, as a JSON object (all three keys optional, values are
-lists of strings; an empty `keywords`/`tags` list omits that field, `fields:
-[]` disables the group exactly like `WALLATAG_FOCUS_<NAME>_FIELDS=""`):
+`WALLATAG_FOCUS_GROUPS`, as a JSON object (all four keys optional, values are
+lists of strings; an empty `keywords`/`tags`/`keywords_regex` list omits that
+field, `fields: []` disables the group exactly like
+`WALLATAG_FOCUS_<NAME>_FIELDS=""`):
 
 ```sh
-prefect variable set WALLATAG_FOCUS_GROUPS '{"methods": {"keywords": ["howto", "tutorial"], "tags": ["dev"], "fields": ["title", "url"]}, "languages": {"tags": ["english"]}}'
+prefect variable set WALLATAG_FOCUS_GROUPS '{"methods": {"keywords": ["howto", "tutorial"], "tags": ["dev"], "fields": ["title", "url"], "keywords_regex": ["^how.?to"]}, "languages": {"tags": ["english"]}}'
 ```
 
-It is translated to the usual `WALLATAG_FOCUS_<NAME>_KEYWORDS`/`_TAGS`/`_FIELDS`
+It is translated to the usual
+`WALLATAG_FOCUS_<NAME>_KEYWORDS`/`_TAGS`/`_FIELDS`/`_KEYWORDS_REGEX`
 env convention (group names are lowercased). The JSON value is validated
-strictly: unknown keys (typo protection, e.g. `keywrods`), non-list fields and
-empty strings make the run fail loudly instead of silently changing tagging.
+strictly: unknown keys (typo protection, e.g. `keywrods`), non-list fields,
+empty strings, un-compilable `keywords_regex` patterns and `keywords_regex`
+patterns containing a literal comma (which the comma-joined env translation
+could not represent) make the run fail loudly instead of silently changing
+tagging.
 An empty-string `WALLATAG_FOCUS_GROUPS` value (e.g. clearing the field in the
 UI) also fails the run loudly — it is not a valid JSON object — so to remove
 focus groups entirely, delete the variable rather than blanking it out.
@@ -338,8 +363,9 @@ defaults → blocks → container env vars (`dokku config:set`) → Prefect
 Variables (scalar settings + `WALLATAG_FOCUS_GROUPS`) → CLI options
 (`--tag-policy`/`--focus`). So a variable overrides the container env var for
 that setting; the focus JSON overrides same-named `WALLATAG_FOCUS_<NAME>_*`
-env vars for the fields it emits, per-field (an empty `keywords`/`tags` list
-omits that env var entirely, so the container env var survives); and CLI flags
+env vars for the fields it emits, per-field (an empty `keywords`/`tags`/
+`keywords_regex` list omits that env var entirely, so the container env var
+survives); and CLI flags
 still win. Variables set only partially fall through:
 a missing variable leaves the container env / TOML value in place for that
 setting, so you can migrate settings to the UI one at a time. Secrets never

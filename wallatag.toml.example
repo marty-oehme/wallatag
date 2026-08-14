@@ -40,15 +40,29 @@ enable_llm = false                    # LLM tagging is opt-in: set true to enabl
 fields = ["title", "url"]
 
 # Named rule groups ("focus" areas). --focus NAME activates one; default = all.
-# Each group's keywords/tags/fields can also be overridden (or a new group
-# defined) via environment variables: WALLATAG_FOCUS_<NAME>_KEYWORDS,
-# WALLATAG_FOCUS_<NAME>_TAGS and WALLATAG_FOCUS_<NAME>_FIELDS, where NAME is
-# the text between the prefix and the exact _KEYWORDS/_TAGS/_FIELDS suffix
+# Each group's keywords/tags/fields/keywords_regex can also be overridden (or
+# a new group defined) via environment variables: WALLATAG_FOCUS_<NAME>_KEYWORDS,
+# WALLATAG_FOCUS_<NAME>_TAGS, WALLATAG_FOCUS_<NAME>_FIELDS and
+# WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX, where NAME is
+# the text between the prefix and the exact
+# _KEYWORDS/_TAGS/_FIELDS/_KEYWORDS_REGEX suffix
 # (may contain underscores; case-insensitive name, comma-separated values,
 # merge by name, "" clears that field).
 [focus.methods]
 keywords = ["pomodoro", "gtd", "zettelkasten"]
 tags = ["productivity", "method"]
+# Optional regex patterns (Python re syntax) matched IN ADDITION to keywords:
+# the group fires when ANY keyword OR ANY regex matches. Matching is per field
+# (never across fields) and case-insensitive by default; use inline (?-i:...)
+# for case-sensitive sections (e.g. "(?-i:GTD)") — regexes read the raw
+# article fields, so the override works. Invalid or empty/whitespace-only
+# patterns are rejected at load. Env override:
+# WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX (comma-separated; the value is split on
+# every comma and each fragment is validated independently, so a comma inside a
+# regex can SILENTLY change matching — regexes containing commas must use TOML
+# keywords_regex; the Prefect WALLATAG_FOCUS_GROUPS JSON variable rejects them
+# loudly for the same reason).
+keywords_regex = []
 # Which article fields THIS group's keywords match against. Default (absent):
 # all four fields; an empty list [] disables this group's keyword matching.
 # Same strict field names as [vocabulary] fields above.

@@ -53,7 +53,8 @@
 # WALLATAG_ENABLE_LLM, WALLATAG_AI_CONFIDENCE_THRESHOLD,
 # WALLATAG_AI_USE_FOCUS_GROUPS, WALLATAG_VOCABULARY_FIELDS (names mirror the env
 # vars exactly), plus ONE JSON variable WALLATAG_FOCUS_GROUPS mapping group
-# names to {keywords, tags, fields}. The flow reads them every run and passes
+# names to {keywords, tags, fields, keywords_regex}. The flow reads them every
+# run and passes
 # them to the wallatag CLI as WALLATAG_* env vars. Precedence, lowest to
 # highest: wallatag.toml defaults → blocks → container env vars (dokku
 # config:set) → Prefect Variables → CLI options (--tag-policy/--focus). Missing

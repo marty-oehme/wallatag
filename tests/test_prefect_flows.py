@@ -565,6 +565,53 @@ class PrefectFlowsTest(unittest.TestCase):
             ],
         )
 
+    def test_focus_groups_env_emits_keywords_regex(self) -> None:
+        raw = {
+            "methods": {
+                "keywords": ["howto"],
+                "keywords_regex": ["^how.?to", "(?-i:GTD)"],
+            }
+        }
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(
+            env,
+            {
+                "WALLATAG_FOCUS_methods_KEYWORDS": "howto",
+                "WALLATAG_FOCUS_methods_KEYWORDS_REGEX": "^how.?to,(?-i:GTD)",
+            },
+        )
+
+    def test_focus_groups_env_omits_empty_keywords_regex(self) -> None:
+        raw = {"methods": {"keywords_regex": []}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            env = self.prefect_flows.focus_groups_env()
+        self.assertEqual(env, {})
+
+    def test_focus_groups_env_rejects_invalid_regex(self) -> None:
+        raw = {"methods": {"keywords_regex": ["^["]}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.prefect_flows.focus_groups_env()
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn("'methods'", message)
+        self.assertIn("'^['", message)
+
+    def test_focus_groups_env_rejects_comma_containing_regex(self) -> None:
+        # A comma-containing pattern is compilable but the comma-separated env
+        # translation would silently split it: reject fail-loud here so the
+        # user must use TOML keywords_regex instead.
+        raw = {"methods": {"keywords_regex": ["^a,b$"]}}
+        with patch("prefect_flows.Variable.get", return_value=raw):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.prefect_flows.focus_groups_env()
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn("'methods'", message)
+        self.assertIn("'^a,b$'", message)
+        self.assertIn("comma", message)
+
     def test_flow_variable_env_beats_container_env(self) -> None:
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="tagged 3 articles", stderr=""

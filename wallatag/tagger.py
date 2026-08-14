@@ -82,6 +82,13 @@ class KeywordTagger:
     needle never matches across field boundaries. The content is HTML; raw
     substring matching against it is acceptable for the MVP.
 
+    Each focus group may additionally carry ``keywords_regex`` patterns: the
+    group fires when ANY literal keyword matches OR ANY regex matches (searched
+    per field against the RAW field values, never across fields). Regexes are
+    compiled with ``re.IGNORECASE`` by default; inline overrides like
+    ``(?-i:GTD)`` work because matching reads the original text, not the
+    casefolded needles literal matching uses.
+
     Which fields are matched is configurable PER SOURCE. The vocabulary
     matcher (existing-tag labels) checks ``vocabulary_fields`` (default: all
     four fields); each focus group checks ``group.fields`` when set, otherwise
@@ -149,6 +156,29 @@ class KeywordTagger:
                 )
         # dict preserves config insertion order -> deterministic iteration.
         self.focus_groups = dict(focus_groups)
+        # Pre-compile each group's regex patterns ONCE. config.py already
+        # validated compilability, so this ValueError is a backstop for groups
+        # constructed directly (mirroring the enable_* ValueError style).
+        # Compiled with re.IGNORECASE: regex matching is case-insensitive by
+        # default, with inline (?-i:...) overrides still working because
+        # matching reads the RAW field values, never the casefolded needles.
+        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = {}
+        for name, group in self.focus_groups.items():
+            compiled: list[re.Pattern] = []
+            for pattern in group.keywords_regex:
+                if not isinstance(pattern, str) or not pattern.strip():
+                    raise ValueError(
+                        f"focus group {name!r}: keywords_regex contains an "
+                        f"empty, whitespace-only or non-string pattern {pattern!r}"
+                    )
+                try:
+                    compiled.append(re.compile(pattern, re.IGNORECASE))
+                except re.error as exc:
+                    raise ValueError(
+                        f"focus group {name!r}: keywords_regex contains invalid "
+                        f"regex {pattern!r}: {exc}"
+                    ) from exc
+            self._group_regexes[name] = tuple(compiled)
         self.max_suggestions = max_suggestions
         self.tag_policy = tag_policy
         # Labels are normalized for matching but suggested in their original
@@ -171,6 +201,20 @@ class KeywordTagger:
             if isinstance(value, str) and value:
                 needles.append(value.casefold())
         return tuple(needles)
+
+    def _field_values(self, entry: dict, fields) -> tuple[str, ...]:
+        """Raw per-field text for regex matching, fields kept separate.
+
+        Parallel to ``_field_needles`` but WITHOUT casefolding: regexes carry
+        their own case handling (compiled with ``re.IGNORECASE``), and inline
+        flags like ``(?-i:...)`` must see the original text to take effect.
+        """
+        values = []
+        for key in fields:
+            value = entry.get(key)
+            if isinstance(value, str) and value:
+                values.append(value)
+        return tuple(values)
 
     @staticmethod
     def _matches(needle: object, fields: tuple[str, ...]) -> bool:
@@ -201,15 +245,27 @@ class KeywordTagger:
     def _rule_suggestions(self, entry: dict) -> list[TagSuggestion]:
         """Rule suggestions, matching each group against its OWN field subset.
 
-        A group with ``fields`` set matches its keywords against only those
-        article fields; ``fields=None`` falls back to the class default (all
-        four); an explicitly empty tuple means the group never matches.
+        A group with ``fields`` set matches its keywords/regexes against only
+        those article fields; ``fields=None`` falls back to the class default
+        (all four); an explicitly empty tuple means the group never matches.
+        A group fires when ANY literal keyword matches (the current
+        case-insensitive substring semantics) OR ANY regex matches (compiled
+        with ``re.IGNORECASE``, searched against the RAW field values,
+        per-field like the literals, never across fields).
         """
         suggestions = []
-        for group in self.focus_groups.values():
+        for name, group in self.focus_groups.items():
             group_fields = group.fields if group.fields is not None else self._FIELDS
             fields = self._field_needles(entry, group_fields)
-            if any(self._matches(kw, fields) for kw in group.keywords):
+            hit = any(self._matches(kw, fields) for kw in group.keywords)
+            if not hit and group.keywords_regex:
+                values = self._field_values(entry, group_fields)
+                hit = any(
+                    pattern.search(field)
+                    for pattern in self._group_regexes[name]
+                    for field in values
+                )
+            if hit:
                 for tag in group.tags:
                     if isinstance(tag, str) and tag.strip():
                         suggestions.append(

@@ -273,6 +273,135 @@ tags = ["productivity"]
         self.assertEqual(group.keywords, ("pomodoro", "gtd"))
         self.assertEqual(group.tags, ("productivity",))
 
+    def test_keywords_regex_parsed_from_toml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+keywords_regex = ["^how.?to", "(?-i:GTD)"]
+""",
+            )
+            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+        group = config.tagger.focus_groups["methods"]
+        self.assertEqual(group.keywords_regex, ("^how.?to", "(?-i:GTD)"))
+        # The raw strings are stored, not compiled: re.IGNORECASE is applied
+        # by the tagger, and inline flags must survive intact.
+        self.assertEqual(group.tags, ("productivity",))
+
+    def test_keywords_regex_absent_defaults_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+""",
+            )
+            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+        self.assertEqual(config.tagger.focus_groups["methods"].keywords_regex, ())
+
+    def test_keywords_regex_empty_list_parses_to_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords = ["pomodoro"]
+keywords_regex = []
+
+[focus.notes]
+keywords = ["meeting"]
+""",
+            )
+            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+        # `keywords_regex = []` and an absent key behave identically: both
+        # leave the field at its dataclass default ().
+        self.assertEqual(config.tagger.focus_groups["methods"].keywords_regex, ())
+        self.assertEqual(config.tagger.focus_groups["notes"].keywords_regex, ())
+
+    def test_invalid_keywords_regex_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords = ["pomodoro"]
+keywords_regex = ["^["]
+""",
+            )
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+        message = str(ctx.exception)
+        # The error names the focus group and the offending pattern.
+        self.assertIn("methods", message)
+        self.assertIn("keywords_regex", message)
+        self.assertIn("'^['", message)
+        self.assertIn("unterminated", message)
+
+    def test_empty_keywords_regex_pattern_raises(self):
+        # An empty regex matches everything: rejected as a footgun.
+        for bad in ('[""]', '["   "]'):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                write_toml(
+                    tmp,
+                    f"""
+[focus.methods]
+keywords_regex = {bad}
+""",
+                )
+                with self.assertRaises(ConfigError) as ctx:
+                    load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            message = str(ctx.exception)
+            self.assertIn("methods", message)
+            self.assertIn("keywords_regex", message)
+            self.assertIn("empty or whitespace-only", message)
+
+    def test_keywords_regex_non_list_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords_regex = "^howto"
+""",
+            )
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+        message = str(ctx.exception)
+        self.assertIn("methods", message)
+        self.assertIn("keywords_regex", message)
+        self.assertIn("list of strings", message)
+
+    def test_keywords_regex_non_string_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                """
+[focus.methods]
+keywords_regex = [1]
+""",
+            )
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+        message = str(ctx.exception)
+        self.assertIn("methods", message)
+        self.assertIn("keywords_regex", message)
+        self.assertIn("non-string", message)
+
     def test_casefold_duplicate_group_names_raise(self):
         # [focus.methods] + [focus.Methods] differ only in case and would merge
         # ambiguously at env-override time: reject the TOML up front.
@@ -1174,6 +1303,100 @@ tags = ["productivity"]
             config.tagger.focus_groups["methods"],
             FocusGroup(keywords=("pomodoro",), tags=("productivity",)),
         )
+
+    def test_env_keywords_regex_parsed(self):
+        config = self._env_load(
+            "",
+            {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "^howto,gtd$"},
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords_regex,
+            ("^howto", "gtd$"),
+        )
+
+    def test_env_keywords_regex_replaces_only_that_field(self):
+        # Env _KEYWORDS replaces ONLY the keywords field; the TOML
+        # keywords_regex is preserved.
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+tags = ["productivity"]
+keywords_regex = ["^howto"]
+""",
+            {"WALLATAG_FOCUS_METHODS_KEYWORDS": "gtd"},
+        )
+        group = config.tagger.focus_groups["methods"]
+        self.assertEqual(group.keywords, ("gtd",))
+        self.assertEqual(group.tags, ("productivity",))
+        self.assertEqual(group.keywords_regex, ("^howto",))
+
+    def test_env_keywords_regex_empty_clears(self):
+        config = self._env_load(
+            """
+[focus.methods]
+keywords = ["pomodoro"]
+keywords_regex = ["^howto"]
+""",
+            {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": ""},
+        )
+        self.assertEqual(config.tagger.focus_groups["methods"].keywords_regex, ())
+        self.assertEqual(config.tagger.focus_groups["methods"].keywords, ("pomodoro",))
+
+    def test_env_only_group_with_keywords_regex(self):
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_LANGUAGES_KEYWORDS_REGEX": "^py.thon"}
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["languages"],
+            FocusGroup(keywords=(), tags=(), keywords_regex=("^py.thon",)),
+        )
+
+    def test_env_keywords_regex_strips_and_drops_empties(self):
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": " ^howto ,gtd$,"}
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords_regex,
+            ("^howto", "gtd$"),
+        )
+
+    def test_env_keywords_regex_invalid_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "^["})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX", message)
+        self.assertIn("'^['", message)
+
+    def test_env_keywords_regex_comma_in_pattern_splits_and_raises(self):
+        # A regex containing a comma is not expressible via the env var: it is
+        # split and the fragments fail to compile. Use TOML or the
+        # WALLATAG_FOCUS_GROUPS JSON variable for such patterns.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "[a,b]"})
+        message = str(ctx.exception)
+        self.assertIn("WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX", message)
+        self.assertIn("'[a'", message)
+
+    def test_env_keywords_regex_comma_splits_silently(self):
+        # Documented surprise: the value is split on every comma and each
+        # fragment is validated INDEPENDENTLY, so "^a,b$" becomes two VALID
+        # patterns with no error — the matching semantics change silently.
+        # Comma-containing regexes must use TOML keywords_regex (the Prefect
+        # JSON variable rejects them loudly).
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "^a,b$"}
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords_regex,
+            ("^a", "b$"),
+        )
+
+    def test_env_empty_name_keywords_regex_raises(self):
+        # Exactly WALLATAG_FOCUS_KEYWORDS_REGEX: prefix + suffix, empty name.
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_FOCUS_KEYWORDS_REGEX": "^x"})
+        self.assertIn("WALLATAG_FOCUS_KEYWORDS_REGEX", str(ctx.exception))
 
 
 class VocabularyTomlTest(unittest.TestCase):

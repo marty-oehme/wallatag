@@ -7,6 +7,7 @@ Layering order (lowest to highest precedence): defaults < TOML file
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -41,6 +42,7 @@ _ENV_ENABLE_RULES = "WALLATAG_ENABLE_RULES"
 _ENV_ENABLE_LLM = "WALLATAG_ENABLE_LLM"
 _ENV_FOCUS_PREFIX = "WALLATAG_FOCUS_"
 _ENV_FOCUS_KEYWORDS_SUFFIX = "_KEYWORDS"
+_ENV_FOCUS_KEYWORDS_REGEX_SUFFIX = "_KEYWORDS_REGEX"
 _ENV_FOCUS_TAGS_SUFFIX = "_TAGS"
 _ENV_FOCUS_FIELDS_SUFFIX = "_FIELDS"
 _ENV_VOCABULARY_FIELDS = "WALLATAG_VOCABULARY_FIELDS"
@@ -60,6 +62,14 @@ class FocusGroup:
     # tagger's default (all four fields); an explicitly empty tuple disables
     # the group entirely. None distinguishes "absent" from "explicitly empty".
     fields: tuple[str, ...] | None = None
+    # Optional regex patterns for this group, parallel to keywords: the group
+    # fires when ANY literal keyword matches OR ANY regex matches (per-field,
+    # never across fields). Patterns are stored raw and validated at parse
+    # time (invalid and empty/whitespace-only patterns are ConfigErrors);
+    # matching is case-insensitive by default (re.IGNORECASE) and reads the
+    # RAW article field values, so inline flags like ``(?-i:...)`` still work.
+    # Empty default: regex matching is off.
+    keywords_regex: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -277,6 +287,36 @@ def _validate_match_fields(
     return fields
 
 
+def _compile_focus_regex(
+    context: str, key: str, patterns: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Validate a tuple of focus-group regex patterns; return it unchanged.
+
+    Both the TOML path and the env path call it so a bad pattern fails loudly
+    instead of silently never/always matching. Patterns are stored raw (matching
+    reads the raw article fields), so only compilability is validated here, with
+    no flags: matching applies ``re.IGNORECASE`` itself and inline flags like
+    ``(?-i:...)`` must survive intact. Empty or whitespace-only patterns are
+    rejected before compiling: an empty regex matches everything, which is
+    almost certainly a mistake. ``context``/``key`` name the source in error
+    messages (e.g. ``focus group 'methods'`` and ``keywords_regex``), mirroring
+    the ``_validate_match_fields`` convention.
+    """
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ConfigError(
+                f"{context}: {key} contains an empty or whitespace-only regex "
+                f"pattern {pattern!r}; an empty regex matches everything"
+            )
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ConfigError(
+                f"{context}: {key} contains invalid regex {pattern!r}: {exc}"
+            ) from exc
+    return patterns
+
+
 def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
     groups: dict[str, FocusGroup] = {}
     # Two group names that differ only in case (e.g. `[focus.methods]` and
@@ -294,7 +334,8 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
         seen_casefold[folded] = name
         if not isinstance(section, dict):
             raise ConfigError(
-                f"focus group {name!r} must be a table with keywords and tags"
+                f"focus group {name!r} must be a table with "
+                "keywords/tags/fields/keywords_regex"
             )
         keywords = (
             _parse_string_list(f"focus group {name!r}", "keywords", section["keywords"])
@@ -318,7 +359,28 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
             if "fields" in section
             else None
         )
-        groups[name] = FocusGroup(keywords=keywords, tags=tags, fields=fields)
+        # Optional per-group regex patterns, parallel to keywords. Parsed like
+        # keywords (list of strings), then validated: invalid or
+        # empty/whitespace-only patterns are ConfigErrors at parse time.
+        keywords_regex = (
+            _compile_focus_regex(
+                f"focus group {name!r}",
+                "keywords_regex",
+                _parse_string_list(
+                    f"focus group {name!r}",
+                    "keywords_regex",
+                    section["keywords_regex"],
+                ),
+            )
+            if "keywords_regex" in section
+            else ()
+        )
+        groups[name] = FocusGroup(
+            keywords=keywords,
+            tags=tags,
+            fields=fields,
+            keywords_regex=keywords_regex,
+        )
     return groups
 
 
@@ -656,8 +718,9 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         )
 
     # Focus groups: WALLATAG_FOCUS_<NAME>_KEYWORDS / WALLATAG_FOCUS_<NAME>_TAGS
-    # / WALLATAG_FOCUS_<NAME>_FIELDS (comma-separated, same parsing as
-    # WALLATAG_IGNORE_TAGS; "" clears that field). Matching is by name,
+    # / WALLATAG_FOCUS_<NAME>_FIELDS / WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX
+    # (comma-separated, same parsing as WALLATAG_IGNORE_TAGS; "" clears that
+    # field). Matching is by name,
     # case-insensitively: an env var overrides the same-named TOML group
     # per-field (only the fields it sets), an env-only group is created with
     # the missing field defaulting to (), and TOML groups without an env
@@ -675,6 +738,12 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             field = "keywords"
             name = key[
                 len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_KEYWORDS_SUFFIX)
+            ]
+        elif key.endswith(_ENV_FOCUS_KEYWORDS_REGEX_SUFFIX):
+            field = "keywords_regex"
+            name = key[
+                len(_ENV_FOCUS_PREFIX) : len(key)
+                - len(_ENV_FOCUS_KEYWORDS_REGEX_SUFFIX)
             ]
         elif key.endswith(_ENV_FOCUS_TAGS_SUFFIX):
             field = "tags"
@@ -701,6 +770,15 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             group = replace(
                 group,
                 keywords=_parse_comma_separated("focus group", key, env[key]),
+            )
+        elif field == "keywords_regex":
+            group = replace(
+                group,
+                keywords_regex=_compile_focus_regex(
+                    "focus group",
+                    key,
+                    _parse_comma_separated("focus group", key, env[key]),
+                ),
             )
         elif field == "tags":
             group = replace(

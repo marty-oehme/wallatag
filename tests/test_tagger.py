@@ -369,6 +369,199 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         self.assertIn("enable_rules", str(ctx.exception))
 
 
+class RegexRuleTest(unittest.TestCase):
+    """keywords_regex: regexes fire focus groups alongside literal keywords."""
+
+    def test_regex_fires_group_with_rules_confidence(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(),
+                tags=("howto",),
+                keywords_regex=("^how.?to",),
+            )
+        }
+        result = make_tagger(groups).suggest(entry(title="How To install X"))
+
+        self.assertEqual(result[0].tag, "howto")
+        self.assertEqual(result[0].source, "rules")
+        self.assertEqual(result[0].confidence, 0.7)
+
+    def test_regex_matches_in_content_field(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("recipe",), keywords_regex=("(tasty|spicy)",)
+            )
+        }
+        result = make_tagger(groups).suggest(
+            entry(title="article", content="<p>a tasty recipe for soup</p>")
+        )
+
+        self.assertEqual([s.tag for s in result], ["recipe"])
+
+    def test_regex_case_insensitive_by_default(self):
+        groups = {
+            "a": FocusGroup(keywords=(), tags=("howto",), keywords_regex=("^howto",))
+        }
+        result = make_tagger(groups).suggest(entry(title="HOWTO Guide"))
+
+        self.assertEqual([s.tag for s in result], ["howto"])
+
+    def test_regex_case_sensitive_override_reads_raw_fields(self):
+        # (?-i:...) scopes case-sensitivity to one section; it only works
+        # because regex matching reads the RAW field values, not the casefolded
+        # needles literal matching uses.
+        groups = {
+            "a": FocusGroup(keywords=(), tags=("gtd",), keywords_regex=("(?-i:GTD)",))
+        }
+        tagger = make_tagger(groups)
+        self.assertEqual([s.tag for s in tagger.suggest(entry(title="GTD intro"))], ["gtd"])
+        self.assertEqual(tagger.suggest(entry(title="gtd intro")), [])
+        # Raw content values work too.
+        self.assertEqual(
+            [s.tag for s in tagger.suggest(entry(title="x", content="GTD"))], ["gtd"]
+        )
+
+    def test_regex_matching_is_per_field(self):
+        # The pattern spans the title/url boundary and must NOT match.
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("t1",), keywords_regex=("rust programming",)
+            )
+        }
+        e = entry(title="the rust", url="programming-guide")
+        self.assertEqual(make_tagger(groups).suggest(e), [])
+
+    def test_regex_matches_within_single_field(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("t1",), keywords_regex=("rust programming",)
+            )
+        }
+        e = entry(title="the rust programming guide")
+        self.assertEqual([s.tag for s in make_tagger(groups).suggest(e)], ["t1"])
+
+    def test_literal_and_regex_coexist_either_fires(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=("gtd",),
+                tags=("productivity",),
+                keywords_regex=("^how.?to",),
+            )
+        }
+        tagger = make_tagger(groups)
+        self.assertEqual(
+            [s.tag for s in tagger.suggest(entry(title="How to X"))], ["productivity"]
+        )
+        self.assertEqual(
+            [s.tag for s in tagger.suggest(entry(title="my gtd setup"))],
+            ["productivity"],
+        )
+        self.assertEqual(tagger.suggest(entry(title="nothing relevant")), [])
+
+    def test_regex_only_group_fires_with_empty_keywords(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("pomodoro",), keywords_regex=("pomodoro",)
+            )
+        }
+        result = make_tagger(groups).suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual([s.tag for s in result], ["pomodoro"])
+
+    def test_only_existing_drops_regex_rules(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("howto",), keywords_regex=("^how.?to",)
+            )
+        }
+        tagger = make_tagger(
+            groups, tag_policy="only-existing", existing_tags=["unrelated"]
+        )
+        result = tagger.suggest(entry(title="How to X"))
+
+        self.assertEqual(result, [])
+
+    def test_enable_rules_false_drops_regex_rules(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("howto",), keywords_regex=("^how.?to",)
+            )
+        }
+        tagger = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="prefer-existing",
+            enable_rules=False,
+        )
+        self.assertEqual(tagger.suggest(entry(title="How to X")), [])
+
+    def test_regex_fields_subset_applies(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(),
+                tags=("method",),
+                fields=("title",),
+                keywords_regex=("pomodoro",),
+            )
+        }
+        tagger = make_tagger(groups)
+        # "pomodoro" only appears in content: the title-only subset must not
+        # fire.
+        self.assertEqual(tagger.suggest(entry(title="x", content="pomodoro notes")), [])
+        self.assertEqual(
+            [s.tag for s in tagger.suggest(entry(title="pomodoro notes"))], ["method"]
+        )
+
+    def test_empty_fields_subset_disables_regex_matching(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(),
+                tags=("method",),
+                fields=(),
+                keywords_regex=("pomodoro",),
+            )
+        }
+        self.assertEqual(make_tagger(groups).suggest(entry(title="pomodoro")), [])
+
+    def test_blank_regex_pattern_raises_at_construction(self):
+        # Backstop: config already rejects blank patterns, but a directly
+        # constructed group must not silently match everything either.
+        for bad in ("", "   "):
+            with self.assertRaises(ValueError) as ctx:
+                KeywordTagger(
+                    {"a": FocusGroup(keywords=(), tags=("t",), keywords_regex=(bad,))},
+                    max_suggestions=10,
+                    tag_policy="prefer-existing",
+                )
+            self.assertIn("'a'", str(ctx.exception))
+            self.assertIn("keywords_regex", str(ctx.exception))
+
+    def test_invalid_regex_raises_at_construction(self):
+        with self.assertRaises(ValueError) as ctx:
+            KeywordTagger(
+                {
+                    "a": FocusGroup(
+                        keywords=(), tags=("t",), keywords_regex=("^[",)
+                    )
+                },
+                max_suggestions=10,
+                tag_policy="prefer-existing",
+            )
+        message = str(ctx.exception)
+        self.assertIn("'a'", message)
+        self.assertIn("keywords_regex", message)
+        self.assertIn("'^['", message)
+
+    def test_missing_fields_do_not_crash_regex(self):
+        groups = {
+            "a": FocusGroup(
+                keywords=(), tags=("t",), keywords_regex=("pomodoro",)
+            )
+        }
+        e = {"id": 1, "title": "pomodoro notes", "content": None}
+        self.assertEqual([s.tag for s in make_tagger(groups).suggest(e)], ["t"])
+
+
 class FakeLLMClient:
     """Stub LLMClientLike: returns canned JSON and records the prompts."""
 

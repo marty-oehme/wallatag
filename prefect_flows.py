@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
@@ -44,7 +45,7 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
 )
 
 # Focus groups as ONE JSON variable, translated to the existing
-# WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS env convention.
+# WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS/_KEYWORDS_REGEX env convention.
 FOCUS_GROUPS_VARIABLE = "WALLATAG_FOCUS_GROUPS"
 
 
@@ -135,9 +136,13 @@ def _parse_focus_groups(raw: object) -> dict[str, dict[str, list[str]]]:
     """Validate the WALLATAG_FOCUS_GROUPS variable value (fail loud).
 
     Expects a JSON object (or already-parsed dict) mapping group names to
-    ``{"keywords": [...], "tags": [...], "fields": [...]}`` (all three keys
-    optional; values are lists of non-empty strings). Group names must be
-    strings and unique case-insensitively. Any violation raises a
+    ``{"keywords": [...], "tags": [...], "fields": [...], "keywords_regex":
+    [...]}`` (all four keys optional; values are lists of non-empty strings).
+    Group names must be strings and unique case-insensitively. ``keywords_regex``
+    items must additionally be compilable regexes and must not contain a literal
+    comma (the comma-separated env translation would silently split them, so
+    comma-containing patterns are rejected fail-loud here — use TOML
+    ``keywords_regex`` instead). Any violation raises a
     RuntimeError naming the variable and the offending group/key so a typo
     (e.g. "keywrods") is caught instead of silently changing tagging.
     """
@@ -147,18 +152,18 @@ def _parse_focus_groups(raw: object) -> dict[str, dict[str, list[str]]]:
         except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"{FOCUS_GROUPS_VARIABLE}: expected a JSON object mapping "
-                f"group names to {{keywords, tags, fields}}, got invalid "
-                f"JSON: {exc}"
+                f"group names to {{keywords, tags, fields, keywords_regex}}, "
+                f"got invalid JSON: {exc}"
             ) from exc
     else:
         parsed = raw
     if not isinstance(parsed, dict):
         raise RuntimeError(
             f"{FOCUS_GROUPS_VARIABLE}: expected a JSON object (dict) mapping "
-            f"group names to {{keywords, tags, fields}}, got "
+            f"group names to {{keywords, tags, fields, keywords_regex}}, got "
             f"{type(parsed).__name__}"
         )
-    allowed = ("keywords", "tags", "fields")
+    allowed = ("keywords", "tags", "fields", "keywords_regex")
     # Two group names that differ only in case (e.g. "methods" and "Methods")
     # would both map to WALLATAG_FOCUS_methods_* env vars and one would be
     # silently dropped, so they are rejected up front (wallatag itself rejects
@@ -182,14 +187,15 @@ def _parse_focus_groups(raw: object) -> dict[str, dict[str, list[str]]]:
         if not isinstance(group, dict):
             raise RuntimeError(
                 f"{FOCUS_GROUPS_VARIABLE}: group {name!r} must be a dict "
-                f"with optional keys keywords/tags/fields, got "
+                f"with optional keys keywords/tags/fields/keywords_regex, got "
                 f"{type(group).__name__}"
             )
         for key in group:
             if key not in allowed:
                 raise RuntimeError(
                     f"{FOCUS_GROUPS_VARIABLE}: group {name!r} has unknown "
-                    f"key {key!r}; allowed keys: keywords, tags, fields"
+                    f"key {key!r}; allowed keys: keywords, tags, fields, "
+                    f"keywords_regex"
                 )
         cleaned: dict[str, list[str]] = {}
         for key in allowed:
@@ -216,6 +222,27 @@ def _parse_focus_groups(raw: object) -> dict[str, dict[str, list[str]]]:
                         f"{key!r} contains an empty or whitespace-only string"
                     )
                 stripped_items.append(stripped)
+            # Fail fast on a bad regex: the UI shows the reason instead of only
+            # failing when the wallatag subprocess exits 2. Un-compilable
+            # patterns are one case; patterns containing a literal comma are
+            # the other — the comma-separated env translation would silently
+            # split them, so they must use TOML keywords_regex instead.
+            if key == "keywords_regex":
+                for item in stripped_items:
+                    try:
+                        re.compile(item)
+                    except re.error as exc:
+                        raise RuntimeError(
+                            f"{FOCUS_GROUPS_VARIABLE}: group {name!r} field "
+                            f"keywords_regex contains invalid regex {item!r}: {exc}"
+                        ) from exc
+                    if "," in item:
+                        raise RuntimeError(
+                            f"{FOCUS_GROUPS_VARIABLE}: group {name!r} field "
+                            f"keywords_regex contains a comma in pattern {item!r}; "
+                            f"the comma-separated env translation cannot "
+                            f"represent it — use TOML keywords_regex"
+                        )
             cleaned[key] = stripped_items
         groups[name] = cleaned
     return groups
@@ -226,11 +253,15 @@ def focus_groups_env() -> dict[str, str]:
     Prefect Variable, if any.
 
     The variable is a JSON object mapping group names to
-    ``{"keywords": [...], "tags": [...], "fields": [...]}`` (all three keys
-    optional). It is translated to the env convention wallatag/config.py
-    already parses: ``WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS``
-    (comma-separated, group name lowercased). Empty/absent keywords or tags
-    omit that env var entirely; a present ``fields`` key is always emitted —
+    ``{"keywords": [...], "tags": [...], "fields": [...], "keywords_regex":
+    [...]}`` (all four keys optional). It is translated to the env convention
+    wallatag/config.py already parses:
+    ``WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS/_KEYWORDS_REGEX``
+    (comma-separated, group name lowercased). ``keywords_regex`` patterns
+    containing a literal comma are rejected in ``_parse_focus_groups`` because
+    this comma-join would silently split them; empty/absent keywords, tags or
+    keywords_regex omit that env var entirely; a present ``fields`` key is
+    always emitted —
     an empty list emits ``WALLATAG_FOCUS_<NAME>_FIELDS = ""``, which wallatag
     parses as fields=() and disables that group (matching the per-source-fields
     feature). Groups are iterated in sorted() order for determinism. Values
@@ -255,6 +286,9 @@ def focus_groups_env() -> dict[str, str]:
         keywords = groups[name].get("keywords")
         if keywords:
             env[f"{prefix}_KEYWORDS"] = ",".join(keywords)
+        keywords_regex = groups[name].get("keywords_regex")
+        if keywords_regex:
+            env[f"{prefix}_KEYWORDS_REGEX"] = ",".join(keywords_regex)
         tags = groups[name].get("tags")
         if tags:
             env[f"{prefix}_TAGS"] = ",".join(tags)
