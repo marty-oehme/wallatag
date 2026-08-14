@@ -39,7 +39,8 @@ enable_llm = false                    # LLM tagging is opt-in: set true to enabl
 [vocabulary]
 fields = ["title", "url"]
 
-# Named rule groups ("focus" areas). --focus NAME activates one; default = all.
+# Named rule groups ("focus" areas). --focus NAME activates one; repeat the
+# flag to activate several (e.g. --focus methods --focus languages); default = all.
 # Each group's keywords/tags/fields/keywords_regex can also be overridden (or
 # a new group defined) via environment variables: WALLATAG_FOCUS_<NAME>_KEYWORDS,
 # WALLATAG_FOCUS_<NAME>_TAGS, WALLATAG_FOCUS_<NAME>_FIELDS and

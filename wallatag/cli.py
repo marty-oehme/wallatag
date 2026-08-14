@@ -54,7 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="max articles per run (default: unlimited)",
     )
-    common.add_argument("--focus", metavar="NAME", help="activate one focus group")
+    common.add_argument(
+        "--focus",
+        metavar="NAME",
+        action="append",
+        help="activate one focus group (repeatable to select several)",
+    )
     common.add_argument(
         "--tag-policy",
         choices=VALID_TAG_POLICIES,
@@ -112,16 +117,27 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
         config = dataclasses.replace(config, verbose=True)
     focus = getattr(args, "focus", None)
     if focus is not None:
-        selected = config.tagger.focus_groups.get(focus)
-        if selected is None:
-            available = ", ".join(config.tagger.focus_groups) or "(none configured)"
-            raise ConfigError(
-                f"unknown focus group {focus!r}; available focus groups: {available}"
+        names = [focus] if isinstance(focus, str) else focus
+        if names:
+            # Validate every name before touching the config (all-or-nothing):
+            # an unknown name raises here, before any narrowing is applied.
+            selected_groups = {}
+            for name in names:
+                selected = config.tagger.focus_groups.get(name)
+                if selected is None:
+                    available = (
+                        ", ".join(config.tagger.focus_groups) or "(none configured)"
+                    )
+                    raise ConfigError(
+                        f"unknown focus group {name!r}; available focus groups: {available}"
+                    )
+                selected_groups[name] = selected
+            config = dataclasses.replace(
+                config,
+                tagger=dataclasses.replace(
+                    config.tagger, focus_groups=selected_groups
+                ),
             )
-        config = dataclasses.replace(
-            config,
-            tagger=dataclasses.replace(config.tagger, focus_groups={focus: selected}),
-        )
     return config
 
 

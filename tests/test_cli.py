@@ -218,6 +218,81 @@ class FocusTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("focus groups: methods", text)
 
+    def test_multiple_focus_narrows_to_both_groups_in_flag_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._load_with_focus_groups(tmp)
+            narrowed = apply_flag_overrides(
+                config, _args(focus=["languages", "methods"])
+            )
+        self.assertEqual(list(narrowed.tagger.focus_groups), ["languages", "methods"])
+        self.assertEqual(
+            narrowed.tagger.focus_groups["languages"].keywords, ("python",)
+        )
+        self.assertEqual(
+            narrowed.tagger.focus_groups["languages"].tags, ("programming",)
+        )
+        self.assertEqual(
+            narrowed.tagger.focus_groups["methods"].keywords, ("pomodoro",)
+        )
+        self.assertEqual(
+            narrowed.tagger.focus_groups["methods"].tags, ("productivity",)
+        )
+
+    def test_unknown_focus_among_valid_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(self.FOCUS_TOML, encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = main(
+                    [
+                        "status",
+                        "--config",
+                        str(path),
+                        "--focus",
+                        "methods",
+                        "--focus",
+                        "bogus",
+                    ]
+                )
+            message = err.getvalue()
+        self.assertEqual(code, 2)
+        self.assertIn("unknown focus group 'bogus'", message)
+        self.assertIn("methods", message)
+        self.assertIn("languages", message)
+
+    def test_valid_multiple_focus_via_main_returns_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(self.FOCUS_TOML, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(
+                    [
+                        "status",
+                        "--config",
+                        str(path),
+                        "--focus",
+                        "methods",
+                        "--focus",
+                        "languages",
+                    ]
+                )
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        # status prints one line "focus groups: methods (1 keywords, 1 tags),
+        # languages (1 keywords, 1 tags)"; both selected names must appear.
+        self.assertIn("focus groups: methods", text)
+        self.assertIn("languages", text)
+
+    def test_repeated_focus_dedupes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._load_with_focus_groups(tmp)
+            narrowed = apply_flag_overrides(
+                config, _args(focus=["methods", "methods"])
+            )
+        self.assertEqual(list(narrowed.tagger.focus_groups), ["methods"])
+
 
 class MaxNegativeTest(unittest.TestCase):
     """--max -1 must fail loudly with a non-zero exit."""

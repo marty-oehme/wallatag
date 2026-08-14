@@ -67,7 +67,8 @@ secrets and is gitignored; only `wallatag.toml.example` is committed.
 ### Focus groups
 
 `[focus.<name>]` tables define named keyword/tag rule groups. `--focus NAME`
-activates one group; the default is all groups.
+activates one group; repeat the flag (e.g. `--focus methods --focus languages`)
+to activate several; the default is all groups.
 
 Each `[focus.<name>]` table also accepts an optional `keywords_regex` list
 (default empty): Python regex patterns matched against the group's fields *in
