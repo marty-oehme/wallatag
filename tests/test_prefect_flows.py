@@ -42,6 +42,50 @@ class PrefectFlowsTest(unittest.TestCase):
             ],
         )
 
+    def test_command_build_multiple_focus(self) -> None:
+        self.assertEqual(
+            self.prefect_flows.build_wallatag_command(10, "all", "methods, languages"),
+            [
+                "wallatag",
+                "run",
+                "--max",
+                "10",
+                "--tag-policy",
+                "all",
+                "--focus",
+                "methods",
+                "--focus",
+                "languages",
+            ],
+        )
+
+    def test_command_build_focus_empty_string(self) -> None:
+        self.assertEqual(
+            self.prefect_flows.build_wallatag_command(50, None, ""),
+            ["wallatag", "run", "--max", "50"],
+        )
+
+    def test_command_build_focus_whitespace_only(self) -> None:
+        self.assertEqual(
+            self.prefect_flows.build_wallatag_command(50, None, "   "),
+            ["wallatag", "run", "--max", "50"],
+        )
+
+    def test_command_build_focus_ragged(self) -> None:
+        self.assertEqual(
+            self.prefect_flows.build_wallatag_command(50, None, " methods , , languages "),
+            [
+                "wallatag",
+                "run",
+                "--max",
+                "50",
+                "--focus",
+                "methods",
+                "--focus",
+                "languages",
+            ],
+        )
+
     def test_flow_defined(self) -> None:
         self.assertTrue(hasattr(self.prefect_flows, "wallatag_batch"))
         self.assertEqual(self.prefect_flows.wallatag_batch.name, "wallatag-batch")
@@ -707,6 +751,49 @@ class PrefectFlowsTest(unittest.TestCase):
         # via the --tag-policy CLI flag (CLI options outrank variables).
         self.assertIn("--tag-policy", captured["args"])
         self.assertEqual(captured["env"]["WALLATAG_TAG_POLICY"], "prefer-existing")
+
+    def test_flow_focus_param_emits_repeated_flags(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
+        )
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["args"] = args[0]
+            captured["env"] = kwargs["env"]
+            return completed
+
+        def fake_get(name, default=None):
+            if name == "WALLATAG_TAG_POLICY":
+                return "prefer-existing"
+            return default
+
+        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+             patch("prefect_flows.llm_env_from_block", return_value={}), \
+             patch("prefect_flows.wallabag_env_from_block", return_value={}), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch("prefect_flows.Variable.get", side_effect=fake_get), \
+             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.prefect_flows.wallatag_batch.fn(
+                max_articles=50, focus="methods, languages"
+            )
+
+        # The comma-separated focus param is split in the flow layer and each
+        # name becomes its own --focus flag (order preserved).
+        self.assertEqual(
+            captured["args"],
+            [
+                "wallatag",
+                "run",
+                "--max",
+                "50",
+                "--focus",
+                "methods",
+                "--focus",
+                "languages",
+            ],
+        )
 
     def test_flow_unchanged_when_variable_get_raises(self) -> None:
         completed = subprocess.CompletedProcess(

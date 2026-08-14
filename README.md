@@ -407,6 +407,12 @@ setting, so you can migrate settings to the UI one at a time. Secrets never
 come from variables — `WALLATAG_CLIENT_SECRET`, `WALLATAG_PASSWORD` and
 `WALLATAG_AI_API_KEY` stay in `dokku config:set` and the credentials blocks.
 
+The `wallatag_batch` flow itself takes three parameters (defaults shown):
+`max_articles=50`, `tag_policy=None`, `focus=None`. `focus` is a
+comma-separated list of focus-group names (e.g. `methods, languages`), each
+mapped to its own repeated `--focus` CLI flag; a group whose NAME contains a
+literal comma can only be selected via the CLI, not via the flow parameter.
+
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.
 

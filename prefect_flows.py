@@ -56,12 +56,25 @@ def build_wallatag_command(
     tag_policy: str | None,
     focus: str | None,
 ) -> list[str]:
-    """Build the `wallatag run` command line for a batch."""
+    """Build the `wallatag run` command line for a batch.
+
+    ``focus`` is a comma-separated list of focus-group names (e.g.
+    ``"methods, languages"``); each name is emitted as its own ``--focus``
+    flag, in order. Segments are stripped; empty/whitespace-only segments are
+    dropped; a value with no usable names (or None) emits no ``--focus``
+    flags at all. Comma-splitting lives here in the flow layer on purpose:
+    the CLI never splits on commas, because a TOML focus-group NAME may
+    itself contain a comma (such groups can only be selected via the CLI,
+    not via the flow parameter).
+    """
     cmd = ["wallatag", "run", "--max", str(max_articles)]
     if tag_policy is not None:
         cmd += ["--tag-policy", tag_policy]
     if focus is not None:
-        cmd += ["--focus", focus]
+        for name in focus.split(","):
+            name = name.strip()
+            if name:
+                cmd += ["--focus", name]
     return cmd
 
 
@@ -320,7 +333,10 @@ def wallatag_batch(
     setting; secrets (client_secret/password/api_key) never come from
     variables; missing variables fall through to the container env / TOML;
     and CLI flags still win for --tag-policy/--focus. Empty block fields fall
-    back to TOML/env.
+    back to TOML/env. The flow's ``focus`` parameter is a comma-separated
+    list of group names, each emitted as its own ``--focus`` flag (a group
+    whose NAME contains a literal comma is unreachable from the flow — use
+    the CLI for those).
     Returns the captured stdout on success. Raises on a non-zero exit so
     Prefect marks the run Failed and can notify on problems.
     """

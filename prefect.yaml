@@ -59,7 +59,10 @@
 # them to the wallatag CLI as WALLATAG_* env vars. Precedence, lowest to
 # highest: wallatag.toml defaults → blocks → container env vars (dokku
 # config:set) → Prefect Variables → CLI options (--tag-policy/--focus). Missing
-# variables fall through to env/TOML. Secrets (client_secret, password,
+# variables fall through to env/TOML. The flow's `focus` parameter is a
+# comma-separated list of group names emitted as repeated --focus flags; the
+# CLI never splits on commas, so comma-containing group names are only
+# selectable via the CLI. Secrets (client_secret, password,
 # api_key) never come from variables. Do NOT auto-seed variables in
 # deploy/release.py: they are user-edited in the UI and would be clobbered on
 # every push.
