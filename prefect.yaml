@@ -48,10 +48,11 @@
 # validation (ConfigError). No secrets land in git either way.
 #
 # Scalar settings can also come from Prefect Variables (Variables page,
-# workspace- or deployment-scoped): WALLATAG_TAG_POLICY, WALLATAG_MAX_SUGGESTIONS,
+# workspace- or deployment-scoped): WALLATAG_TAG_POLICY, WALLATAG_MAX_APPLIED_TAGS,
 # WALLATAG_IGNORE_TAGS, WALLATAG_ENABLE_VOCABULARY, WALLATAG_ENABLE_RULES,
 # WALLATAG_ENABLE_LLM, WALLATAG_AI_CONFIDENCE_THRESHOLD,
-# WALLATAG_AI_USE_FOCUS_GROUPS, WALLATAG_VOCABULARY_FIELDS (names mirror the env
+# WALLATAG_AI_USE_FOCUS_GROUPS, WALLATAG_AI_MAX_PROPOSALS,
+# WALLATAG_VOCABULARY_FIELDS (names mirror the env
 # vars exactly), plus ONE JSON variable WALLATAG_FOCUS_GROUPS mapping group
 # names to {keywords, tags, fields, keywords_regex}. The flow reads them every
 # run and passes

@@ -11,13 +11,13 @@ from wallatag.tagger import KeywordTagger, LLMTagger, TagSuggestion
 
 def make_tagger(
     groups,
-    max_suggestions=10,
+    max_applied_tags=10,
     tag_policy="prefer-existing",
     existing_tags=(),
 ):
     return KeywordTagger(
         groups,
-        max_suggestions=max_suggestions,
+        max_applied_tags=max_applied_tags,
         tag_policy=tag_policy,
         existing_tags=existing_tags,
     )
@@ -273,7 +273,7 @@ class OnlyExistingPolicyTest(unittest.TestCase):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
         tagger = KeywordTagger(
             groups,
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="only-existing",
             existing_tags=["productivity"],
             enable_vocabulary=False,
@@ -308,18 +308,18 @@ class OnlyExistingPolicyTest(unittest.TestCase):
         self.assertEqual([s.tag for s in result], ["productivity"])
 
 
-class MaxSuggestionsTest(unittest.TestCase):
-    def test_max_suggestions_caps_total(self):
+class MaxAppliedTagsTest(unittest.TestCase):
+    def test_max_applied_tags_caps_total(self):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("t1", "t2", "t3"))}
-        result = make_tagger(groups, max_suggestions=2, tag_policy="all").suggest(
+        result = make_tagger(groups, max_applied_tags=2, tag_policy="all").suggest(
             entry(title="pomodoro")
         )
 
         self.assertEqual([s.tag for s in result], ["t1", "t2"])
 
-    def test_max_suggestions_zero_yields_empty(self):
+    def test_max_applied_tags_zero_yields_empty(self):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("t1",))}
-        result = make_tagger(groups, max_suggestions=0).suggest(
+        result = make_tagger(groups, max_applied_tags=0).suggest(
             entry(title="pomodoro")
         )
 
@@ -348,14 +348,14 @@ class ValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_tagger({}, tag_policy="nonsense")
 
-    def test_negative_max_suggestions_raises(self):
+    def test_negative_max_applied_tags_raises(self):
         with self.assertRaises(ValueError):
-            make_tagger({}, max_suggestions=-1)
+            make_tagger({}, max_applied_tags=-1)
 
-    def test_bool_max_suggestions_raises(self):
+    def test_bool_max_applied_tags_raises(self):
         # bool is an int subclass; a non-negative int check must reject it.
         with self.assertRaises(ValueError):
-            make_tagger({}, max_suggestions=True)
+            make_tagger({}, max_applied_tags=True)
 
 
 class KeywordTaggerEnableSwitchTest(unittest.TestCase):
@@ -365,7 +365,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
         tagger = KeywordTagger(
             groups,
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["Pomodoro"],
             enable_vocabulary=False,
@@ -379,7 +379,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
         tagger = KeywordTagger(
             groups,
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["Pomodoro"],
             enable_rules=False,
@@ -392,7 +392,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
         tagger = KeywordTagger(
             groups,
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["Pomodoro"],
             enable_vocabulary=False,
@@ -407,7 +407,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
         tagger = KeywordTagger(
             groups,
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="only-existing",
             existing_tags=["Pomodoro"],
             enable_rules=False,
@@ -420,7 +420,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         # No kwargs -> existing behavior (both sources fire).
         tagger = KeywordTagger(
             {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))},
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["Pomodoro"],
         )
@@ -434,7 +434,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             KeywordTagger(
                 {},
-                max_suggestions=10,
+                max_applied_tags=10,
                 tag_policy="prefer-existing",
                 enable_vocabulary=1,
             )
@@ -444,7 +444,7 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             KeywordTagger(
                 {},
-                max_suggestions=10,
+                max_applied_tags=10,
                 tag_policy="prefer-existing",
                 enable_rules="no",
             )
@@ -571,7 +571,7 @@ class RegexRuleTest(unittest.TestCase):
         }
         tagger = KeywordTagger(
             groups,
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             enable_rules=False,
         )
@@ -612,7 +612,7 @@ class RegexRuleTest(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 KeywordTagger(
                     {"a": FocusGroup(keywords=(), tags=("t",), keywords_regex=(bad,))},
-                    max_suggestions=10,
+                    max_applied_tags=10,
                     tag_policy="prefer-existing",
                 )
             self.assertIn("'a'", str(ctx.exception))
@@ -626,7 +626,7 @@ class RegexRuleTest(unittest.TestCase):
                         keywords=(), tags=("t",), keywords_regex=("^[",)
                     )
                 },
-                max_suggestions=10,
+                max_applied_tags=10,
                 tag_policy="prefer-existing",
             )
         message = str(ctx.exception)
@@ -670,7 +670,8 @@ class RaisingLLMClient:
 def make_llm_tagger(
     client,
     groups=None,
-    max_suggestions=10,
+    max_applied_tags=10,
+    max_proposals=None,
     tag_policy="prefer-existing",
     existing_tags=(),
     confidence_threshold=0.7,
@@ -680,7 +681,8 @@ def make_llm_tagger(
     return LLMTagger(
         client,
         focus_groups=groups or {},
-        max_suggestions=max_suggestions,
+        max_applied_tags=max_applied_tags,
+        max_proposals=max_proposals,
         tag_policy=tag_policy,
         existing_tags=existing_tags,
         confidence_threshold=confidence_threshold,
@@ -790,13 +792,13 @@ class LLMTaggerSuggestTest(unittest.TestCase):
         self.assertEqual([s.tag for s in result], ["Python"])
         self.assertEqual(result[0].confidence, 0.9)
 
-    def test_max_suggestions_caps_output(self):
+    def test_max_applied_tags_caps_output(self):
         client = FakeLLMClient(
             '[{"tag": "a", "confidence": 0.9}, '
             '{"tag": "b", "confidence": 0.9}, '
             '{"tag": "c", "confidence": 0.9}]'
         )
-        result = make_llm_tagger(client, max_suggestions=2).suggest(entry(title="x"))
+        result = make_llm_tagger(client, max_applied_tags=2).suggest(entry(title="x"))
 
         self.assertEqual([s.tag for s in result], ["a", "b"])
 
@@ -1011,6 +1013,51 @@ class LLMTaggerPromptTest(unittest.TestCase):
         # 2000 words * ~5 chars > 6000-char cap -> truncated.
         self.assertLess(len(prompt), 7000)
 
+    def test_max_proposals_unset_follows_applied_cap(self):
+        # max_proposals=None (default): the "Return at most N tags." line
+        # follows max_applied_tags (backward-compatible default).
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, max_applied_tags=3, max_proposals=None).suggest(
+            entry(title="x")
+        )
+
+        self.assertIn("Return at most 3 tags.", client.system_prompts[0])
+
+    def test_max_proposals_controls_prompt_bound(self):
+        # max_proposals > max_applied_tags: the prompt asks for MORE tags than
+        # the applied cap; the applied list is still truncated to the cap.
+        client = FakeLLMClient(
+            '[{"tag": "a", "confidence": 0.9}, '
+            '{"tag": "b", "confidence": 0.9}, '
+            '{"tag": "c", "confidence": 0.9}]'
+        )
+        tagger = make_llm_tagger(client, max_applied_tags=2, max_proposals=5)
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertIn("Return at most 5 tags.", client.system_prompts[0])
+        self.assertEqual([s.tag for s in result], ["a", "b"])
+
+    def test_max_proposals_less_than_applied_prompt_bound(self):
+        # max_proposals < max_applied_tags: the prompt bound is tighter, but
+        # the applied cap never kicks in below the model's output count.
+        client = FakeLLMClient(
+            '[{"tag": "a", "confidence": 0.9}, '
+            '{"tag": "b", "confidence": 0.9}, '
+            '{"tag": "c", "confidence": 0.9}, '
+            '{"tag": "d", "confidence": 0.9}]'
+        )
+        tagger = make_llm_tagger(client, max_applied_tags=5, max_proposals=2)
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertIn("Return at most 2 tags.", client.system_prompts[0])
+        self.assertEqual([s.tag for s in result], ["a", "b", "c", "d"])
+
+    def test_max_proposals_zero_prompt_bound(self):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, max_proposals=0).suggest(entry(title="x"))
+
+        self.assertIn("Return at most 0 tags.", client.system_prompts[0])
+
 
 class LLMTaggerFocusAreasTest(unittest.TestCase):
     """The "Focus areas" prompt line: use_focus_groups, fields=() and per-entry matching."""
@@ -1154,7 +1201,7 @@ class LLMTaggerFocusAreasTest(unittest.TestCase):
         LLMTagger(
             client,
             focus_groups={"a": FocusGroup(keywords=("k",), tags=("t",))},
-            max_suggestions=5,
+            max_applied_tags=5,
             tag_policy="prefer-existing",
         ).suggest(entry(title="k"))
         self.assertIn("Focus areas: t.", client.system_prompts[0])
@@ -1211,13 +1258,26 @@ class LLMTaggerValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_llm_tagger(FakeLLMClient("[]"), tag_policy="nonsense")
 
-    def test_negative_max_suggestions_raises(self):
+    def test_negative_max_applied_tags_raises(self):
         with self.assertRaises(ValueError):
-            make_llm_tagger(FakeLLMClient("[]"), max_suggestions=-1)
+            make_llm_tagger(FakeLLMClient("[]"), max_applied_tags=-1)
 
-    def test_bool_max_suggestions_raises(self):
+    def test_bool_max_applied_tags_raises(self):
         with self.assertRaises(ValueError):
-            make_llm_tagger(FakeLLMClient("[]"), max_suggestions=True)
+            make_llm_tagger(FakeLLMClient("[]"), max_applied_tags=True)
+
+    def test_negative_max_proposals_raises(self):
+        with self.assertRaises(ValueError):
+            make_llm_tagger(FakeLLMClient("[]"), max_proposals=-1)
+
+    def test_bool_max_proposals_raises(self):
+        # bool is an int subclass; the non-negative int check must reject it.
+        with self.assertRaises(ValueError):
+            make_llm_tagger(FakeLLMClient("[]"), max_proposals=True)
+
+    def test_max_proposals_none_accepted(self):
+        # None (the default) is valid: it means "follow max_applied_tags".
+        make_llm_tagger(FakeLLMClient("[]"), max_proposals=None)
 
     def test_bad_confidence_thresholds_raise(self):
         for bad in (0, 1.5, -0.1, True):
@@ -1242,7 +1302,7 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
     def test_vocabulary_fields_restrict_vocabulary_matching(self):
         tagger = KeywordTagger(
             {},
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["pomodoro"],
             vocabulary_fields=("title",),
@@ -1323,7 +1383,7 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             KeywordTagger(
                 {},
-                max_suggestions=1,
+                max_applied_tags=1,
                 tag_policy="all",
                 vocabulary_fields=("author",),
             )
@@ -1334,7 +1394,7 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
         # Case-sensitive: "Title" is invalid too.
         with self.assertRaises(ValueError):
             KeywordTagger(
-                {}, max_suggestions=1, tag_policy="all", vocabulary_fields=("Title",)
+                {}, max_applied_tags=1, tag_policy="all", vocabulary_fields=("Title",)
             )
 
     def test_field_needles_respects_given_fields(self):
@@ -1351,7 +1411,7 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
     def test_vocabulary_fields_empty_disables_vocabulary(self):
         tagger = KeywordTagger(
             {},
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["pomodoro"],
             vocabulary_fields=(),
@@ -1365,7 +1425,7 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
         # stored tuple came out empty and vocabulary was silently disabled.
         tagger = KeywordTagger(
             {},
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["pomodoro"],
             vocabulary_fields=(x for x in ["title"]),
@@ -1381,7 +1441,7 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
         # exactly like an explicitly empty tuple.
         tagger = KeywordTagger(
             {},
-            max_suggestions=10,
+            max_applied_tags=10,
             tag_policy="prefer-existing",
             existing_tags=["pomodoro"],
             vocabulary_fields=(x for x in []),

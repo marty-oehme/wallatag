@@ -34,29 +34,30 @@ Values are merged from lowest to highest precedence: later sources win:
 3. Environment variables
 4. CLI flags
 
-| Setting                  | TOML                        | Environment variable               |
-| ------------------------ | --------------------------- | ---------------------------------- |
-| wallabag URL             | `[wallabag] url`            | `WALLATAG_URL`                     |
-| API client id            | `[wallabag] client_id`      | `WALLATAG_CLIENT_ID`               |
-| API client secret        | `[wallabag] client_secret`  | `WALLATAG_CLIENT_SECRET`           |
-| wallabag username        | `[wallabag] username`       | `WALLATAG_USERNAME`                |
-| wallabag password        | `[wallabag] password`       | `WALLATAG_PASSWORD`                |
-| SQLite decision log path | `[store] path`              | `WALLATAG_DB`                      |
-| AI provider              | `[ai] provider`             | `WALLATAG_AI_PROVIDER`             |
-| AI base URL              | `[ai] base_url`             | `WALLATAG_AI_BASE_URL`             |
-| AI model                 | `[ai] model`                | `WALLATAG_AI_MODEL`                |
-| AI confidence threshold  | `[ai] confidence_threshold` | `WALLATAG_AI_CONFIDENCE_THRESHOLD` |
-| AI API key               | `[ai] api_key`              | `WALLATAG_AI_API_KEY`              |
-| Use focus groups         | `[ai] use_focus_groups`     | `WALLATAG_AI_USE_FOCUS_GROUPS`     |
-| AI fallback on failure   | `[ai] fallback_on_fail`     | `WALLATAG_AI_FALLBACK_ON_FAIL`     |
-| Tag suggestions per article | `[tagger] max_suggestions` | `WALLATAG_MAX_SUGGESTIONS`         |
-| Tag policy               | `[tagger] tag_policy`       | `WALLATAG_TAG_POLICY`              |
-| Ignored tags             | `[tagger] ignore_tags`      | `WALLATAG_IGNORE_TAGS`             |
-| Ignored tag patterns     | `[tagger] ignore_tags_regex`| `WALLATAG_IGNORE_TAGS_REGEX`       |
-| Vocabulary matching      | `[tagger] enable_vocabulary`| `WALLATAG_ENABLE_VOCABULARY`       |
-| Focus-group rules        | `[tagger] enable_rules`     | `WALLATAG_ENABLE_RULES`            |
-| LLM classification       | `[tagger] enable_llm`       | `WALLATAG_ENABLE_LLM`              |
-| Vocabulary match fields  | `[vocabulary] fields`       | `WALLATAG_VOCABULARY_FIELDS`       |
+| Setting                              | TOML                          | Environment variable                |
+| -------------------------------------| ------------------------------| ------------------------------------|
+| wallabag URL                         | `[wallabag] url`              | `WALLATAG_URL`                      |
+| API client id                        | `[wallabag] client_id`        | `WALLATAG_CLIENT_ID`                |
+| API client secret                    | `[wallabag] client_secret`    | `WALLATAG_CLIENT_SECRET`            |
+| wallabag username                    | `[wallabag] username`         | `WALLATAG_USERNAME`                 |
+| wallabag password                    | `[wallabag] password`         | `WALLATAG_PASSWORD`                 |
+| SQLite decision log path             | `[store] path`                | `WALLATAG_DB`                       |
+| AI provider                          | `[ai] provider`               | `WALLATAG_AI_PROVIDER`              |
+| AI base URL                          | `[ai] base_url`               | `WALLATAG_AI_BASE_URL`              |
+| AI model                             | `[ai] model`                  | `WALLATAG_AI_MODEL`                 |
+| AI confidence threshold              | `[ai] confidence_threshold`   | `WALLATAG_AI_CONFIDENCE_THRESHOLD`  |
+| AI API key                           | `[ai] api_key`                | `WALLATAG_AI_API_KEY`               |
+| Use focus groups                     | `[ai] use_focus_groups`       | `WALLATAG_AI_USE_FOCUS_GROUPS`      |
+| AI fallback on failure               | `[ai] fallback_on_fail`       | `WALLATAG_AI_FALLBACK_ON_FAIL`      |
+| Tag proposals per article (LLM)      | `[ai] max_proposals`          | `WALLATAG_AI_MAX_PROPOSALS`         |
+| Tag suggestions applied per article  | `[tagger] max_applied_tags`   | `WALLATAG_MAX_APPLIED_TAGS`         |
+| Tag policy                           | `[tagger] tag_policy`         | `WALLATAG_TAG_POLICY`               |
+| Ignored tags                         | `[tagger] ignore_tags`        | `WALLATAG_IGNORE_TAGS`              |
+| Ignored tag patterns                 | `[tagger] ignore_tags_regex`  | `WALLATAG_IGNORE_TAGS_REGEX`        |
+| Vocabulary matching                  | `[tagger] enable_vocabulary`  | `WALLATAG_ENABLE_VOCABULARY`        |
+| Focus-group rules                    | `[tagger] enable_rules`       | `WALLATAG_ENABLE_RULES`             |
+| LLM classification                   | `[tagger] enable_llm`         | `WALLATAG_ENABLE_LLM`               |
+| Vocabulary match fields              | `[vocabulary] fields`         | `WALLATAG_VOCABULARY_FIELDS`        |
 | Focus groups             | `[focus.<name>]` keywords/tags/fields/keywords_regex | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`, `WALLATAG_FOCUS_<NAME>_FIELDS`, `WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX` |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
@@ -84,11 +85,19 @@ pattern (an empty regex matches everything, so it is rejected).
 
 ### Tagger settings
 
-- `[tagger] max_suggestions`: how many tag suggestions per article (default 5).
-  Override with `WALLATAG_MAX_SUGGESTIONS`.
+- `[tagger] max_applied_tags`: hard cap on the number of tags applied per
+  article, used by BOTH taggers (final truncation; default 5). This key was
+  renamed (the old key and its env var are gone, with no compatibility shim);
+  override with `WALLATAG_MAX_APPLIED_TAGS`.
+- `[ai] max_proposals`: how many tags the LLM is asked to propose per article
+  (default: unset -> follows `max_applied_tags`). The LLM system prompt asks
+  for at most this many tags; the applied list is always capped by
+  `max_applied_tags`. KeywordTagger has no such knob. Override with
+  `WALLATAG_AI_MAX_PROPOSALS`; an empty env value clears it (back to
+  following `max_applied_tags`).
 - `--max N`: maximum articles processed per run (default: unlimited). This is
   a runtime-only flag, not a config-file key; it never changes
-  `max_suggestions`.
+  `max_applied_tags`.
 - `[tagger] tag_policy`: `only-existing` | `prefer-existing` | `all`
   (default `prefer-existing`). Override with `--tag-policy` or
   `WALLATAG_TAG_POLICY`. `only-existing` never suggests tags that are not
@@ -137,7 +146,7 @@ pattern (an empty regex matches everything, so it is rejected).
     separators or whitespace) is rejected. The vocabulary matcher is keyword
     only: the LLM tagger has no per-field restriction equivalent and is
     untouched by `[vocabulary] fields`.
-- Empty values for `WALLATAG_TAG_POLICY` and `WALLATAG_MAX_SUGGESTIONS` are
+- Empty values for `WALLATAG_TAG_POLICY` and `WALLATAG_MAX_APPLIED_TAGS` are
   not clears, they raise a ConfigError, so remove those variables
   (`dokku config:unset`) rather than setting them to `""` (unlike
   `WALLATAG_IGNORE_TAGS`, `WALLATAG_DB`, and `WALLATAG_AI_API_KEY`, where
@@ -343,18 +352,20 @@ prefect variable set WALLATAG_TAG_POLICY all
 prefect variable set WALLATAG_ENABLE_LLM true
 ```
 
-The 9 scalar variables (names mirror the env vars exactly):
+The 11 scalar variables (names mirror the env vars exactly):
 
 | Variable | Meaning |
 | -------- | ------- |
 | `WALLATAG_TAG_POLICY` | `only-existing` \| `prefer-existing` \| `all` |
-| `WALLATAG_MAX_SUGGESTIONS` | tag suggestions per article (int) |
+| `WALLATAG_MAX_APPLIED_TAGS` | tags applied per article (int, default 5) |
 | `WALLATAG_IGNORE_TAGS` | comma-separated tags treated as untagged |
+| `WALLATAG_IGNORE_TAGS_REGEX` | regex patterns treated as untagged (comma-separated) |
 | `WALLATAG_ENABLE_VOCABULARY` | existing-tag vocabulary matching on/off (bool) |
 | `WALLATAG_ENABLE_RULES` | focus-group rule matching on/off (bool) |
 | `WALLATAG_ENABLE_LLM` | LLM tagging on/off (bool) |
 | `WALLATAG_AI_CONFIDENCE_THRESHOLD` | LLM apply gate (float, default 0.7) |
 | `WALLATAG_AI_USE_FOCUS_GROUPS` | focus groups in the LLM prompt on/off (bool) |
+| `WALLATAG_AI_MAX_PROPOSALS` | LLM tag proposals per article (int, unset -> follows max_applied_tags) |
 | `WALLATAG_VOCABULARY_FIELDS` | vocabulary match fields (comma-separated) |
 
 Booleans are normalized to `true`/`false`, numbers to their plain string form

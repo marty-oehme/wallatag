@@ -37,7 +37,7 @@ class NoConfigFileDefaultsTest(unittest.TestCase):
         self.assertEqual(config.wallabag.username, "")
         self.assertEqual(config.wallabag.password, "")
         self.assertIsNone(config.store.path)
-        self.assertEqual(config.tagger.max_suggestions, 5)
+        self.assertEqual(config.tagger.max_applied_tags, 5)
         self.assertEqual(config.tagger.tag_policy, "prefer-existing")
         self.assertEqual(config.tagger.focus_groups, {})
         self.assertEqual(config.tagger.ignore_tags, ())
@@ -64,7 +64,7 @@ password = "wonderland"
 path = "/data/wallatag.db"
 
 [tagger]
-max_suggestions = 9
+max_applied_tags = 9
 tag_policy = "all"
 
 [focus.methods]
@@ -89,7 +89,7 @@ model = "qwen2.5:3b"
         self.assertEqual(config.wallabag.username, "alice")
         self.assertEqual(config.wallabag.password, "wonderland")
         self.assertEqual(config.store.path, "/data/wallatag.db")
-        self.assertEqual(config.tagger.max_suggestions, 9)
+        self.assertEqual(config.tagger.max_applied_tags, 9)
         self.assertEqual(config.tagger.tag_policy, "all")
         self.assertEqual(
             config.tagger.focus_groups["methods"].keywords, ("pomodoro", "gtd")
@@ -623,7 +623,7 @@ class AiConfigTomlTest(unittest.TestCase):
             self._load('[ai]\nconfidence_threshold = "high"\n')
 
     def test_absent_ai_section_disabled(self):
-        config = self._load("[tagger]\nmax_suggestions = 3\n")
+        config = self._load("[tagger]\nmax_applied_tags = 3\n")
         self.assertEqual(config.ai.provider, "")
         self.assertEqual(config.ai.confidence_threshold, 0.7)
 
@@ -672,7 +672,7 @@ class AiConfigEnvTest(unittest.TestCase):
     def test_env_provider_alone_without_toml_raises(self):
         with self.assertRaises(ConfigError):
             self._env_load(
-                "[tagger]\nmax_suggestions = 1\n",
+                "[tagger]\nmax_applied_tags = 1\n",
                 {"WALLATAG_AI_PROVIDER": "ollama"},
             )
 
@@ -965,6 +965,126 @@ class AiFallbackOnFailEnvTest(unittest.TestCase):
         self.assertFalse(config.ai.fallback_on_fail)
 
 
+class AiMaxProposalsTomlTest(unittest.TestCase):
+    """[ai] max_proposals: LLM-only prompt bound, default None (follows
+    max_applied_tags), non-negative int (not bool), trio-independent."""
+
+    def _load(self, toml_text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_parsed_when_set(self):
+        config = self._load("[ai]\nmax_proposals = 10\n")
+        self.assertEqual(config.ai.max_proposals, 10)
+
+    def test_absent_defaults_none(self):
+        config = self._load("")
+        self.assertIsNone(config.ai.max_proposals)
+        # An empty [ai] table also keeps the default None.
+        config = self._load("[ai]\n")
+        self.assertIsNone(config.ai.max_proposals)
+
+    def test_zero_accepted(self):
+        config = self._load("[ai]\nmax_proposals = 0\n")
+        self.assertEqual(config.ai.max_proposals, 0)
+
+    def test_negative_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[ai]\nmax_proposals = -1\n")
+        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+
+    def test_bool_raises(self):
+        # bool is an int subclass in TOML too: `= true` must not parse.
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[ai]\nmax_proposals = true\n")
+        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+
+    def test_float_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load("[ai]\nmax_proposals = 2.5\n")
+        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+
+    def test_string_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[ai]\nmax_proposals = "high"\n')
+        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+
+    def test_independent_of_trio(self):
+        # max_proposals alone, without provider/base_url/model, is valid (LLM
+        # stays disabled but the value is applied), like api_key.
+        config = self._load("[ai]\nmax_proposals = 3\n")
+        self.assertEqual(config.ai.max_proposals, 3)
+        self.assertEqual(config.ai.provider, "")
+
+
+class AiMaxProposalsEnvTest(unittest.TestCase):
+    """WALLATAG_AI_MAX_PROPOSALS overlays [ai] max_proposals; "" clears."""
+
+    def _env_load(self, toml_text: str, env: dict):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_parsed(self):
+        config = self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": "7"})
+        self.assertEqual(config.ai.max_proposals, 7)
+
+    def test_env_strips_whitespace(self):
+        config = self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": " 7 "})
+        self.assertEqual(config.ai.max_proposals, 7)
+
+    def test_env_leading_zeros(self):
+        config = self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": "007"})
+        self.assertEqual(config.ai.max_proposals, 7)
+
+    def test_env_overrides_toml(self):
+        config = self._env_load(
+            "[ai]\nmax_proposals = 3\n",
+            {"WALLATAG_AI_MAX_PROPOSALS": "7"},
+        )
+        self.assertEqual(config.ai.max_proposals, 7)
+
+    def test_env_negative_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": "-3"})
+        self.assertIn("WALLATAG_AI_MAX_PROPOSALS", str(ctx.exception))
+
+    def test_env_non_integer_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": "abc"})
+        self.assertIn("WALLATAG_AI_MAX_PROPOSALS", str(ctx.exception))
+
+    def test_env_bool_string_raises(self):
+        # "True" is not an integer: the case-sensitive int() parse must fail,
+        # exactly like "abc".
+        with self.assertRaises(ConfigError) as ctx:
+            self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": "True"})
+        self.assertIn("WALLATAG_AI_MAX_PROPOSALS", str(ctx.exception))
+
+    def test_env_empty_clears_toml(self):
+        # A present-but-empty WALLATAG_AI_MAX_PROPOSALS clears the TOML value
+        # back to None (the prompt bound follows max_applied_tags), matching
+        # the WALLATAG_DB="" pattern.
+        config = self._env_load(
+            "[ai]\nmax_proposals = 5\n",
+            {"WALLATAG_AI_MAX_PROPOSALS": ""},
+        )
+        self.assertIsNone(config.ai.max_proposals)
+
+    def test_env_empty_without_toml_stays_none(self):
+        config = self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": ""})
+        self.assertIsNone(config.ai.max_proposals)
+
+    def test_env_without_trio_valid(self):
+        # Provider absent (no trio): config loads fine and the value applies.
+        config = self._env_load("", {"WALLATAG_AI_MAX_PROPOSALS": "4"})
+        self.assertEqual(config.ai.max_proposals, 4)
+        self.assertEqual(config.ai.provider, "")
+
+
 class TaggerEnvTest(unittest.TestCase):
     """WALLATAG_* env vars overlay [tagger] settings (env wins over TOML)."""
 
@@ -979,12 +1099,12 @@ class TaggerEnvTest(unittest.TestCase):
             "",
             {
                 "WALLATAG_TAG_POLICY": "all",
-                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_MAX_APPLIED_TAGS": "7",
                 "WALLATAG_IGNORE_TAGS": "fix,_frigo",
             },
         )
         self.assertEqual(config.tagger.tag_policy, "all")
-        self.assertEqual(config.tagger.max_suggestions, 7)
+        self.assertEqual(config.tagger.max_applied_tags, 7)
         self.assertEqual(config.tagger.ignore_tags, ("fix", "_frigo"))
 
     def test_env_ignore_tags_strips_whitespace_and_drops_empties(self):
@@ -1006,14 +1126,14 @@ class TaggerEnvTest(unittest.TestCase):
 
     def test_env_wins_over_toml(self):
         config = self._env_load(
-            '[tagger]\nmax_suggestions = 3\ntag_policy = "only-existing"\n'
+            '[tagger]\nmax_applied_tags = 3\ntag_policy = "only-existing"\n'
             'ignore_tags = ["fix"]\n',
             {
-                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_MAX_APPLIED_TAGS": "7",
                 "WALLATAG_TAG_POLICY": "all",
             },
         )
-        self.assertEqual(config.tagger.max_suggestions, 7)
+        self.assertEqual(config.tagger.max_applied_tags, 7)
         self.assertEqual(config.tagger.tag_policy, "all")
         # Not overridden -> falls back to the TOML value.
         self.assertEqual(config.tagger.ignore_tags, ("fix",))
@@ -1027,29 +1147,29 @@ class TaggerEnvTest(unittest.TestCase):
         self.assertIn("prefer-existing", message)
         self.assertIn("all", message)
 
-    def test_env_negative_max_suggestions_raises(self):
+    def test_env_negative_max_applied_tags_raises(self):
         with self.assertRaises(ConfigError) as ctx:
-            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "-3"})
-        self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
+            self._env_load("", {"WALLATAG_MAX_APPLIED_TAGS": "-3"})
+        self.assertIn("WALLATAG_MAX_APPLIED_TAGS", str(ctx.exception))
 
-    def test_env_non_integer_max_suggestions_raises(self):
+    def test_env_non_integer_max_applied_tags_raises(self):
         with self.assertRaises(ConfigError) as ctx:
-            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "abc"})
-        self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
+            self._env_load("", {"WALLATAG_MAX_APPLIED_TAGS": "abc"})
+        self.assertIn("WALLATAG_MAX_APPLIED_TAGS", str(ctx.exception))
 
-    def test_env_max_suggestions_strips_whitespace(self):
-        config = self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": " 7 "})
-        self.assertEqual(config.tagger.max_suggestions, 7)
+    def test_env_max_applied_tags_strips_whitespace(self):
+        config = self._env_load("", {"WALLATAG_MAX_APPLIED_TAGS": " 7 "})
+        self.assertEqual(config.tagger.max_applied_tags, 7)
 
-    def test_env_max_suggestions_leading_zeros(self):
-        config = self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "007"})
-        self.assertEqual(config.tagger.max_suggestions, 7)
+    def test_env_max_applied_tags_leading_zeros(self):
+        config = self._env_load("", {"WALLATAG_MAX_APPLIED_TAGS": "007"})
+        self.assertEqual(config.tagger.max_applied_tags, 7)
 
-    def test_env_max_suggestions_bool_string_raises(self):
+    def test_env_max_applied_tags_bool_string_raises(self):
         # "True" is not an integer: the case-sensitive int() parse must fail,
         # exactly like "abc".
         with self.assertRaises(ConfigError):
-            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": "True"})
+            self._env_load("", {"WALLATAG_MAX_APPLIED_TAGS": "True"})
 
     def test_env_tag_policy_is_case_sensitive(self):
         # Only lowercase "all" is valid, matching the TOML path: "ALL" must
@@ -1139,10 +1259,10 @@ class TaggerEnvTest(unittest.TestCase):
             self._env_load("", {"WALLATAG_TAG_POLICY": ""})
         self.assertIn("WALLATAG_TAG_POLICY", str(ctx.exception))
 
-    def test_env_empty_max_suggestions_raises(self):
+    def test_env_empty_max_applied_tags_raises(self):
         with self.assertRaises(ConfigError) as ctx:
-            self._env_load("", {"WALLATAG_MAX_SUGGESTIONS": ""})
-        self.assertIn("WALLATAG_MAX_SUGGESTIONS", str(ctx.exception))
+            self._env_load("", {"WALLATAG_MAX_APPLIED_TAGS": ""})
+        self.assertIn("WALLATAG_MAX_APPLIED_TAGS", str(ctx.exception))
 
 
 class EnvOverridesTest(unittest.TestCase):
@@ -1246,10 +1366,10 @@ class ValidationTest(unittest.TestCase):
         self.assertIn("prefer-existing", str(ctx.exception))
         self.assertIn("all", str(ctx.exception))
 
-    def test_negative_max_suggestions(self):
+    def test_negative_max_applied_tags(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            write_toml(tmp, "[tagger]\nmax_suggestions = -3\n")
+            write_toml(tmp, "[tagger]\nmax_applied_tags = -3\n")
             with self.assertRaises(ConfigError):
                 load_config(config_path=str(tmp / "wallatag.toml"), env={})
 
@@ -1815,7 +1935,7 @@ class TaggerEnableSwitchTomlTest(unittest.TestCase):
 
     def test_defaults_when_switches_absent(self):
         # No switches in [tagger]: vocabulary and rules on, LLM OFF (opt-in).
-        config = self._load("[tagger]\nmax_suggestions = 5\n")
+        config = self._load("[tagger]\nmax_applied_tags = 5\n")
         self.assertTrue(config.tagger.enable_vocabulary)
         self.assertTrue(config.tagger.enable_rules)
         self.assertFalse(config.tagger.enable_llm)

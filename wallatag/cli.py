@@ -105,7 +105,7 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
     if args.max is not None:
         if args.max < 0:
             raise ConfigError("--max must be a non-negative integer")
-        # Runtime run limit only: never touches [tagger] max_suggestions.
+        # Runtime run limit only: never touches [tagger] max_applied_tags.
         config = dataclasses.replace(config, max_articles=args.max)
     if args.tag_policy is not None:
         config = dataclasses.replace(
@@ -154,7 +154,7 @@ def _build_tagger(
 
     When the LLM tagger is active AND ``config.ai.fallback_on_fail`` is true,
     ``fallback_tagger`` is a KeywordTagger built exactly like a normal
-    keyword-mode run (same focus groups, max_suggestions, tag_policy,
+    keyword-mode run (same focus groups, max_applied_tags, tag_policy,
     existing tags, vocabulary fields and enable_vocabulary/enable_rules
     switches): the pipelines use it to tag an article the LLM failed on,
     per-article. Otherwise ``fallback_tagger`` is None.
@@ -169,7 +169,8 @@ def _build_tagger(
         tagger = LLMTagger(
             llm_client,
             focus_groups=config.tagger.focus_groups,
-            max_suggestions=config.tagger.max_suggestions,
+            max_applied_tags=config.tagger.max_applied_tags,
+            max_proposals=config.ai.max_proposals,
             tag_policy=config.tagger.tag_policy,
             existing_tags=existing_tags,
             confidence_threshold=config.ai.confidence_threshold,
@@ -184,7 +185,7 @@ def _build_tagger(
             # apply).
             fallback_tagger = KeywordTagger(
                 config.tagger.focus_groups,
-                max_suggestions=config.tagger.max_suggestions,
+                max_applied_tags=config.tagger.max_applied_tags,
                 tag_policy=config.tagger.tag_policy,
                 existing_tags=existing_tags,
                 vocabulary_fields=config.vocabulary.fields,
@@ -194,7 +195,7 @@ def _build_tagger(
         return tagger, llm_client, fallback_tagger
     tagger = KeywordTagger(
         config.tagger.focus_groups,
-        max_suggestions=config.tagger.max_suggestions,
+        max_applied_tags=config.tagger.max_applied_tags,
         tag_policy=config.tagger.tag_policy,
         existing_tags=existing_tags,
         vocabulary_fields=config.vocabulary.fields,
@@ -355,7 +356,17 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
     username = config.wallabag.username or "(not configured)"
     print(f"auth: username={username}")
     print(f"store: {store}")
-    print(f"tagger: policy={tagger.tag_policy} max_suggestions={tagger.max_suggestions}")
+    # max_proposals is an [ai] setting (LLM-only prompt bound); the keyword
+    # tagger has no such knob, so it is shown only when set. getattr keeps
+    # this line unchanged for taggers/configs without the attribute.
+    max_proposals = getattr(config.ai, "max_proposals", None)
+    max_proposals_suffix = (
+        f" max_proposals={max_proposals}" if max_proposals is not None else ""
+    )
+    print(
+        f"tagger: policy={tagger.tag_policy} "
+        f"max_applied_tags={tagger.max_applied_tags}{max_proposals_suffix}"
+    )
     ai = config.ai
     if ai.provider:
         # (llm fallback on) mirrors the parenthetical marker style of the

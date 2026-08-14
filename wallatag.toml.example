@@ -15,12 +15,12 @@ path = "/data/wallatag.db"
 
 [tagger]
 # Each key below can be overridden by an environment variable (see README):
-# WALLATAG_MAX_SUGGESTIONS, WALLATAG_TAG_POLICY, WALLATAG_IGNORE_TAGS.
+# WALLATAG_MAX_APPLIED_TAGS, WALLATAG_TAG_POLICY, WALLATAG_IGNORE_TAGS.
 # WALLATAG_IGNORE_TAGS is comma-separated, e.g. "fix,_frigo"; "" clears the
 # list (whitespace-only/comma-only values are rejected). Empty
-# WALLATAG_TAG_POLICY / WALLATAG_MAX_SUGGESTIONS raise a ConfigError: unset
+# WALLATAG_TAG_POLICY / WALLATAG_MAX_APPLIED_TAGS raise a ConfigError: unset
 # the variable instead of setting it to "".
-max_suggestions = 5
+max_applied_tags = 5
 tag_policy = "prefer-existing"        # only-existing | prefer-existing | all
 ignore_tags = ["fix", "_frigo"]       # tags treated as untagged: articles carrying ONLY these are still fetched
 # Optional regex patterns (Python re syntax) matched IN ADDITION to ignore_tags:
@@ -94,6 +94,7 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
 confidence_threshold = 0.7        # only apply tags the model rates above this (0, 1]
+# max_proposals = 10   # how many tags the LLM is asked to propose (default: follow max_applied_tags)
 api_key = ""                      # optional: bearer token for openai-compatible providers that require auth
 # Whether focus groups influence LLM tagging. true (default): the LLM prompt
 # lists the focus groups the article matches as "Focus areas" (groups with fields = [] are

@@ -34,10 +34,11 @@ _ENV_AI_CONFIDENCE_THRESHOLD = "WALLATAG_AI_CONFIDENCE_THRESHOLD"
 _ENV_AI_API_KEY = "WALLATAG_AI_API_KEY"
 _ENV_AI_USE_FOCUS_GROUPS = "WALLATAG_AI_USE_FOCUS_GROUPS"
 _ENV_AI_FALLBACK_ON_FAIL = "WALLATAG_AI_FALLBACK_ON_FAIL"
+_ENV_AI_MAX_PROPOSALS = "WALLATAG_AI_MAX_PROPOSALS"
 _ENV_IGNORE_TAGS = "WALLATAG_IGNORE_TAGS"
 _ENV_IGNORE_TAGS_REGEX = "WALLATAG_IGNORE_TAGS_REGEX"
 _ENV_TAG_POLICY = "WALLATAG_TAG_POLICY"
-_ENV_MAX_SUGGESTIONS = "WALLATAG_MAX_SUGGESTIONS"
+_ENV_MAX_APPLIED_TAGS = "WALLATAG_MAX_APPLIED_TAGS"
 _ENV_ENABLE_VOCABULARY = "WALLATAG_ENABLE_VOCABULARY"
 _ENV_ENABLE_RULES = "WALLATAG_ENABLE_RULES"
 _ENV_ENABLE_LLM = "WALLATAG_ENABLE_LLM"
@@ -102,7 +103,7 @@ class VocabularyConfig:
 
 @dataclass(frozen=True)
 class TaggerConfig:
-    max_suggestions: int = 5
+    max_applied_tags: int = 5
     tag_policy: str = "prefer-existing"
     focus_groups: dict[str, FocusGroup] = field(default_factory=dict)
     # Tags treated as untagged: articles carrying ONLY these tags are still
@@ -151,12 +152,19 @@ class AiConfig:
     tagger takes over for THAT article. The fallback behaves exactly like a
     normal keyword-mode run (enable_vocabulary/enable_rules/tag_policy all
     apply); the LLM is still tried on subsequent articles.
+
+    ``max_proposals`` (default None) sets how many tags the LLM is ASKED to
+    propose (the "Return at most N tags." line in the system prompt). None
+    follows ``[tagger] max_applied_tags`` (backward-compatible default). It
+    only affects the prompt: the applied list is always capped by
+    ``max_applied_tags`` regardless.
     """
 
     provider: str = ""
     base_url: str = ""
     model: str = ""
     confidence_threshold: float = 0.7
+    max_proposals: int | None = None
     api_key: str = ""
     use_focus_groups: bool = True
     fallback_on_fail: bool = False
@@ -171,7 +179,7 @@ class Config:
     vocabulary: VocabularyConfig = field(default_factory=VocabularyConfig)
     verbose: bool = False
     # Runtime-only: sourced solely from the --max flag (max articles per run).
-    # Never read from TOML: that is `[tagger] max_suggestions` instead.
+    # Never read from TOML: that is `[tagger] max_applied_tags` instead.
     max_articles: int | None = None
 
 
@@ -409,6 +417,10 @@ def _parse_ai(raw: dict) -> AiConfig:
     makes focus groups keyword-only (the LLM prompt omits the focus areas).
     ``fallback_on_fail`` defaults to False and must be a strict boolean too;
     True enables the per-article keyword fallback when the LLM tagger fails.
+    ``max_proposals`` (default None) optionally overrides how many tags the
+    LLM is asked to propose; when set it must be a non-negative integer (not a
+    bool), mirroring the max_applied_tags validation. None follows
+    ``[tagger] max_applied_tags``.
     """
     # The isinstance check runs on the RAW value BEFORE any `or {}`
     # normalization: falsy non-tables (`ai = ""`, `ai = []`) must raise, not
@@ -440,6 +452,16 @@ def _parse_ai(raw: dict) -> AiConfig:
         raise ConfigError("confidence_threshold must be a number in the range (0, 1]")
     confidence = float(confidence)
 
+    # Optional LLM proposal bound: None follows [tagger] max_applied_tags.
+    # Mirrors the max_applied_tags validation (non-negative int, not bool).
+    max_proposals = ai_raw.get("max_proposals")
+    if max_proposals is not None and (
+        not isinstance(max_proposals, int)
+        or isinstance(max_proposals, bool)
+        or max_proposals < 0
+    ):
+        raise ConfigError("max_proposals must be a non-negative integer")
+
     if provider or base_url or model:
         if not provider or not base_url or not model:
             raise ConfigError(
@@ -456,6 +478,7 @@ def _parse_ai(raw: dict) -> AiConfig:
         base_url=str(base_url),
         model=str(model),
         confidence_threshold=confidence,
+        max_proposals=max_proposals,
         api_key=str(api_key),
         use_focus_groups=use_focus_groups,
         fallback_on_fail=fallback_on_fail,
@@ -484,9 +507,9 @@ def _parse_toml_config(raw: dict) -> Config:
             f"invalid tag_policy {tag_policy!r}; valid choices: {', '.join(VALID_TAG_POLICIES)}"
         )
 
-    max_suggestions = tagger_raw.get("max_suggestions", 5)
-    if not isinstance(max_suggestions, int) or isinstance(max_suggestions, bool) or max_suggestions < 0:
-        raise ConfigError("max_suggestions must be a non-negative integer")
+    max_applied_tags = tagger_raw.get("max_applied_tags", 5)
+    if not isinstance(max_applied_tags, int) or isinstance(max_applied_tags, bool) or max_applied_tags < 0:
+        raise ConfigError("max_applied_tags must be a non-negative integer")
 
     # Absent key -> () (no-op); empty array -> () too. Any present value goes
     # through the same list-of-strings validation as focus-group keywords/tags.
@@ -553,7 +576,7 @@ def _parse_toml_config(raw: dict) -> Config:
         ),
         store=StoreConfig(path=str(store_raw.get("path") or "") or None),
         tagger=TaggerConfig(
-            max_suggestions=max_suggestions,
+            max_applied_tags=max_applied_tags,
             tag_policy=tag_policy,
             focus_groups=_parse_focus_groups(focus_raw),
             ignore_tags=ignore_tags,
@@ -654,6 +677,36 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             ),
         )
 
+    max_proposals_raw = env.get(_ENV_AI_MAX_PROPOSALS)
+    if max_proposals_raw is not None:
+        if max_proposals_raw == "":
+            # A present-but-empty WALLATAG_AI_MAX_PROPOSALS clears the TOML
+            # value back to None (the prompt bound follows
+            # [tagger] max_applied_tags), matching the WALLATAG_DB="" pattern.
+            ai = replace(ai, max_proposals=None)
+        else:
+            try:
+                max_proposals = int(max_proposals_raw)
+            except ValueError:
+                raise ConfigError(
+                    f"WALLATAG_AI_MAX_PROPOSALS: max_proposals must be a "
+                    f"non-negative integer, got {max_proposals_raw!r}"
+                ) from None
+            # The isinstance guards mirror the TOML path, where tomllib can
+            # parse `max_proposals = true` as a bool; they are unreachable
+            # here because int() of a str can never return a bool or a
+            # non-int. Kept for symmetry so both paths validate identically.
+            if (
+                not isinstance(max_proposals, int)
+                or isinstance(max_proposals, bool)
+                or max_proposals < 0
+            ):
+                raise ConfigError(
+                    f"WALLATAG_AI_MAX_PROPOSALS: max_proposals must be a "
+                    f"non-negative integer, got {max_proposals_raw!r}"
+                )
+            ai = replace(ai, max_proposals=max_proposals)
+
     tagger = config.tagger
     ignore_tags_raw = env.get(_ENV_IGNORE_TAGS)
     if ignore_tags_raw is not None:
@@ -688,29 +741,29 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 f"valid choices: {', '.join(VALID_TAG_POLICIES)}"
             )
         tagger = replace(tagger, tag_policy=tag_policy)
-    max_suggestions_raw = env.get(_ENV_MAX_SUGGESTIONS)
-    if max_suggestions_raw is not None:
+    max_applied_tags_raw = env.get(_ENV_MAX_APPLIED_TAGS)
+    if max_applied_tags_raw is not None:
         try:
-            max_suggestions = int(max_suggestions_raw)
+            max_applied_tags = int(max_applied_tags_raw)
         except ValueError:
             raise ConfigError(
-                f"WALLATAG_MAX_SUGGESTIONS: max_suggestions must be a "
-                f"non-negative integer, got {max_suggestions_raw!r}"
+                f"WALLATAG_MAX_APPLIED_TAGS: max_applied_tags must be a "
+                f"non-negative integer, got {max_applied_tags_raw!r}"
             ) from None
         # The isinstance guards mirror the TOML path, where tomllib can parse
-        # `max_suggestions = true` as a bool; they are unreachable here because
+        # `max_applied_tags = true` as a bool; they are unreachable here because
         # int() of a str can never return a bool or a non-int. Kept for
         # symmetry so both paths validate identically.
         if (
-            not isinstance(max_suggestions, int)
-            or isinstance(max_suggestions, bool)
-            or max_suggestions < 0
+            not isinstance(max_applied_tags, int)
+            or isinstance(max_applied_tags, bool)
+            or max_applied_tags < 0
         ):
             raise ConfigError(
-                f"WALLATAG_MAX_SUGGESTIONS: max_suggestions must be a "
-                f"non-negative integer, got {max_suggestions_raw!r}"
+                f"WALLATAG_MAX_APPLIED_TAGS: max_applied_tags must be a "
+                f"non-negative integer, got {max_applied_tags_raw!r}"
             )
-        tagger = replace(tagger, max_suggestions=max_suggestions)
+        tagger = replace(tagger, max_applied_tags=max_applied_tags)
 
     # Per-source enable switches, parsed strictly as booleans (same accepted
     # values as WALLATAG_AI_USE_FOCUS_GROUPS: true/1/yes, false/0/no,

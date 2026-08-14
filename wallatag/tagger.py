@@ -229,7 +229,7 @@ class KeywordTagger:
         self,
         focus_groups: Mapping[str, FocusGroup],
         *,
-        max_suggestions: int,
+        max_applied_tags: int,
         tag_policy: str,
         existing_tags: Iterable[str] = (),
         vocabulary_fields: Iterable[str] = _FIELDS,
@@ -242,11 +242,11 @@ class KeywordTagger:
                 % (tag_policy, ", ".join(VALID_TAG_POLICIES))
             )
         if (
-            not isinstance(max_suggestions, int)
-            or isinstance(max_suggestions, bool)
-            or max_suggestions < 0
+            not isinstance(max_applied_tags, int)
+            or isinstance(max_applied_tags, bool)
+            or max_applied_tags < 0
         ):
-            raise ValueError("max_suggestions must be a non-negative integer")
+            raise ValueError("max_applied_tags must be a non-negative integer")
         if not isinstance(enable_vocabulary, bool):
             raise ValueError("enable_vocabulary must be a boolean")
         if not isinstance(enable_rules, bool):
@@ -273,7 +273,7 @@ class KeywordTagger:
         self._group_regexes: dict[str, tuple[re.Pattern, ...]] = _compile_group_regexes(
             self.focus_groups
         )
-        self.max_suggestions = max_suggestions
+        self.max_applied_tags = max_applied_tags
         self.tag_policy = tag_policy
         # Labels are normalized for matching but suggested in their original
         # casing (wallabag labels as provided).
@@ -378,7 +378,7 @@ class KeywordTagger:
             seen.add(key)
             unique.append(suggestion)
 
-        return unique[: self.max_suggestions]
+        return unique[: self.max_applied_tags]
 
 
 class LLMTagger:
@@ -406,6 +406,12 @@ class LLMTagger:
     semantics); groups with ``fields == ()`` never match, so their tags never
     reach the prompt. Non-matching articles see "Focus areas: none.".
 
+    The number of tags the model is ASKED to propose is ``max_proposals``
+    (LLM-only; the "Return at most N tags." line). None follows
+    ``max_applied_tags``, which is the hard cap on the APPLIED list for both
+    taggers; an explicit ``max_proposals`` overrides the prompt bound without
+    changing the applied cap.
+
     With ``verbose=True``, ``suggest()`` dumps the full system prompt, the
     full user prompt and the raw model response (untruncated) to stderr with
     a ``[debug]`` prefix, so an interactive ``wallatag manual --verbose`` run
@@ -418,7 +424,8 @@ class LLMTagger:
         client: LLMClientLike,
         *,
         focus_groups: Mapping[str, FocusGroup],
-        max_suggestions: int,
+        max_applied_tags: int,
+        max_proposals: int | None = None,
         tag_policy: str,
         existing_tags: Iterable[str] = (),
         confidence_threshold: float = 0.7,
@@ -431,13 +438,22 @@ class LLMTagger:
                 % (tag_policy, ", ".join(VALID_TAG_POLICIES))
             )
         if (
-            not isinstance(max_suggestions, int)
-            or isinstance(max_suggestions, bool)
-            or max_suggestions < 0
+            not isinstance(max_applied_tags, int)
+            or isinstance(max_applied_tags, bool)
+            or max_applied_tags < 0
         ):
-            raise ValueError("max_suggestions must be a non-negative integer")
+            raise ValueError("max_applied_tags must be a non-negative integer")
+        # max_proposals is the LLM-only proposal bound (the "Return at most N
+        # tags." prompt line). None follows max_applied_tags. It never limits
+        # the APPLIED list: that stays max_applied_tags' job.
+        if max_proposals is not None and (
+            not isinstance(max_proposals, int)
+            or isinstance(max_proposals, bool)
+            or max_proposals < 0
+        ):
+            raise ValueError("max_proposals must be a non-negative integer")
         # bool is a float subclass: 0 < True <= 1 passes a bare range check,
-        # so the isinstance(bool) guard mirrors max_suggestions' trap.
+        # so the isinstance(bool) guard mirrors max_applied_tags' trap.
         if (
             not isinstance(confidence_threshold, (int, float))
             or isinstance(confidence_threshold, bool)
@@ -459,7 +475,13 @@ class LLMTagger:
         self._group_regexes: dict[str, tuple[re.Pattern, ...]] = _compile_group_regexes(
             self.focus_groups
         )
-        self.max_suggestions = max_suggestions
+        self.max_applied_tags = max_applied_tags
+        self.max_proposals = max_proposals
+        # The prompt bound: None follows max_applied_tags (backward-compatible
+        # default), an explicit max_proposals overrides it for the prompt only.
+        self._proposal_bound = (
+            max_applied_tags if max_proposals is None else max_proposals
+        )
         self.tag_policy = tag_policy
         self.existing_tags = list(existing_tags)
         self.confidence_threshold = float(confidence_threshold)
@@ -504,7 +526,7 @@ class LLMTagger:
                 if isinstance(tag, str) and tag.strip()
             ]
             lines.append("Focus areas: " + (", ".join(focus_tags) or "none") + ".")
-        lines.append(f"Return at most {self.max_suggestions} tags.")
+        lines.append(f"Return at most {self._proposal_bound} tags.")
         if self.tag_policy == "only-existing":
             lines.append(
                 "Tag policy: ONLY choose from the provided existing tag "
@@ -637,4 +659,4 @@ class LLMTagger:
             seen.add(key)
             unique.append(suggestion)
 
-        return unique[: self.max_suggestions]
+        return unique[: self.max_applied_tags]

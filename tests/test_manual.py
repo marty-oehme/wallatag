@@ -134,10 +134,10 @@ def make_args(**overrides):
     return argparse.Namespace(**defaults)
 
 
-def make_tagger(existing_tags=(), groups=None, tag_policy="all", max_suggestions=10):
+def make_tagger(existing_tags=(), groups=None, tag_policy="all", max_applied_tags=10):
     return KeywordTagger(
         groups or {},
-        max_suggestions=max_suggestions,
+        max_applied_tags=max_applied_tags,
         tag_policy=tag_policy,
         existing_tags=list(existing_tags),
     )

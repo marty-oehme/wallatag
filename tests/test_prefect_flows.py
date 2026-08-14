@@ -343,17 +343,19 @@ class PrefectFlowsTest(unittest.TestCase):
             set(self.prefect_flows.WALLATAG_VARIABLES),
             {
                 "WALLATAG_TAG_POLICY",
-                "WALLATAG_MAX_SUGGESTIONS",
+                "WALLATAG_MAX_APPLIED_TAGS",
                 "WALLATAG_IGNORE_TAGS",
+                "WALLATAG_IGNORE_TAGS_REGEX",
                 "WALLATAG_ENABLE_VOCABULARY",
                 "WALLATAG_ENABLE_RULES",
                 "WALLATAG_ENABLE_LLM",
                 "WALLATAG_AI_CONFIDENCE_THRESHOLD",
                 "WALLATAG_AI_USE_FOCUS_GROUPS",
+                "WALLATAG_AI_MAX_PROPOSALS",
                 "WALLATAG_VOCABULARY_FIELDS",
             },
         )
-        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 9)
+        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 11)
         self.assertEqual(
             len(set(self.prefect_flows.WALLATAG_VARIABLES)),
             len(self.prefect_flows.WALLATAG_VARIABLES),
@@ -365,7 +367,7 @@ class PrefectFlowsTest(unittest.TestCase):
     def test_variable_env_normalizes_values(self) -> None:
         values = {
             "WALLATAG_TAG_POLICY": "all",
-            "WALLATAG_MAX_SUGGESTIONS": 7,
+            "WALLATAG_MAX_APPLIED_TAGS": 7,
             "WALLATAG_AI_CONFIDENCE_THRESHOLD": 0.8,
             "WALLATAG_ENABLE_LLM": True,
             "WALLATAG_ENABLE_RULES": False,
@@ -381,7 +383,7 @@ class PrefectFlowsTest(unittest.TestCase):
             env,
             {
                 "WALLATAG_TAG_POLICY": "all",
-                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_MAX_APPLIED_TAGS": "7",
                 "WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.8",
                 "WALLATAG_ENABLE_LLM": "true",
                 "WALLATAG_ENABLE_RULES": "false",
@@ -423,7 +425,7 @@ class PrefectFlowsTest(unittest.TestCase):
             env,
             {
                 "WALLATAG_TAG_POLICY": "prefer-existing",
-                "WALLATAG_MAX_SUGGESTIONS": "7",
+                "WALLATAG_MAX_APPLIED_TAGS": "7",
             },
         )
         self.assertEqual(calls["n"], 3)

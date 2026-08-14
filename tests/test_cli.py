@@ -140,29 +140,58 @@ class FlagOverrideTest(unittest.TestCase):
 
 
 class MaxArticlesTest(unittest.TestCase):
-    """--max is a runtime run limit; it must not touch max_suggestions."""
+    """--max is a runtime run limit; it must not touch max_applied_tags."""
 
-    def test_max_does_not_alter_max_suggestions(self):
+    def test_max_does_not_alter_max_applied_tags(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wallatag.toml"
-            path.write_text("[tagger]\nmax_suggestions = 9\n", encoding="utf-8")
+            path.write_text("[tagger]\nmax_applied_tags = 9\n", encoding="utf-8")
             config = load_config(config_path=str(path), env={})
             overridden = apply_flag_overrides(config, _args(max=100))
-            self.assertEqual(overridden.tagger.max_suggestions, 9)
+            self.assertEqual(overridden.tagger.max_applied_tags, 9)
             self.assertEqual(overridden.max_articles, 100)
 
-    def test_status_shows_toml_max_suggestions_and_run_limit(self):
+    def test_status_shows_toml_max_applied_tags_and_run_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wallatag.toml"
-            path.write_text("[tagger]\nmax_suggestions = 9\n", encoding="utf-8")
+            path.write_text("[tagger]\nmax_applied_tags = 9\n", encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = main(["status", "--config", str(path), "--max", "100"])
             text = out.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("max_suggestions=9", text)
-        self.assertNotIn("max_suggestions=100", text)
+        self.assertIn("max_applied_tags=9", text)
+        self.assertNotIn("max_applied_tags=100", text)
         self.assertIn("run limit: 100 articles", text)
+
+    def test_status_shows_max_proposals_when_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                "[tagger]\nmax_applied_tags = 9\n\n[ai]\nmax_proposals = 4\n",
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("max_applied_tags=9", text)
+        self.assertIn("max_proposals=4", text)
+
+    def test_status_omits_max_proposals_when_unset(self):
+        # No [ai] max_proposals: the tagger line stays unchanged (the keyword
+        # tagger has no such knob).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text("[tagger]\nmax_applied_tags = 9\n", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("max_applied_tags=9", text)
+        self.assertNotIn("max_proposals", text)
 
 
 class FocusTest(unittest.TestCase):
@@ -451,7 +480,7 @@ class BuildTaggerTest(unittest.TestCase):
         config = dataclasses.replace(
             _ai_cfg(threshold=0.8),
             tagger=TaggerConfig(
-                max_suggestions=3,
+                max_applied_tags=3,
                 tag_policy="only-existing",
                 focus_groups={"a": config_focus_group()},
                 enable_llm=True,
@@ -467,7 +496,7 @@ class BuildTaggerTest(unittest.TestCase):
         self.assertIsInstance(tagger, LLMTagger)
         self.assertIsNone(fallback)
         self.assertEqual(tagger.confidence_threshold, 0.8)
-        self.assertEqual(tagger.max_suggestions, 3)
+        self.assertEqual(tagger.max_applied_tags, 3)
         self.assertEqual(tagger.tag_policy, "only-existing")
         self.assertEqual(tagger.existing_tags, ["python", "rust"])
 
@@ -673,7 +702,7 @@ class BuildTaggerTest(unittest.TestCase):
         config = dataclasses.replace(
             _ai_cfg(threshold=0.8),
             tagger=TaggerConfig(
-                max_suggestions=3,
+                max_applied_tags=3,
                 tag_policy="only-existing",
                 focus_groups={"a": config_focus_group()},
                 enable_llm=True,
@@ -693,10 +722,10 @@ class BuildTaggerTest(unittest.TestCase):
         self.assertIs(llm_client, client_cls.return_value)
         self.assertIsInstance(fallback, KeywordTagger)
         # Same construction params as a normal keyword-mode run: same focus
-        # groups, max_suggestions, tag_policy, existing tags, and the
+        # groups, max_applied_tags, tag_policy, existing tags, and the
         # enable_vocabulary/enable_rules switches.
         self.assertEqual(fallback.focus_groups, tagger.focus_groups)
-        self.assertEqual(fallback.max_suggestions, 3)
+        self.assertEqual(fallback.max_applied_tags, 3)
         self.assertEqual(fallback.tag_policy, "only-existing")
         self.assertEqual(fallback.existing_tags, ["python", "rust"])
         self.assertTrue(fallback.enable_vocabulary)
