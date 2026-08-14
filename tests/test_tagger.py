@@ -170,7 +170,7 @@ class VocabularyTest(unittest.TestCase):
 
 
 class TagPolicyTest(unittest.TestCase):
-    def test_only_existing_drops_rule_tags(self):
+    def test_only_existing_drops_non_vocabulary_rule_tags(self):
         groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
         tagger = make_tagger(
             groups, tag_policy="only-existing", existing_tags=["Pomodoro"]
@@ -226,6 +226,86 @@ class TagPolicyTest(unittest.TestCase):
         self.assertEqual([s.tag for s in result], ["Pomodoro", "productivity"])
         self.assertEqual(result[0].source, "vocabulary")
         self.assertEqual(result[0].confidence, 1.0)
+
+
+class OnlyExistingPolicyTest(unittest.TestCase):
+    """Issue 69ad357: only-existing fires rules but filters their tags to the
+    existing vocabulary (never suggests tags that don't already exist)."""
+
+    def test_rule_tag_in_vocabulary_survives_only_existing(self):
+        # The group maps keyword "pomodoro" -> tag "productivity", which IS an
+        # existing tag, but the label never appears in the article text, so
+        # only the rule can surface it. Under only-existing it must survive.
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = make_tagger(
+            groups, tag_policy="only-existing", existing_tags=["productivity"]
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual(
+            result,
+            [TagSuggestion(tag="productivity", source="rules", confidence=0.7)],
+        )
+
+    def test_rule_tags_not_in_vocabulary_dropped(self):
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity", "newtag"))}
+        tagger = make_tagger(
+            groups, tag_policy="only-existing", existing_tags=["productivity"]
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual([s.tag for s in result], ["productivity"])
+        self.assertEqual([s.source for s in result], ["rules"])
+
+    def test_membership_is_case_insensitive(self):
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("Productivity",))}
+        tagger = make_tagger(
+            groups, tag_policy="only-existing", existing_tags=["productivity"]
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual([s.tag for s in result], ["Productivity"])
+
+    def test_membership_ignores_enable_vocabulary_switch(self):
+        # enable_vocabulary=False disables vocabulary MATCHING only; the
+        # policy filter still uses the existing vocabulary, so rules filtered
+        # to existing tags keep firing.
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = KeywordTagger(
+            groups,
+            max_suggestions=10,
+            tag_policy="only-existing",
+            existing_tags=["productivity"],
+            enable_vocabulary=False,
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual([s.tag for s in result], ["productivity"])
+        self.assertEqual([s.source for s in result], ["rules"])
+
+    def test_vocabulary_match_wins_dedup_under_only_existing(self):
+        # The tag is both matched from the text (vocabulary) and fired by a
+        # rule: it appears once, with the vocabulary source first in line.
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("Pomodoro",))}
+        tagger = make_tagger(
+            groups, tag_policy="only-existing", existing_tags=["Pomodoro"]
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual(
+            result, [TagSuggestion(tag="Pomodoro", source="vocabulary", confidence=1.0)]
+        )
+
+    def test_padded_existing_label_counts_for_membership(self):
+        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        tagger = make_tagger(
+            groups,
+            tag_policy="only-existing",
+            existing_tags=["  productivity  "],
+        )
+        result = tagger.suggest(entry(title="pomodoro focus"))
+
+        self.assertEqual([s.tag for s in result], ["productivity"])
 
 
 class MaxSuggestionsTest(unittest.TestCase):
@@ -779,6 +859,17 @@ class LLMTaggerSuggestTest(unittest.TestCase):
         result = tagger.suggest(entry(title="x"))
 
         self.assertEqual([s.tag for s in result], ["Python"])
+
+    def test_only_existing_padded_vocabulary_label_matches(self):
+        # Normalization shared with KeywordTagger: a padded existing label
+        # counts as existing for the only-existing gate.
+        client = FakeLLMClient('[{"tag": "python", "confidence": 0.9}]')
+        tagger = make_llm_tagger(
+            client, tag_policy="only-existing", existing_tags=["  python  "]
+        )
+        result = tagger.suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["python"])
 
 
 class LLMTaggerMalformedResponseTest(unittest.TestCase):

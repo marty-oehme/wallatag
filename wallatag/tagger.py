@@ -50,6 +50,20 @@ def _clean_content(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _existing_tag_keys(existing_tags: Iterable[str]) -> frozenset[str]:
+    """Normalized (stripped, casefolded) existing vocabulary labels.
+
+    Single source of truth for membership in the existing tag vocabulary,
+    shared by both taggers' "only-existing" policy gates. Non-string or
+    blank labels can never be suggested tags, so they are skipped.
+    """
+    return frozenset(
+        tag.strip().casefold()
+        for tag in existing_tags
+        if isinstance(tag, str) and tag.strip()
+    )
+
+
 @dataclass(frozen=True)
 class TagSuggestion:
     tag: str
@@ -99,10 +113,12 @@ class KeywordTagger:
     accepted, at config-load time (ConfigError) and at construction
     (ValueError).
 
-    tag_policy semantics in the MVP: both "prefer-existing" and "all" produce
-    the same ordering: vocabulary suggestions first, then rule suggestions,
-    with case-insensitive first-wins dedup; the policies differ only in that
-    "only-existing" drops rule suggestions entirely.
+    tag_policy semantics: both "prefer-existing" and "all" produce the same
+    ordering: vocabulary suggestions first, then rule suggestions, with
+    case-insensitive first-wins dedup. "only-existing" never suggests tags
+    that are not already in the existing vocabulary: vocabulary matches are
+    kept and rule suggestions are filtered to tags present in the vocabulary
+    (they fire, but cannot introduce new tags).
 
     Two per-source off-switches (keyword-only, both default True):
     ``enable_vocabulary=False`` disables the existing-tag vocabulary matcher
@@ -283,13 +299,14 @@ class KeywordTagger:
             else []
         )
 
-        # "only-existing" drops rule-derived suggestions entirely; enable_rules
-        # provides an explicit off-switch that composes as a strict superset.
-        rules = (
-            self._rule_suggestions(entry)
-            if self.enable_rules and self.tag_policy != "only-existing"
-            else []
-        )
+        # Issue 69ad357: "only-existing" no longer drops rule suggestions; it
+        # filters them to the existing vocabulary. The policy means "never
+        # suggest tags that aren't already in the wallabag instance", not
+        # "ignore focus groups". enable_rules stays an explicit off-switch.
+        rules = self._rule_suggestions(entry) if self.enable_rules else []
+        if self.tag_policy == "only-existing" and rules:
+            keys = _existing_tag_keys(self.existing_tags)
+            rules = [s for s in rules if s.tag.strip().casefold() in keys]
 
         # "prefer-existing" and "all" share the same ordering: vocabulary
         # matches first, then rule-derived tags.
@@ -524,14 +541,12 @@ class LLMTagger:
             s for s in suggestions if s.confidence >= self.confidence_threshold
         ]
         if self.tag_policy == "only-existing":
-            # Non-string vocabulary entries are filtered defensively: a
-            # non-string element would crash the casefold() below (the system
-            # prompt builder applies the same guard).
-            existing = {
-                tag.casefold() for tag in self.existing_tags if isinstance(tag, str)
-            }
+            # Normalization shared with KeywordTagger: a tag counts as
+            # existing iff its stripped+casefolded form is in the vocabulary
+            # (_existing_tag_keys skips non-string/blank labels defensively).
+            existing = _existing_tag_keys(self.existing_tags)
             suggestions = [
-                s for s in suggestions if s.tag.casefold() in existing
+                s for s in suggestions if s.tag.strip().casefold() in existing
             ]
 
         # Dedup case-insensitively keeping the FIRST occurrence and the model's

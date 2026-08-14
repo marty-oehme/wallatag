@@ -89,7 +89,10 @@ pattern (an empty regex matches everything, so it is rejected).
   `max_suggestions`.
 - `[tagger] tag_policy`: `only-existing` | `prefer-existing` | `all`
   (default `prefer-existing`). Override with `--tag-policy` or
-  `WALLATAG_TAG_POLICY`.
+  `WALLATAG_TAG_POLICY`. `only-existing` never suggests tags that are not
+  already in the wallabag vocabulary: vocabulary matches are kept, and
+  focus-group rules still fire but are filtered down to their existing-tag
+  results.
 - `[tagger] ignore_tags`: list of tags treated as untagged. Articles carrying
   ONLY those tags are still fetched (e.g. maintenance tags like `fix`), while
   articles carrying any other tag are not. Matching is an exact full-string
@@ -141,8 +144,9 @@ pattern (an empty regex matches everything, so it is rejected).
   (env `WALLATAG_ENABLE_RULES`) disables focus-group rule matching. The
   switches are strict booleans (env accepts `true`/`1`/`yes` or
   `false`/`0`/`no`, case-insensitive) and compose with the existing
-  `tag_policy` gate (`only-existing` still drops rule suggestions; an
-  off-switch disables its source regardless of policy).
+  `tag_policy` gate (`only-existing` keeps only rule suggestions whose tag
+  already exists in the vocabulary; an off-switch disables its source
+  regardless of policy).
 - `[ai] use_focus_groups` (default `true`, env `WALLATAG_AI_USE_FOCUS_GROUPS`,
   accepts `true`/`1`/`yes` or `false`/`0`/`no`; values are matched
   case-insensitively and surrounding whitespace is ignored) controls
