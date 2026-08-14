@@ -648,8 +648,15 @@ class LLMTagger:
                 s for s in suggestions if s.tag.strip().casefold() in existing
             ]
 
-        # Dedup case-insensitively keeping the FIRST occurrence and the model's
+        # The model's array is NOT ranked (the system prompt never demands an
+        # ordering), so rank the survivors by confidence DESCENDING before
+        # truncation. Stable sort: equal-confidence candidates keep the model's
         # output order.
+        suggestions.sort(key=lambda s: s.confidence, reverse=True)
+
+        # Dedup case-insensitively keeping the FIRST occurrence. Ranking above
+        # happens BEFORE this dedup, so the first occurrence of each casefolded
+        # tag is automatically its highest-confidence one.
         seen: set[str] = set()
         unique: list[TagSuggestion] = []
         for suggestion in suggestions:

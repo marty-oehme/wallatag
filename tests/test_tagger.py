@@ -802,14 +802,74 @@ class LLMTaggerSuggestTest(unittest.TestCase):
 
         self.assertEqual([s.tag for s in result], ["a", "b"])
 
-    def test_model_output_order_kept(self):
+    def test_applied_tags_confidence_ranked(self):
+        # The model's array is not ranked; the applied list is. Confidence
+        # descending wins over model output order: zeta (0.95) sorts ahead of
+        # alpha (0.9) even though the model listed alpha first.
         client = FakeLLMClient(
-            '[{"tag": "zeta", "confidence": 0.9}, '
-            '{"tag": "alpha", "confidence": 0.9}]'
+            '[{"tag": "alpha", "confidence": 0.9}, '
+            '{"tag": "zeta", "confidence": 0.95}]'
         )
         result = make_llm_tagger(client).suggest(entry(title="x"))
 
         self.assertEqual([s.tag for s in result], ["zeta", "alpha"])
+        self.assertEqual([s.confidence for s in result], [0.95, 0.9])
+
+    def test_equal_confidence_keeps_model_order(self):
+        # Stable sort: equal-confidence candidates keep the model's array
+        # order (a before b), and higher confidence still wins overall.
+        client = FakeLLMClient(
+            '[{"tag": "a", "confidence": 0.9}, '
+            '{"tag": "b", "confidence": 0.9}, '
+            '{"tag": "c", "confidence": 0.8}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["a", "b", "c"])
+
+    def test_dedup_keeps_highest_confidence_spelling(self):
+        # Rank-before-dedup: "python" 0.8 is first in the model's array, but
+        # ranking puts "Python" 0.9 first, so the case-insensitive dedup keeps
+        # the higher-confidence spelling. Pins the sort happening BEFORE dedup.
+        client = FakeLLMClient(
+            '[{"tag": "python", "confidence": 0.8}, '
+            '{"tag": "Python", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(client).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["Python"])
+        self.assertEqual(result[0].confidence, 0.9)
+
+    def test_below_threshold_never_ranked(self):
+        # The threshold still applies to ranking survivors: a below-threshold
+        # tag never appears even though the model listed it first, and the
+        # survivors are confidence-ranked (high 0.95 ahead of mid 0.9 even
+        # though mid came first in the model's array).
+        client = FakeLLMClient(
+            '[{"tag": "low", "confidence": 0.8}, '
+            '{"tag": "mid", "confidence": 0.9}, '
+            '{"tag": "high", "confidence": 0.95}]'
+        )
+        result = make_llm_tagger(client, confidence_threshold=0.85).suggest(
+            entry(title="x")
+        )
+
+        self.assertEqual([s.tag for s in result], ["high", "mid"])
+
+    def test_max_applied_tags_takes_top_confidence(self):
+        # Truncation happens AFTER ranking: with 5 above-threshold candidates
+        # and a cap of 3, the top 3 BY CONFIDENCE are applied, not the model's
+        # first 3.
+        client = FakeLLMClient(
+            '[{"tag": "low1", "confidence": 0.71}, '
+            '{"tag": "top1", "confidence": 0.99}, '
+            '{"tag": "mid1", "confidence": 0.85}, '
+            '{"tag": "low2", "confidence": 0.72}, '
+            '{"tag": "top2", "confidence": 0.98}]'
+        )
+        result = make_llm_tagger(client, max_applied_tags=3).suggest(entry(title="x"))
+
+        self.assertEqual([s.tag for s in result], ["top1", "top2", "mid1"])
 
     def test_empty_result_yields_no_suggestions(self):
         result = make_llm_tagger(FakeLLMClient("[]")).suggest(entry(title="x"))

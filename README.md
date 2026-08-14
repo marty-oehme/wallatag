@@ -158,7 +158,9 @@ pattern (an empty regex matches everything, so it is rejected).
   `false`, so configuring `[ai]` alone no longer activates the LLM tagger —
   it also requires the switch. `confidence_threshold` (default 0.7) gates
   headless apply, further limited by `--tag-policy`. LLM suggestions carry
-  source `llm` and are recorded in the SQLite decision log. `api_key` is
+  source `llm` and are recorded in the SQLite decision log. Applied LLM tags
+  are ranked by model confidence, highest first (ties keep the model's output
+  order). `api_key` is
   optional: when set it is sent as an `Authorization: Bearer <api_key>` header
   on every LLM request, which is only needed for keyed openai-compatible
   providers (OpenAI, OpenRouter, ...); unset or empty means no auth header.
