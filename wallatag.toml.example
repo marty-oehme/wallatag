@@ -51,6 +51,10 @@ enable_llm = false                    # LLM tagging is opt-in: set true to enabl
 # "" disables).
 [vocabulary]
 fields = ["title", "url"]
+# Vocabulary matcher skips tags on the [tagger] ignore lists (default); set
+# false to apply them. Env override: WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS
+# (true/1/yes, false/0/no).
+skip_ignored_tags = true
 
 # Named rule groups ("focus" areas). --focus NAME activates one; repeat the
 # flag to activate several (e.g. --focus methods --focus languages); default = all.

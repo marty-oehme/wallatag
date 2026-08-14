@@ -397,9 +397,10 @@ class PrefectFlowsTest(unittest.TestCase):
                 "WALLATAG_AI_USE_FOCUS_GROUPS",
                 "WALLATAG_AI_MAX_PROPOSALS",
                 "WALLATAG_VOCABULARY_FIELDS",
+                "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS",
             },
         )
-        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 11)
+        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 12)
         self.assertEqual(
             len(set(self.prefect_flows.WALLATAG_VARIABLES)),
             len(self.prefect_flows.WALLATAG_VARIABLES),

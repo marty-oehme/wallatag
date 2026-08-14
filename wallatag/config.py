@@ -48,6 +48,7 @@ _ENV_FOCUS_KEYWORDS_REGEX_SUFFIX = "_KEYWORDS_REGEX"
 _ENV_FOCUS_TAGS_SUFFIX = "_TAGS"
 _ENV_FOCUS_FIELDS_SUFFIX = "_FIELDS"
 _ENV_VOCABULARY_FIELDS = "WALLATAG_VOCABULARY_FIELDS"
+_ENV_VOCABULARY_SKIP_IGNORED_TAGS = "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
 
@@ -96,9 +97,15 @@ class VocabularyConfig:
     that existing-tag labels are matched against. The default is all four
     fields; an explicitly empty tuple disables vocabulary matching entirely
     (absent config falls back to the all-fields default at parse time).
+
+    ``skip_ignored_tags`` (default True): when True the vocabulary matcher
+    skips tags on the [tagger] ignore lists (``ignore_tags`` exact casefolded
+    match, ``ignore_tags_regex`` re.search), mirroring the fetch filter; False
+    restores suggesting ignored vocabulary labels.
     """
 
     fields: tuple[str, ...] = VALID_MATCH_FIELDS
+    skip_ignored_tags: bool = True
 
 
 @dataclass(frozen=True)
@@ -566,6 +573,13 @@ def _parse_toml_config(raw: dict) -> Config:
         else VALID_MATCH_FIELDS
     )
 
+    # [vocabulary] skip_ignored_tags: whether the vocabulary matcher skips
+    # tags on the [tagger] ignore lists (mirroring the fetch filter). Defaults
+    # to True; strict boolean validation mirrors enable_vocabulary.
+    skip_ignored_tags = vocabulary_raw.get("skip_ignored_tags", True)
+    if not isinstance(skip_ignored_tags, bool):
+        raise ConfigError("skip_ignored_tags must be a boolean (true or false)")
+
     return Config(
         wallabag=WallabagConfig(
             url=str(wallabag_raw.get("url", "") or ""),
@@ -586,7 +600,9 @@ def _parse_toml_config(raw: dict) -> Config:
             enable_llm=enable_llm,
         ),
         ai=_parse_ai(raw),
-        vocabulary=VocabularyConfig(fields=vocabulary_fields),
+        vocabulary=VocabularyConfig(
+            fields=vocabulary_fields, skip_ignored_tags=skip_ignored_tags
+        ),
         verbose=False,
     )
 
@@ -806,6 +822,19 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
                 _parse_comma_separated(
                     "tagger", _ENV_VOCABULARY_FIELDS, vocabulary_fields_raw
                 ),
+            ),
+        )
+    # Whether the vocabulary matcher skips tags on the [tagger] ignore lists.
+    # Strict boolean parsing (same accepted values as WALLATAG_ENABLE_*:
+    # true/1/yes, false/0/no, case-insensitive).
+    skip_ignored_tags_raw = env.get(_ENV_VOCABULARY_SKIP_IGNORED_TAGS)
+    if skip_ignored_tags_raw is not None:
+        vocabulary = replace(
+            vocabulary,
+            skip_ignored_tags=_parse_bool_env(
+                "vocabulary",
+                _ENV_VOCABULARY_SKIP_IGNORED_TAGS,
+                skip_ignored_tags_raw,
             ),
         )
 

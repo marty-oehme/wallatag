@@ -451,6 +451,131 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         self.assertIn("enable_rules", str(ctx.exception))
 
 
+class IgnoredVocabularyTest(unittest.TestCase):
+    """Issue 96d81f6: the vocabulary matcher skips ignored tags by default."""
+
+    def _tagger(self, groups, **kwargs):
+        kwargs.setdefault("max_applied_tags", 10)
+        kwargs.setdefault("tag_policy", "prefer-existing")
+        return KeywordTagger(groups, **kwargs)
+
+    def test_ignored_tag_dropped_by_default(self):
+        # "fix" is on ignore_tags and matches the article: its vocabulary
+        # suggestion is dropped; the unrelated label still matches.
+        tagger = self._tagger(
+            {},
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+        )
+        result = tagger.suggest(entry(title="fix the python setup"))
+        self.assertEqual([s.tag for s in result], ["python"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_ignored_match_is_case_insensitive(self):
+        # "Fix" vs ignore_tags ["fix"]: casefolded exact match -> dropped.
+        tagger = self._tagger(
+            {},
+            existing_tags=["Fix"],
+            ignore_tags=["fix"],
+        )
+        self.assertEqual(tagger.suggest(entry(title="Fix the bug")), [])
+
+    def test_ignored_regex_drops_tag(self):
+        tagger = self._tagger(
+            {},
+            existing_tags=["fixed", "python"],
+            ignore_tags_regex=["^fix"],
+        )
+        result = tagger.suggest(entry(title="fixed the python setup"))
+        self.assertEqual([s.tag for s in result], ["python"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_skip_ignored_tags_false_keeps_tag(self):
+        # Opt-out restores the pre-issue behavior: ignored tags ARE suggested.
+        tagger = self._tagger(
+            {},
+            existing_tags=["fix"],
+            ignore_tags=["fix"],
+            skip_ignored_tags=False,
+        )
+        result = tagger.suggest(entry(title="fix the bug"))
+        self.assertEqual([s.tag for s in result], ["fix"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_skip_ignored_tags_true_explicit_drops_tag(self):
+        # Explicit True matches the default: ignored tags are dropped.
+        tagger = self._tagger(
+            {},
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+            skip_ignored_tags=True,
+        )
+        result = tagger.suggest(entry(title="fix the python setup"))
+        self.assertEqual([s.tag for s in result], ["python"])
+        self.assertEqual([s.source for s in result], ["vocabulary"])
+
+    def test_non_ignored_vocabulary_tag_still_suggested(self):
+        # Regression guard: unrelated labels and ignore-list config coexist.
+        tagger = self._tagger(
+            {},
+            existing_tags=["python", "rust"],
+            ignore_tags=["fix"],
+            ignore_tags_regex=["^todo"],
+        )
+        result = tagger.suggest(entry(title="python rust"))
+        self.assertEqual([s.tag for s in result], ["python", "rust"])
+
+    def test_ignored_tag_fired_by_rule_survives_as_rules(self):
+        # The vocabulary match is dropped at the SOURCE, so the rule
+        # suggestion (fired by keyword "pomodoro") is what the first-occurrence
+        # dedup keeps.
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("fix",)),
+        }
+        tagger = self._tagger(
+            groups,
+            existing_tags=["fix"],
+            ignore_tags=["fix"],
+            enable_rules=True,
+        )
+        result = tagger.suggest(entry(title="pomodoro fix"))
+        self.assertEqual([s.tag for s in result], ["fix"])
+        self.assertEqual([s.source for s in result], ["rules"])
+
+    def test_empty_ignore_lists_no_behavior_change(self):
+        result = self._tagger({}, existing_tags=["python"]).suggest(
+            entry(title="python")
+        )
+        self.assertEqual([s.tag for s in result], ["python"])
+        result = self._tagger(
+            {},
+            existing_tags=["python"],
+            ignore_tags=[],
+            ignore_tags_regex=[],
+        ).suggest(entry(title="python"))
+        self.assertEqual([s.tag for s in result], ["python"])
+
+    def test_whitespace_padded_ignored_entry_matches(self):
+        # Normalization mirrors the fetch side: padded ignore entries match
+        # stripped suggestion labels.
+        tagger = self._tagger(
+            {}, existing_tags=["fix"], ignore_tags=["  fix  "]
+        )
+        self.assertEqual(tagger.suggest(entry(title="fix it")), [])
+
+    def test_non_string_ignored_entry_skipped(self):
+        # A non-str ignore_tags entry must not crash construction or matching.
+        tagger = self._tagger(
+            {}, existing_tags=["fix"], ignore_tags=[123, "fix"]
+        )
+        self.assertEqual(tagger.suggest(entry(title="fix it")), [])
+
+    def test_non_bool_skip_ignored_tags_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._tagger({}, skip_ignored_tags=1)
+        self.assertIn("skip_ignored_tags", str(ctx.exception))
+
+
 class RegexRuleTest(unittest.TestCase):
     """keywords_regex: regexes fire focus groups alongside literal keywords."""
 

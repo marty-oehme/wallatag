@@ -217,6 +217,16 @@ class KeywordTagger:
     says); ``enable_rules=False`` disables focus-group rule matching (no
     ``source="rules"`` suggestions, whatever the groups say). Both are
     strict booleans; anything else raises ValueError at construction.
+
+    By default (``skip_ignored_tags=True``) the vocabulary matcher skips
+    tags on the ``ignore_tags`` / ``ignore_tags_regex`` lists: a tag that is
+    both an existing vocabulary label and ignored (exact casefolded match
+    against ``ignore_tags``, or ``re.search`` against ``ignore_tags_regex``,
+    mirroring the wallabag fetch-side semantics) is never suggested from the
+    vocabulary. Set ``skip_ignored_tags=False`` to restore the old behavior of
+    suggesting ignored vocabulary labels. Rule-derived suggestions and the
+    LLM path are unaffected: an ignored tag fired by a focus group still
+    survives as a ``source="rules"`` suggestion.
     """
 
     # Default set of article fields matched against when a source does not
@@ -235,6 +245,9 @@ class KeywordTagger:
         vocabulary_fields: Iterable[str] = _FIELDS,
         enable_vocabulary: bool = True,
         enable_rules: bool = True,
+        ignore_tags: Iterable[str] = (),
+        ignore_tags_regex: Iterable[str] = (),
+        skip_ignored_tags: bool = True,
     ) -> None:
         if tag_policy not in VALID_TAG_POLICIES:
             raise ValueError(
@@ -251,6 +264,8 @@ class KeywordTagger:
             raise ValueError("enable_vocabulary must be a boolean")
         if not isinstance(enable_rules, bool):
             raise ValueError("enable_rules must be a boolean")
+        if not isinstance(skip_ignored_tags, bool):
+            raise ValueError("skip_ignored_tags must be a boolean")
         # Materialize ONCE before validating: vocabulary_fields is only
         # declared Iterable, so a one-shot generator would otherwise be
         # consumed by the validation loop and the stored tuple would come out
@@ -281,6 +296,21 @@ class KeywordTagger:
         self.vocabulary_fields = vocabulary_fields
         self.enable_vocabulary = enable_vocabulary
         self.enable_rules = enable_rules
+        # Ignore lists mirrored from the wallabag fetch side (wallabag.py
+        # iter_untagged/untagged_entries/_should_fetch): exact matching is
+        # casefolded (with surrounding whitespace stripped, consistent with
+        # _existing_tag_keys); regexes search the RAW label with
+        # re.IGNORECASE. config.py already validated compilability, so the
+        # patterns are compiled directly.
+        self._ignored_keys: frozenset[str] = frozenset(
+            tag.strip().casefold()
+            for tag in ignore_tags
+            if isinstance(tag, str) and tag.strip()
+        )
+        self._ignored_patterns: tuple[re.Pattern, ...] = tuple(
+            re.compile(p, re.IGNORECASE) for p in ignore_tags_regex
+        )
+        self.skip_ignored_tags = skip_ignored_tags
 
     def _field_needles(self, entry: dict, fields) -> tuple[str, ...]:
         """Casefolded per-field text to match against, fields kept separate.
@@ -309,6 +339,18 @@ class KeywordTagger:
         match.
         """
         return _matches(needle, fields)
+
+    def _ignored(self, tag: str) -> bool:
+        """True if the tag is on the ignore lists (fetch-side semantics).
+
+        Exact matching is casefolded (and whitespace-stripped on both
+        sides); regexes search the RAW label (``re.search``, compiled with
+        ``re.IGNORECASE``) — mirroring wallabag.py's ``_should_fetch``.
+        """
+        key = tag.strip().casefold()
+        if key in self._ignored_keys:
+            return True
+        return any(p.search(tag) for p in self._ignored_patterns)
 
     def _vocabulary_suggestions(self, fields: tuple[str, ...]) -> list[TagSuggestion]:
         suggestions = []
@@ -353,6 +395,18 @@ class KeywordTagger:
             if self.enable_vocabulary
             else []
         )
+
+        # Issue 96d81f6: by default the vocabulary matcher skips tags on the
+        # ignore lists (exact casefolded ignore_tags match or ignore_tags_regex
+        # re.search, mirroring the fetch-side _should_fetch semantics). Filtered
+        # at the SOURCE, before the policy filter and the vocabulary+rules
+        # merge, so an ignored tag that a rule also fires still survives as a
+        # normal RULE suggestion.
+        if self.skip_ignored_tags and vocabulary:
+            vocabulary = [
+                s for s in vocabulary
+                if not self._ignored(s.tag)
+            ]
 
         # Issue 69ad357: "only-existing" no longer drops rule suggestions; it
         # filters them to the existing vocabulary. The policy means "never

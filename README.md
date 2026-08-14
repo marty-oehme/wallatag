@@ -58,6 +58,7 @@ Values are merged from lowest to highest precedence: later sources win:
 | Focus-group rules                    | `[tagger] enable_rules`       | `WALLATAG_ENABLE_RULES`             |
 | LLM classification                   | `[tagger] enable_llm`         | `WALLATAG_ENABLE_LLM`               |
 | Vocabulary match fields              | `[vocabulary] fields`         | `WALLATAG_VOCABULARY_FIELDS`        |
+| Skip ignored tags in vocabulary matching | `[vocabulary] skip_ignored_tags` | `WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS` |
 | Focus groups             | `[focus.<name>]` keywords/tags/fields/keywords_regex | `WALLATAG_FOCUS_<NAME>_KEYWORDS`, `WALLATAG_FOCUS_<NAME>_TAGS`, `WALLATAG_FOCUS_<NAME>_FIELDS`, `WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX` |
 | Config file location     | `--config PATH`             | `WALLATAG_CONFIG`                  |
 
@@ -111,7 +112,11 @@ pattern (an empty regex matches everything, so it is rejected).
   untagged articles are fetched. Override with `WALLATAG_IGNORE_TAGS`
   (comma-separated string, e.g. `fix,_frigo`); an empty value clears the list
   (whitespace-only or comma-only values are rejected, since they would
-  silently clear it).
+  silently clear it). By default the vocabulary matcher also skips tags on the
+  ignore lists (exact or regex match, same semantics as the fetch filter), so
+  maintenance tags are neither re-fetched nor re-applied; set
+  `[vocabulary] skip_ignored_tags = false` (env
+  `WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS`) to apply ignored tags again.
 - `[tagger] ignore_tags_regex`: list of Python regex patterns (default empty)
   matched against each tag *in addition to* the literal `ignore_tags` list. A
   tag counts as ignored if it equals a literal entry OR matches any pattern,
@@ -354,7 +359,7 @@ prefect variable set WALLATAG_TAG_POLICY all
 prefect variable set WALLATAG_ENABLE_LLM true
 ```
 
-The 11 scalar variables (names mirror the env vars exactly):
+The 12 scalar variables (names mirror the env vars exactly):
 
 | Variable | Meaning |
 | -------- | ------- |
@@ -369,6 +374,7 @@ The 11 scalar variables (names mirror the env vars exactly):
 | `WALLATAG_AI_USE_FOCUS_GROUPS` | focus groups in the LLM prompt on/off (bool) |
 | `WALLATAG_AI_MAX_PROPOSALS` | LLM tag proposals per article (int, unset -> follows max_applied_tags) |
 | `WALLATAG_VOCABULARY_FIELDS` | vocabulary match fields (comma-separated) |
+| `WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS` | vocabulary matcher skips ignored tags on/off (bool, default true) |
 
 Booleans are normalized to `true`/`false`, numbers to their plain string form
 — the same values the env vars accept. Focus groups go in ONE variable,

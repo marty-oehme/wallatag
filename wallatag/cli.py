@@ -155,9 +155,9 @@ def _build_tagger(
     When the LLM tagger is active AND ``config.ai.fallback_on_fail`` is true,
     ``fallback_tagger`` is a KeywordTagger built exactly like a normal
     keyword-mode run (same focus groups, max_applied_tags, tag_policy,
-    existing tags, vocabulary fields and enable_vocabulary/enable_rules
-    switches): the pipelines use it to tag an article the LLM failed on,
-    per-article. Otherwise ``fallback_tagger`` is None.
+    existing tags, vocabulary fields, enable_vocabulary/enable_rules switches
+    and ignore-list handling): the pipelines use it to tag an article the LLM
+    failed on, per-article. Otherwise ``fallback_tagger`` is None.
     """
     if config.ai.provider and config.tagger.enable_llm:
         llm_client = LLMClient(
@@ -181,8 +181,8 @@ def _build_tagger(
         if config.ai.fallback_on_fail:
             # Keyword-mode fallback for articles the LLM fails on: mirror the
             # non-LLM branch construction so it behaves exactly like a normal
-            # keyword-mode run (enable_vocabulary/enable_rules/tag_policy all
-            # apply).
+            # keyword-mode run (enable_vocabulary/enable_rules/tag_policy and
+            # the ignore-list handling all apply).
             fallback_tagger = KeywordTagger(
                 config.tagger.focus_groups,
                 max_applied_tags=config.tagger.max_applied_tags,
@@ -191,6 +191,9 @@ def _build_tagger(
                 vocabulary_fields=config.vocabulary.fields,
                 enable_vocabulary=config.tagger.enable_vocabulary,
                 enable_rules=config.tagger.enable_rules,
+                ignore_tags=config.tagger.ignore_tags,
+                ignore_tags_regex=config.tagger.ignore_tags_regex,
+                skip_ignored_tags=config.vocabulary.skip_ignored_tags,
             )
         return tagger, llm_client, fallback_tagger
     tagger = KeywordTagger(
@@ -201,6 +204,9 @@ def _build_tagger(
         vocabulary_fields=config.vocabulary.fields,
         enable_vocabulary=config.tagger.enable_vocabulary,
         enable_rules=config.tagger.enable_rules,
+        ignore_tags=config.tagger.ignore_tags,
+        ignore_tags_regex=config.tagger.ignore_tags_regex,
+        skip_ignored_tags=config.vocabulary.skip_ignored_tags,
     )
     return tagger, None, None
 

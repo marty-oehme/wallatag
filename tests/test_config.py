@@ -1788,6 +1788,91 @@ class VocabularyEnvTest(unittest.TestCase):
         self.assertEqual(config.vocabulary.fields, ("title",))
 
 
+class VocabularySkipIgnoredTagsTomlTest(unittest.TestCase):
+    """[vocabulary] skip_ignored_tags switch."""
+
+    def _load(self, toml_text: str) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_default_true_when_absent(self):
+        # No switch anywhere: skipping is ON by default (True = skip).
+        config = self._load("")
+        self.assertTrue(config.vocabulary.skip_ignored_tags)
+        config = self._load("[vocabulary]\n")
+        self.assertTrue(config.vocabulary.skip_ignored_tags)
+
+    def test_explicit_values_reflected(self):
+        config = self._load("[vocabulary]\nskip_ignored_tags = true\n")
+        self.assertTrue(config.vocabulary.skip_ignored_tags)
+        config = self._load("[vocabulary]\nskip_ignored_tags = false\n")
+        self.assertFalse(config.vocabulary.skip_ignored_tags)
+
+    def test_string_raises(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self._load('[vocabulary]\nskip_ignored_tags = "yes"\n')
+        message = str(ctx.exception)
+        self.assertIn("skip_ignored_tags", message)
+        self.assertIn("boolean", message)
+
+    def test_number_raises(self):
+        # bool is an int subclass in TOML too: `= 1` / `= 0` must not parse.
+        for value in (1, 0):
+            with self.assertRaises(ConfigError) as ctx:
+                self._load(f"[vocabulary]\nskip_ignored_tags = {value}\n")
+            self.assertIn("skip_ignored_tags", str(ctx.exception))
+
+
+class VocabularySkipIgnoredTagsEnvTest(unittest.TestCase):
+    """WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS overlays the TOML switch."""
+
+    def _env_load(self, toml_text: str, env: dict) -> Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, toml_text)
+            return load_config(config_path=str(tmp / "wallatag.toml"), env=env)
+
+    def test_env_true_values(self):
+        for value in ("true", "1", "yes", "TRUE", " Yes "):
+            config = self._env_load(
+                "", {"WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS": value}
+            )
+            self.assertTrue(config.vocabulary.skip_ignored_tags, value)
+
+    def test_env_false_values(self):
+        for value in ("false", "0", "no", "False", " NO "):
+            config = self._env_load(
+                "", {"WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS": value}
+            )
+            self.assertFalse(config.vocabulary.skip_ignored_tags, value)
+
+    def test_env_invalid_values_raise(self):
+        # Mirrors the enable_* env behavior: "" and garbage are ConfigErrors
+        # naming the variable.
+        for value in ("banana", ""):
+            with self.assertRaises(ConfigError) as ctx:
+                self._env_load(
+                    "", {"WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS": value}
+                )
+            self.assertIn(
+                "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS", str(ctx.exception)
+            )
+
+    def test_env_overrides_toml(self):
+        config = self._env_load(
+            "[vocabulary]\nskip_ignored_tags = false\n",
+            {"WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS": "true"},
+        )
+        self.assertTrue(config.vocabulary.skip_ignored_tags)
+        config = self._env_load(
+            "[vocabulary]\nskip_ignored_tags = true\n",
+            {"WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS": "false"},
+        )
+        self.assertFalse(config.vocabulary.skip_ignored_tags)
+
+
 class FocusGroupFieldsTomlTest(unittest.TestCase):
     """[focus.<name>] fields: per-group article fields for keyword matching."""
 

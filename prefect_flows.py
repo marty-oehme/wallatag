@@ -44,6 +44,7 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
     "WALLATAG_AI_USE_FOCUS_GROUPS",
     "WALLATAG_AI_MAX_PROPOSALS",
     "WALLATAG_VOCABULARY_FIELDS",
+    "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS",
 )
 
 # Focus groups as ONE JSON variable, translated to the existing
