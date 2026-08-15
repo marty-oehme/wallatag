@@ -13,11 +13,13 @@
 # LLM settings for Prefect-scheduled runs come from the `LLMCredentials` block
 # (document `wallatag-llm`, blocks.py): provider, base_url, model, and an
 # OPTIONAL api_key. The confidence threshold is NOT a block field: it is owned
-# by the WALLATAG_AI_CONFIDENCE_THRESHOLD Prefect Variable (config vs secrets
-# vs credentials split, git-bug db3f009). The release phase auto-creates
-# it (deploy/release.py): seeded from the WALLATAG_AI_* env vars when the
+# by the wallatag_ai_confidence_threshold Prefect Variable (config vs secrets
+# vs credentials split, git-bug db3f009). Variables are never auto-seeded:
+# create it in the Prefect UI (Variables page) or `prefect variable set` when
+# you need to override the 0.7 default. The release phase auto-creates the
+# BLOCK (deploy/release.py): seeded from the WALLATAG_AI_* env vars when the
 # provider/base_url/model trio is set (api key too when present), else created
-# empty; it can be filled/edited in the Prefect UI without redeploying.
+# empty; the block can be filled/edited in the Prefect UI without redeploying.
 #
 # The flow (prefect_flows.py) reads the block every run and passes its
 # non-empty fields to the wallatag CLI as WALLATAG_AI_* env vars. The block
@@ -51,13 +53,16 @@
 #
 # Scalar settings can also come from Prefect Variables (Variables page,
 # workspace-scoped only — deployment-scoped variables do not exist in Prefect
-# 3.x): WALLATAG_TAG_POLICY, WALLATAG_MAX_APPLIED_TAGS,
-# WALLATAG_IGNORE_TAGS, WALLATAG_IGNORE_TAGS_REGEX, WALLATAG_ENABLE_VOCABULARY,
-# WALLATAG_ENABLE_RULES, WALLATAG_ENABLE_LLM, WALLATAG_AI_CONFIDENCE_THRESHOLD,
-# WALLATAG_AI_USE_FOCUS_GROUPS, WALLATAG_AI_MAX_PROPOSALS,
-# WALLATAG_VOCABULARY_FIELDS, WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS (names
-# mirror the env vars exactly), plus ONE JSON variable WALLATAG_FOCUS_GROUPS
-# mapping group names to {keywords, tags, fields, keywords_regex}. The flow
+# 3.x): wallatag_tag_policy, wallatag_max_applied_tags,
+# wallatag_ignore_tags, wallatag_ignore_tags_regex, wallatag_enable_vocabulary,
+# wallatag_enable_rules, wallatag_enable_llm, wallatag_ai_confidence_threshold,
+# wallatag_ai_use_focus_groups, wallatag_ai_max_proposals,
+# wallatag_vocabulary_fields, wallatag_vocabulary_skip_ignored_tags (names
+# mirror the env vars exactly, LOWERCASED — Prefect requires lowercase variable
+# names; the flow uppercases them into the WALLATAG_* env vars the CLI reads,
+# so variable and env names can never drift), plus ONE JSON variable
+# wallatag_focus_groups mapping group names to
+# {keywords, tags, fields, keywords_regex}. The flow
 # reads them every run and passes
 # them to the wallatag CLI as WALLATAG_* env vars. Precedence, lowest to
 # highest: wallatag.toml defaults → blocks → container env vars (dokku

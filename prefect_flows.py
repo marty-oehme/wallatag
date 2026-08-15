@@ -28,28 +28,31 @@ if TYPE_CHECKING:
     from prefect.flows import Flow
 
 # Scalar settings that can be overridden per project/deployment through the
-# Prefect UI (Variables page). Names mirror the env vars EXACTLY, so each value
-# is passed straight through to the wallatag CLI as a WALLATAG_* env var.
-# Secrets (WALLATAG_CLIENT_SECRET, WALLATAG_PASSWORD, WALLATAG_AI_API_KEY) are
+# Prefect UI (Variables page). Names mirror the env vars EXACTLY, LOWERCASED:
+# Prefect requires variable names to be lowercase, so each name here is the
+# lowercase form of a WALLATAG_* env var; variable_env() derives the env-var
+# name via name.upper(), so variable and env names can never drift. Secrets
+# (WALLATAG_CLIENT_SECRET, WALLATAG_PASSWORD, WALLATAG_AI_API_KEY) are
 # deliberately absent: they stay in container env vars / credentials blocks.
 WALLATAG_VARIABLES: tuple[str, ...] = (
-    "WALLATAG_TAG_POLICY",
-    "WALLATAG_MAX_APPLIED_TAGS",
-    "WALLATAG_IGNORE_TAGS",
-    "WALLATAG_IGNORE_TAGS_REGEX",
-    "WALLATAG_ENABLE_VOCABULARY",
-    "WALLATAG_ENABLE_RULES",
-    "WALLATAG_ENABLE_LLM",
-    "WALLATAG_AI_CONFIDENCE_THRESHOLD",
-    "WALLATAG_AI_USE_FOCUS_GROUPS",
-    "WALLATAG_AI_MAX_PROPOSALS",
-    "WALLATAG_VOCABULARY_FIELDS",
-    "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS",
+    "wallatag_tag_policy",
+    "wallatag_max_applied_tags",
+    "wallatag_ignore_tags",
+    "wallatag_ignore_tags_regex",
+    "wallatag_enable_vocabulary",
+    "wallatag_enable_rules",
+    "wallatag_enable_llm",
+    "wallatag_ai_confidence_threshold",
+    "wallatag_ai_use_focus_groups",
+    "wallatag_ai_max_proposals",
+    "wallatag_vocabulary_fields",
+    "wallatag_vocabulary_skip_ignored_tags",
 )
 
-# Focus groups as ONE JSON variable, translated to the existing
-# WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS/_KEYWORDS_REGEX env convention.
-FOCUS_GROUPS_VARIABLE = "WALLATAG_FOCUS_GROUPS"
+# Focus groups as ONE JSON variable (lowercased like the scalars), translated
+# to the existing WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS/_KEYWORDS_REGEX
+# env convention.
+FOCUS_GROUPS_VARIABLE = "wallatag_focus_groups"
 
 
 def build_wallatag_command(
@@ -59,8 +62,9 @@ def build_wallatag_command(
     """Build the `wallatag run` command line for a batch.
 
     The tag policy is deliberately NOT a CLI flag here: it comes from the
-    ``WALLATAG_TAG_POLICY`` Prefect Variable / container env / TOML, which the
-    flow merges into the subprocess env. ``focus`` is a comma-separated list
+    ``wallatag_tag_policy`` Prefect Variable / the ``WALLATAG_TAG_POLICY``
+    container env var / TOML, which the flow merges into the subprocess env.
+    ``focus`` is a comma-separated list
     of focus-group names (e.g. ``"methods, languages"``); each name is
     emitted as its own ``--focus`` flag, in order. Segments are stripped;
     empty/whitespace-only segments are dropped; a value with no usable names
@@ -121,8 +125,10 @@ def variable_env() -> dict[str, str]:
 
     Each name in WALLATAG_VARIABLES is read as a variable (managed in the
     Prefect UI, no redeploy needed) and normalized to the env-var string the
-    wallatag CLI expects: bools become "true"/"false", everything else is
-    str()'d. Unset variables are skipped, so a partial set falls through to
+    wallatag CLI expects: the env-var name is derived mechanically from the
+    variable name via ``name.upper()`` (so variable and env names can never
+    drift), and bools become "true"/"false", everything else is str()'d.
+    Unset variables are skipped, so a partial set falls through to
     the container env / wallatag.toml for the rest. Fail-open like the block
     helpers: Variable.get hits the Prefect API, so without a server (or on a
     mid-loop error) the values read so far are kept, a warning is logged
@@ -141,14 +147,14 @@ def variable_env() -> dict[str, str]:
         if value is None:
             continue
         if isinstance(value, bool):
-            env[name] = "true" if value else "false"
+            env[name.upper()] = "true" if value else "false"
         else:
-            env[name] = str(value)
+            env[name.upper()] = str(value)
     return env
 
 
 def _parse_focus_groups(raw: object) -> dict[str, dict[str, list[str]]]:
-    """Validate the WALLATAG_FOCUS_GROUPS variable value (fail loud).
+    """Validate the wallatag_focus_groups variable value (fail loud).
 
     Expects a JSON object (or already-parsed dict) mapping group names to
     ``{"keywords": [...], "tags": [...], "fields": [...], "keywords_regex":
@@ -264,7 +270,7 @@ def _parse_focus_groups(raw: object) -> dict[str, dict[str, list[str]]]:
 
 
 def focus_groups_env() -> dict[str, str]:
-    """Return WALLATAG_FOCUS_<NAME>_* env vars from the WALLATAG_FOCUS_GROUPS
+    """Return WALLATAG_FOCUS_<NAME>_* env vars from the wallatag_focus_groups
     Prefect Variable, if any.
 
     The variable is a JSON object mapping group names to
@@ -326,13 +332,14 @@ def wallatag_batch(
     provide defaults for scheduled runs: the wallatag-llm block (LLM
     settings) and the wallabag-credentials block (wallabag URL/credentials)
     → container env vars (dokku config:set) → Prefect Variables (the scalar
-    settings in WALLATAG_VARIABLES plus the WALLATAG_FOCUS_GROUPS JSON,
+    settings in WALLATAG_VARIABLES — lowercase names the flow uppercases
+    into the WALLATAG_* env vars — plus the wallatag_focus_groups JSON,
     managed in the Prefect UI) → CLI options (--focus). So a Prefect
     Variable overrides the container env var and the block for that setting;
     secrets (client_secret/password/api_key) never come from variables;
     missing variables fall through to the container env / TOML; and CLI
     flags still win for --focus. The tag policy is owned by the
-    WALLATAG_TAG_POLICY variable (managed in the Prefect UI): it lands in
+    wallatag_tag_policy variable (managed in the Prefect UI): it lands in
     the subprocess env, with container env / TOML as fallbacks — there is no
     --tag-policy flow parameter. Empty block fields fall back to TOML/env.
     The flow's ``focus`` parameter is a comma-separated list of group names,

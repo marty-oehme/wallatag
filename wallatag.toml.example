@@ -79,7 +79,7 @@ tags = ["productivity", "method"]
 # WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX (comma-separated; the value is split on
 # every comma and each fragment is validated independently, so a comma inside a
 # regex can SILENTLY change matching — regexes containing commas must use TOML
-# keywords_regex; the Prefect WALLATAG_FOCUS_GROUPS JSON variable rejects them
+# keywords_regex; the Prefect wallatag_focus_groups JSON variable rejects them
 # loudly for the same reason).
 keywords_regex = []
 # Which article fields THIS group's keywords match against. Default (absent):

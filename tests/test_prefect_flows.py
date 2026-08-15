@@ -382,6 +382,34 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(
             set(self.prefect_flows.WALLATAG_VARIABLES),
             {
+                "wallatag_tag_policy",
+                "wallatag_max_applied_tags",
+                "wallatag_ignore_tags",
+                "wallatag_ignore_tags_regex",
+                "wallatag_enable_vocabulary",
+                "wallatag_enable_rules",
+                "wallatag_enable_llm",
+                "wallatag_ai_confidence_threshold",
+                "wallatag_ai_use_focus_groups",
+                "wallatag_ai_max_proposals",
+                "wallatag_vocabulary_fields",
+                "wallatag_vocabulary_skip_ignored_tags",
+            },
+        )
+        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 12)
+        self.assertEqual(
+            len(set(self.prefect_flows.WALLATAG_VARIABLES)),
+            len(self.prefect_flows.WALLATAG_VARIABLES),
+        )
+        joined = "|".join(self.prefect_flows.WALLATAG_VARIABLES).upper()
+        for secret in ("CLIENT_SECRET", "PASSWORD", "API_KEY"):
+            self.assertNotIn(secret, joined)
+        # Prefect requires lowercase variable names; the env-var name is
+        # derived mechanically via name.upper(), so the mapping to the
+        # WALLATAG_* env names is exact and must never drift.
+        self.assertEqual(
+            {name.upper() for name in self.prefect_flows.WALLATAG_VARIABLES},
+            {
                 "WALLATAG_TAG_POLICY",
                 "WALLATAG_MAX_APPLIED_TAGS",
                 "WALLATAG_IGNORE_TAGS",
@@ -396,23 +424,15 @@ class PrefectFlowsTest(unittest.TestCase):
                 "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS",
             },
         )
-        self.assertEqual(len(self.prefect_flows.WALLATAG_VARIABLES), 12)
-        self.assertEqual(
-            len(set(self.prefect_flows.WALLATAG_VARIABLES)),
-            len(self.prefect_flows.WALLATAG_VARIABLES),
-        )
-        joined = "|".join(self.prefect_flows.WALLATAG_VARIABLES)
-        for secret in ("CLIENT_SECRET", "PASSWORD", "API_KEY"):
-            self.assertNotIn(secret, joined)
 
     def test_variable_env_normalizes_values(self) -> None:
         values = {
-            "WALLATAG_TAG_POLICY": "all",
-            "WALLATAG_MAX_APPLIED_TAGS": 7,
-            "WALLATAG_AI_CONFIDENCE_THRESHOLD": 0.8,
-            "WALLATAG_ENABLE_LLM": True,
-            "WALLATAG_ENABLE_RULES": False,
-            "WALLATAG_IGNORE_TAGS": "fix,_frigo",
+            "wallatag_tag_policy": "all",
+            "wallatag_max_applied_tags": 7,
+            "wallatag_ai_confidence_threshold": 0.8,
+            "wallatag_enable_llm": True,
+            "wallatag_enable_rules": False,
+            "wallatag_ignore_tags": "fix,_frigo",
         }
 
         def fake_get(name, default=None):
@@ -559,7 +579,9 @@ class PrefectFlowsTest(unittest.TestCase):
             ):
                 with self.assertRaises(RuntimeError) as ctx:
                     self.prefect_flows.focus_groups_env()
-                self.assertIn("WALLATAG_FOCUS_GROUPS", str(ctx.exception))
+                self.assertIn(
+                    self.prefect_flows.FOCUS_GROUPS_VARIABLE, str(ctx.exception)
+                )
 
     def test_focus_groups_env_rejects_casefold_duplicate_names(self) -> None:
         raw = {
@@ -570,7 +592,7 @@ class PrefectFlowsTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 self.prefect_flows.focus_groups_env()
         message = str(ctx.exception)
-        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn(self.prefect_flows.FOCUS_GROUPS_VARIABLE, message)
         self.assertIn("'Methods'", message)
         self.assertIn("'methods'", message)
         self.assertIn("case-insensitively", message)
@@ -581,14 +603,14 @@ class PrefectFlowsTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 self.prefect_flows.focus_groups_env()
         message = str(ctx.exception)
-        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn(self.prefect_flows.FOCUS_GROUPS_VARIABLE, message)
         self.assertIn("group names must be strings", message)
 
     def test_focus_groups_env_empty_string_value_fails_loud(self) -> None:
         with patch("prefect_flows.Variable.get", return_value=""):
             with self.assertRaises(RuntimeError) as ctx:
                 self.prefect_flows.focus_groups_env()
-        self.assertIn("WALLATAG_FOCUS_GROUPS", str(ctx.exception))
+        self.assertIn(self.prefect_flows.FOCUS_GROUPS_VARIABLE, str(ctx.exception))
 
     def test_focus_groups_env_sorted_order_determinism(self) -> None:
         raw = {
@@ -637,7 +659,7 @@ class PrefectFlowsTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 self.prefect_flows.focus_groups_env()
         message = str(ctx.exception)
-        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn(self.prefect_flows.FOCUS_GROUPS_VARIABLE, message)
         self.assertIn("'methods'", message)
         self.assertIn("'^['", message)
 
@@ -650,7 +672,7 @@ class PrefectFlowsTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 self.prefect_flows.focus_groups_env()
         message = str(ctx.exception)
-        self.assertIn("WALLATAG_FOCUS_GROUPS", message)
+        self.assertIn(self.prefect_flows.FOCUS_GROUPS_VARIABLE, message)
         self.assertIn("'methods'", message)
         self.assertIn("'^a,b$'", message)
         self.assertIn("comma", message)
@@ -666,7 +688,7 @@ class PrefectFlowsTest(unittest.TestCase):
             return completed
 
         def fake_get(name, default=None):
-            if name == "WALLATAG_IGNORE_TAGS":
+            if name == "wallatag_ignore_tags":
                 return "from-var"
             return default
 
@@ -698,7 +720,7 @@ class PrefectFlowsTest(unittest.TestCase):
             return completed
 
         def fake_get(name, default=None):
-            if name == "WALLATAG_FOCUS_GROUPS":
+            if name == self.prefect_flows.FOCUS_GROUPS_VARIABLE:
                 return {"methods": {"keywords": ["from-json"]}}
             return default
 
@@ -731,7 +753,7 @@ class PrefectFlowsTest(unittest.TestCase):
             return completed
 
         def fake_get(name, default=None):
-            if name == "WALLATAG_TAG_POLICY":
+            if name == "wallatag_tag_policy":
                 return "prefer-existing"
             return default
 

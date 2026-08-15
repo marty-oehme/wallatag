@@ -223,7 +223,7 @@ be expressed via `WALLATAG_FOCUS_<NAME>_KEYWORDS_REGEX`: the value is split on
 every comma and each fragment is then validated INDEPENDENTLY, so the split
 can SILENTLY change matching with no error (e.g. `"^a,b$"` becomes the two
 patterns `^a` and `b$`, both valid) — use TOML `keywords_regex` for
-comma-containing patterns. The `WALLATAG_FOCUS_GROUPS` JSON variable rejects
+comma-containing patterns. The `wallatag_focus_groups` JSON variable rejects
 comma-containing `keywords_regex` items loudly for the same reason. The same
 rule applies to `WALLATAG_IGNORE_TAGS_REGEX`: its value is split on every
 comma and each fragment validated independently, so regexes containing a
@@ -358,7 +358,7 @@ role per Prefect best practices:
 | Role | Mechanism | What lives there |
 | --- | --- | --- |
 | Per-run inputs | Flow parameters (`wallatag_batch`) | `max_articles`, `focus` — what varies between runs/schedules |
-| Shared non-secret settings | Prefect Variables | the 12 `WALLATAG_*` scalars + `WALLATAG_FOCUS_GROUPS` JSON — UI-editable without redeploy, never secrets |
+| Shared non-secret settings | Prefect Variables | the 12 lowercase `wallatag_*` scalars + the `wallatag_focus_groups` JSON (each name uppercases into the matching `WALLATAG_*` env var) — UI-editable without redeploy, never secrets |
 | Secrets + connection config | Blocks | `wallatag-llm` (provider/base_url/model/api_key) and `wallabag` (url/client_id/client_secret/username/password), SecretStr-encrypted |
 | Container-level paths | dokku `config:set` | `WALLATAG_DB`, `WALLATAG_CONFIG`, `PREFECT_API_URL`, `PREFECT_API_KEY` |
 | Defaults | `wallatag.toml` | everything else |
@@ -382,36 +382,40 @@ values stay visible and editable in the UI. Create a variable in the UI or
 with the CLI:
 
 ```sh
-prefect variable set WALLATAG_TAG_POLICY all
-prefect variable set WALLATAG_ENABLE_LLM true
+prefect variable set wallatag_tag_policy all
+prefect variable set wallatag_enable_llm true
 ```
 
-The 12 scalar variables (names mirror the env vars exactly):
+The 12 scalar variables are lowercase because Prefect requires variable names
+to be lowercase; the flow uppercases them into the `WALLATAG_*` env vars the
+CLI reads, so the names still mirror the env vars exactly:
 
-| Variable | Meaning |
-| -------- | ------- |
-| `WALLATAG_TAG_POLICY` | `only-existing` \| `prefer-existing` \| `all` |
-| `WALLATAG_MAX_APPLIED_TAGS` | tags applied per article (int, default 5) |
-| `WALLATAG_IGNORE_TAGS` | comma-separated tags treated as untagged |
-| `WALLATAG_IGNORE_TAGS_REGEX` | regex patterns treated as untagged (comma-separated) |
-| `WALLATAG_ENABLE_VOCABULARY` | existing-tag vocabulary matching on/off (bool) |
-| `WALLATAG_ENABLE_RULES` | focus-group rule matching on/off (bool) |
-| `WALLATAG_ENABLE_LLM` | LLM tagging on/off (bool) |
-| `WALLATAG_AI_CONFIDENCE_THRESHOLD` | LLM apply gate (float, default 0.7) |
-| `WALLATAG_AI_USE_FOCUS_GROUPS` | focus groups in the LLM prompt on/off (bool) |
-| `WALLATAG_AI_MAX_PROPOSALS` | LLM tag proposals per article (int, unset -> follows max_applied_tags) |
-| `WALLATAG_VOCABULARY_FIELDS` | vocabulary match fields (comma-separated) |
-| `WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS` | vocabulary matcher & LLM system prompt skip ignored tags on/off (bool, default true) |
+| Variable | Description | Default |
+| --- | --- | --- |
+| `wallatag_tag_policy` | `only-existing` \| `prefer-existing` \| `all` | `prefer-existing` |
+| `wallatag_max_applied_tags` | tags applied per article (int) | `5` |
+| `wallatag_ignore_tags` | comma-separated tags treated as untagged | `none (empty)` |
+| `wallatag_ignore_tags_regex` | regex patterns treated as untagged (comma-separated) | `none (empty)` |
+| `wallatag_enable_vocabulary` | existing-tag vocabulary matching on/off (bool) | `true` |
+| `wallatag_enable_rules` | focus-group rule matching on/off (bool) | `true` |
+| `wallatag_enable_llm` | LLM tagging on/off (bool) | `false` |
+| `wallatag_ai_confidence_threshold` | LLM apply gate (float) | `0.7` |
+| `wallatag_ai_use_focus_groups` | focus groups in the LLM prompt on/off (bool) | `true` |
+| `wallatag_ai_max_proposals` | LLM tag proposals per article (int) | unset → follows `max_applied_tags` |
+| `wallatag_vocabulary_fields` | vocabulary match fields (comma-separated) | `title,url,domain_name,content` |
+| `wallatag_vocabulary_skip_ignored_tags` | vocabulary matcher & LLM system prompt skip ignored tags on/off (bool) | `true` |
+
+The Default column shows the built-in config default, used only when the variable is unset and no container env var / `wallatag.toml` value overrides it — an unset variable falls through to the container env var / `wallatag.toml` value first.
 
 Booleans are normalized to `true`/`false`, numbers to their plain string form
 — the same values the env vars accept. Focus groups go in ONE variable,
-`WALLATAG_FOCUS_GROUPS`, as a JSON object (all four keys optional, values are
+`wallatag_focus_groups`, as a JSON object (all four keys optional, values are
 lists of strings; an empty `keywords`/`tags`/`keywords_regex` list omits that
 field, `fields: []` disables the group exactly like
 `WALLATAG_FOCUS_<NAME>_FIELDS=""`):
 
 ```sh
-prefect variable set WALLATAG_FOCUS_GROUPS '{"methods": {"keywords": ["howto", "tutorial"], "tags": ["dev"], "fields": ["title", "url"], "keywords_regex": ["^how.?to"]}, "languages": {"tags": ["english"]}}'
+prefect variable set wallatag_focus_groups '{"methods": {"keywords": ["howto", "tutorial"], "tags": ["dev"], "fields": ["title", "url"], "keywords_regex": ["^how.?to"]}, "languages": {"tags": ["english"]}}'
 ```
 
 It is translated to the usual
@@ -422,13 +426,13 @@ empty strings, un-compilable `keywords_regex` patterns and `keywords_regex`
 patterns containing a literal comma (which the comma-joined env translation
 could not represent) make the run fail loudly instead of silently changing
 tagging.
-An empty-string `WALLATAG_FOCUS_GROUPS` value (e.g. clearing the field in the
+An empty-string `wallatag_focus_groups` value (e.g. clearing the field in the
 UI) also fails the run loudly — it is not a valid JSON object — so to remove
 focus groups entirely, delete the variable rather than blanking it out.
 
 Precedence for Prefect-scheduled runs, lowest to highest: `wallatag.toml`
 defaults → blocks → container env vars (`dokku config:set`) → Prefect
-Variables (scalar settings + `WALLATAG_FOCUS_GROUPS`) → CLI options
+Variables (scalar settings + `wallatag_focus_groups`) → CLI options
 (`--focus`). So a variable overrides the container env var for
 that setting; the focus JSON overrides same-named `WALLATAG_FOCUS_<NAME>_*`
 env vars for the fields it emits, per-field (an empty `keywords`/`tags`/
@@ -446,7 +450,7 @@ comma-separated list of focus-group names (e.g. `methods, languages`), each
 mapped to its own repeated `--focus` CLI flag; a group whose NAME contains a
 literal comma can only be selected via the CLI, not via the flow parameter.
 The tag policy is not a flow parameter: it is owned by the
-`WALLATAG_TAG_POLICY` Prefect Variable (see the table below).
+`wallatag_tag_policy` Prefect Variable (see the table below).
 
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.

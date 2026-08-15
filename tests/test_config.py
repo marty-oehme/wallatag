@@ -1613,7 +1613,7 @@ keywords_regex = ["^howto"]
     def test_env_keywords_regex_comma_in_pattern_splits_and_raises(self):
         # A regex containing a comma is not expressible via the env var: it is
         # split and the fragments fail to compile. Use TOML or the
-        # WALLATAG_FOCUS_GROUPS JSON variable for such patterns.
+        # wallatag_focus_groups JSON variable for such patterns.
         with self.assertRaises(ConfigError) as ctx:
             self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "[a,b]"})
         message = str(ctx.exception)

@@ -28,7 +28,7 @@ class LLMCredentials(Block):
     from the Prefect UI. The wallatag CLI keeps reading config/env; non-empty
     block fields are used as DEFAULTS for scheduled runs, and WALLATAG_AI_*
     environment variables override them. The confidence threshold is NOT a
-    block field: it is owned by the ``WALLATAG_AI_CONFIDENCE_THRESHOLD``
+    block field: it is owned by the ``wallatag_ai_confidence_threshold``
     Prefect Variable (config vs secrets vs credentials split, git-bug
     db3f009).
     """
@@ -117,7 +117,7 @@ def ensure_wallatag_llm_credentials_block(
     filled in later from the Prefect UI. Seeding is a one-time snapshot of the
     env: at run time the block only provides defaults, and WALLATAG_AI_* env
     vars still override its fields. The confidence threshold is not seeded
-    here: it is owned by the WALLATAG_AI_CONFIDENCE_THRESHOLD Prefect
+    here: it is owned by the wallatag_ai_confidence_threshold Prefect
     Variable. A save failure is logged as a warning and does not propagate:
     the release phase must not fail over a cosmetic block issue.
     """
