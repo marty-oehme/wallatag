@@ -11,8 +11,10 @@
 # PREFECT_API_KEY if the server enforces auth) via `dokku config:set`.
 #
 # LLM settings for Prefect-scheduled runs come from the `LLMCredentials` block
-# (document `wallatag-llm`, blocks.py): provider, base_url, model,
-# confidence_threshold, and an OPTIONAL api_key. The release phase auto-creates
+# (document `wallatag-llm`, blocks.py): provider, base_url, model, and an
+# OPTIONAL api_key. The confidence threshold is NOT a block field: it is owned
+# by the WALLATAG_AI_CONFIDENCE_THRESHOLD Prefect Variable (config vs secrets
+# vs credentials split, git-bug db3f009). The release phase auto-creates
 # it (deploy/release.py): seeded from the WALLATAG_AI_* env vars when the
 # provider/base_url/model trio is set (api key too when present), else created
 # empty; it can be filled/edited in the Prefect UI without redeploying.
@@ -48,17 +50,18 @@
 # validation (ConfigError). No secrets land in git either way.
 #
 # Scalar settings can also come from Prefect Variables (Variables page,
-# workspace- or deployment-scoped): WALLATAG_TAG_POLICY, WALLATAG_MAX_APPLIED_TAGS,
-# WALLATAG_IGNORE_TAGS, WALLATAG_ENABLE_VOCABULARY, WALLATAG_ENABLE_RULES,
-# WALLATAG_ENABLE_LLM, WALLATAG_AI_CONFIDENCE_THRESHOLD,
+# workspace-scoped only — deployment-scoped variables do not exist in Prefect
+# 3.x): WALLATAG_TAG_POLICY, WALLATAG_MAX_APPLIED_TAGS,
+# WALLATAG_IGNORE_TAGS, WALLATAG_IGNORE_TAGS_REGEX, WALLATAG_ENABLE_VOCABULARY,
+# WALLATAG_ENABLE_RULES, WALLATAG_ENABLE_LLM, WALLATAG_AI_CONFIDENCE_THRESHOLD,
 # WALLATAG_AI_USE_FOCUS_GROUPS, WALLATAG_AI_MAX_PROPOSALS,
-# WALLATAG_VOCABULARY_FIELDS (names mirror the env
-# vars exactly), plus ONE JSON variable WALLATAG_FOCUS_GROUPS mapping group
-# names to {keywords, tags, fields, keywords_regex}. The flow reads them every
-# run and passes
+# WALLATAG_VOCABULARY_FIELDS, WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS (names
+# mirror the env vars exactly), plus ONE JSON variable WALLATAG_FOCUS_GROUPS
+# mapping group names to {keywords, tags, fields, keywords_regex}. The flow
+# reads them every run and passes
 # them to the wallatag CLI as WALLATAG_* env vars. Precedence, lowest to
 # highest: wallatag.toml defaults → blocks → container env vars (dokku
-# config:set) → Prefect Variables → CLI options (--tag-policy/--focus). Missing
+# config:set) → Prefect Variables → CLI options (--focus). Missing
 # variables fall through to env/TOML. The flow's `focus` parameter is a
 # comma-separated list of group names emitted as repeated --focus flags; the
 # CLI never splits on commas, so comma-containing group names are only
@@ -79,8 +82,12 @@ deployments:
   entrypoint: prefect_flows.py:wallatag_batch
   parameters:
     max_articles: 50
-  schedule:
-    cron: "0 5,17 * * *"
+  # Modern plural `schedules:` list (the singular `schedule:` key is the legacy
+  # form). Per-schedule `parameters` is the documented mechanism if different
+  # config per cron is wanted later (e.g. max_articles per time of day) — not
+  # added yet, the two daily runs share the deployment-level parameters above.
+  schedules:
+  - cron: "0 5,17 * * *"
     timezone: UTC
   work_pool:
     name: wallatag-pool

@@ -295,8 +295,8 @@ push (deploy/release.py): on first creation it is seeded from the
 `WALLATAG_AI_*` container env vars when `WALLATAG_AI_PROVIDER`,
 `WALLATAG_AI_BASE_URL` and `WALLATAG_AI_MODEL` are all set (the
 `WALLATAG_AI_API_KEY` env var is folded in too when present), otherwise it is
-created empty. The block's fields are provider, base_url, model,
-confidence_threshold, and an OPTIONAL `api_key` (needed only for keyed
+created empty. The block's fields are provider, base_url, model, and an
+OPTIONAL `api_key` (needed only for keyed
 openai-compatible providers). Fill or edit it in the Prefect UI (Blocks >
 Wallatag LLM Credentials) to configure the LLM for scheduled runs without
 redeploying.
@@ -349,6 +349,30 @@ apply to Prefect-scheduled runs only: `dokku run wallatag ...`
 (manual/status) reads config/env only and never sees the block, so keep the
 `WALLATAG_*` vars in the `config:set` above if you also run wallatag manually.
 No secrets end up in git either way.
+
+### Flows configuration ownership
+
+Three Prefect-side mechanisms feed the same config stack, each with a distinct
+role per Prefect best practices:
+
+| Role | Mechanism | What lives there |
+| --- | --- | --- |
+| Per-run inputs | Flow parameters (`wallatag_batch`) | `max_articles`, `focus` — what varies between runs/schedules |
+| Shared non-secret settings | Prefect Variables | the 12 `WALLATAG_*` scalars + `WALLATAG_FOCUS_GROUPS` JSON — UI-editable without redeploy, never secrets |
+| Secrets + connection config | Blocks | `wallatag-llm` (provider/base_url/model/api_key) and `wallabag` (url/client_id/client_secret/username/password), SecretStr-encrypted |
+| Container-level paths | dokku `config:set` | `WALLATAG_DB`, `WALLATAG_CONFIG`, `PREFECT_API_URL`, `PREFECT_API_KEY` |
+| Defaults | `wallatag.toml` | everything else |
+
+Rules of thumb:
+- Flow parameters are for values that change per run or per schedule (per-schedule
+  parameters are the documented mechanism for different config per cron). Keep
+  the surface small and typed.
+- Variables are for settings you want to change from the Prefect UI without
+  redeploying. They are NOT encrypted — never put secrets in them.
+- Blocks are for credentials and connection details; SecretStr fields are
+  encrypted at rest and rotatable without redeploy.
+- Precedence, lowest to highest: `wallatag.toml` → blocks → container env vars
+  → Prefect Variables → flow parameters (CLI flags).
 
 ### Prefect UI configuration (Variables)
 
@@ -405,7 +429,7 @@ focus groups entirely, delete the variable rather than blanking it out.
 Precedence for Prefect-scheduled runs, lowest to highest: `wallatag.toml`
 defaults → blocks → container env vars (`dokku config:set`) → Prefect
 Variables (scalar settings + `WALLATAG_FOCUS_GROUPS`) → CLI options
-(`--tag-policy`/`--focus`). So a variable overrides the container env var for
+(`--focus`). So a variable overrides the container env var for
 that setting; the focus JSON overrides same-named `WALLATAG_FOCUS_<NAME>_*`
 env vars for the fields it emits, per-field (an empty `keywords`/`tags`/
 `keywords_regex` list omits that env var entirely, so the container env var
@@ -416,11 +440,13 @@ setting, so you can migrate settings to the UI one at a time. Secrets never
 come from variables — `WALLATAG_CLIENT_SECRET`, `WALLATAG_PASSWORD` and
 `WALLATAG_AI_API_KEY` stay in `dokku config:set` and the credentials blocks.
 
-The `wallatag_batch` flow itself takes three parameters (defaults shown):
-`max_articles=50`, `tag_policy=None`, `focus=None`. `focus` is a
+The `wallatag_batch` flow itself takes two parameters (defaults shown):
+`max_articles=50`, `focus=None`. `focus` is a
 comma-separated list of focus-group names (e.g. `methods, languages`), each
 mapped to its own repeated `--focus` CLI flag; a group whose NAME contains a
 literal comma can only be selected via the CLI, not via the flow parameter.
+The tag policy is not a flow parameter: it is owned by the
+`WALLATAG_TAG_POLICY` Prefect Variable (see the table below).
 
 Process scaling is also declared via `app.json` (web 0, worker 1), so a fresh
 deploy gets the right formation even before scaling is set by hand.

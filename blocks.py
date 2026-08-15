@@ -27,7 +27,10 @@ class LLMCredentials(Block):
     deploy/release.py); an empty block is valid so it can be filled in later
     from the Prefect UI. The wallatag CLI keeps reading config/env; non-empty
     block fields are used as DEFAULTS for scheduled runs, and WALLATAG_AI_*
-    environment variables override them.
+    environment variables override them. The confidence threshold is NOT a
+    block field: it is owned by the ``WALLATAG_AI_CONFIDENCE_THRESHOLD``
+    Prefect Variable (config vs secrets vs credentials split, git-bug
+    db3f009).
     """
 
     _block_type_name = "Wallatag LLM Credentials"
@@ -37,7 +40,6 @@ class LLMCredentials(Block):
     base_url: str = ""
     model: str = ""
     api_key: SecretStr = Field(default_factory=partial(SecretStr, ""))
-    confidence_threshold: float | None = None
 
     def llm_env(self) -> dict[str, str]:
         """Map non-empty fields to WALLATAG_AI_* env vars (defaults).
@@ -55,10 +57,6 @@ class LLMCredentials(Block):
             env["WALLATAG_AI_MODEL"] = self.model
         if self.api_key.get_secret_value():
             env["WALLATAG_AI_API_KEY"] = self.api_key.get_secret_value()
-        if self.confidence_threshold is not None:
-            env["WALLATAG_AI_CONFIDENCE_THRESHOLD"] = str(
-                self.confidence_threshold
-            )
         return env
 
 
@@ -115,12 +113,13 @@ def ensure_wallatag_llm_credentials_block(
     Mirrors ensure_miniflux_credentials_block in morning-digest. If the block
     document already exists, do nothing. Otherwise seed it from the
     WALLATAG_AI_* env vars when the provider/base_url/model trio is set (also
-    taking the api key and confidence threshold when present), else create an
-    empty block that can be filled in later from the Prefect UI. Seeding is a
-    one-time snapshot of the env: at run time the block only provides
-    defaults, and WALLATAG_AI_* env vars still override its fields. A save
-    failure is logged as a warning and does not propagate: the release phase
-    must not fail over a cosmetic block issue.
+    taking the api key when present), else create an empty block that can be
+    filled in later from the Prefect UI. Seeding is a one-time snapshot of the
+    env: at run time the block only provides defaults, and WALLATAG_AI_* env
+    vars still override its fields. The confidence threshold is not seeded
+    here: it is owned by the WALLATAG_AI_CONFIDENCE_THRESHOLD Prefect
+    Variable. A save failure is logged as a warning and does not propagate:
+    the release phase must not fail over a cosmetic block issue.
     """
     log = log or (lambda message: print(f"[blocks] {message}", flush=True))
     try:
@@ -131,30 +130,11 @@ def ensure_wallatag_llm_credentials_block(
         model = os.environ.get("WALLATAG_AI_MODEL")
         if provider and base_url and model:
             api_key = os.environ.get("WALLATAG_AI_API_KEY")
-            threshold_raw = os.environ.get("WALLATAG_AI_CONFIDENCE_THRESHOLD")
-            threshold: float | None = None
-            if threshold_raw:
-                try:
-                    threshold = float(threshold_raw)
-                except ValueError:
-                    log(
-                        f"warning: WALLATAG_AI_CONFIDENCE_THRESHOLD "
-                        f"{threshold_raw!r} is not a number; leaving the "
-                        f"threshold unset in the block"
-                    )
-                if threshold is not None and not (0.0 < threshold <= 1.0):
-                    log(
-                        f"warning: WALLATAG_AI_CONFIDENCE_THRESHOLD "
-                        f"{threshold_raw!r} is out of range (0, 1]; leaving "
-                        f"the threshold unset in the block"
-                    )
-                    threshold = None
             block = LLMCredentials(
                 provider=provider,
                 base_url=base_url,
                 model=model,
                 api_key=SecretStr(api_key) if api_key else "",
-                confidence_threshold=threshold,
             )
             log(f"seeding {block_name!r} block from WALLATAG_AI_* env")
         else:

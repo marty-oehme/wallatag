@@ -23,20 +23,18 @@ class PrefectFlowsTest(unittest.TestCase):
 
     def test_command_build_defaults(self) -> None:
         self.assertEqual(
-            self.prefect_flows.build_wallatag_command(50, None, None),
+            self.prefect_flows.build_wallatag_command(50, None),
             ["wallatag", "run", "--max", "50"],
         )
 
     def test_command_build_full(self) -> None:
         self.assertEqual(
-            self.prefect_flows.build_wallatag_command(10, "all", "methods"),
+            self.prefect_flows.build_wallatag_command(10, "methods"),
             [
                 "wallatag",
                 "run",
                 "--max",
                 "10",
-                "--tag-policy",
-                "all",
                 "--focus",
                 "methods",
             ],
@@ -44,14 +42,12 @@ class PrefectFlowsTest(unittest.TestCase):
 
     def test_command_build_multiple_focus(self) -> None:
         self.assertEqual(
-            self.prefect_flows.build_wallatag_command(10, "all", "methods, languages"),
+            self.prefect_flows.build_wallatag_command(10, "methods, languages"),
             [
                 "wallatag",
                 "run",
                 "--max",
                 "10",
-                "--tag-policy",
-                "all",
                 "--focus",
                 "methods",
                 "--focus",
@@ -61,19 +57,19 @@ class PrefectFlowsTest(unittest.TestCase):
 
     def test_command_build_focus_empty_string(self) -> None:
         self.assertEqual(
-            self.prefect_flows.build_wallatag_command(50, None, ""),
+            self.prefect_flows.build_wallatag_command(50, ""),
             ["wallatag", "run", "--max", "50"],
         )
 
     def test_command_build_focus_whitespace_only(self) -> None:
         self.assertEqual(
-            self.prefect_flows.build_wallatag_command(50, None, "   "),
+            self.prefect_flows.build_wallatag_command(50, "   "),
             ["wallatag", "run", "--max", "50"],
         )
 
     def test_command_build_focus_ragged(self) -> None:
         self.assertEqual(
-            self.prefect_flows.build_wallatag_command(50, None, " methods , , languages "),
+            self.prefect_flows.build_wallatag_command(50, " methods , , languages "),
             [
                 "wallatag",
                 "run",
@@ -722,36 +718,6 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(
             captured["env"]["WALLATAG_FOCUS_methods_KEYWORDS"], "from-json"
         )
-
-    def test_flow_tag_policy_param_still_wins_over_variable(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="tagged 3 articles", stderr=""
-        )
-        captured = {}
-
-        def fake_run(*args, **kwargs):
-            captured["args"] = args[0]
-            captured["env"] = kwargs["env"]
-            return completed
-
-        def fake_get(name, default=None):
-            if name == "WALLATAG_TAG_POLICY":
-                return "prefer-existing"
-            return default
-
-        with patch("prefect_flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("prefect_flows.llm_env_from_block", return_value={}), \
-             patch("prefect_flows.wallabag_env_from_block", return_value={}), \
-             patch.dict(os.environ, {}, clear=True), \
-             patch("prefect_flows.Variable.get", side_effect=fake_get), \
-             patch("prefect_flows.subprocess.run", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.prefect_flows.wallatag_batch.fn(max_articles=50, tag_policy="all")
-
-        # The variable value still lands in the env, but the flow param wins
-        # via the --tag-policy CLI flag (CLI options outrank variables).
-        self.assertIn("--tag-policy", captured["args"])
-        self.assertEqual(captured["env"]["WALLATAG_TAG_POLICY"], "prefer-existing")
 
     def test_flow_focus_param_emits_repeated_flags(self) -> None:
         completed = subprocess.CompletedProcess(

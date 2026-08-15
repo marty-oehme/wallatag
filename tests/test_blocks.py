@@ -38,7 +38,6 @@ class BlocksModelTest(unittest.TestCase):
         self.assertEqual(block.base_url, "")
         self.assertEqual(block.model, "")
         self.assertEqual(block.api_key.get_secret_value(), "")
-        self.assertIsNone(block.confidence_threshold)
 
     def test_empty_block_yields_empty_env(self) -> None:
         block = self.blocks.LLMCredentials()
@@ -50,7 +49,6 @@ class BlocksModelTest(unittest.TestCase):
             base_url="https://api.example.com/v1",
             model="gpt-4o-mini",
             api_key="sk-secret",
-            confidence_threshold=0.7,
         )
         self.assertEqual(
             block.llm_env(),
@@ -59,11 +57,10 @@ class BlocksModelTest(unittest.TestCase):
                 "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
                 "WALLATAG_AI_MODEL": "gpt-4o-mini",
                 "WALLATAG_AI_API_KEY": "sk-secret",
-                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.7",
             },
         )
 
-    def test_llm_env_omits_empty_api_key_and_none_threshold(self) -> None:
+    def test_llm_env_omits_empty_api_key(self) -> None:
         block = self.blocks.LLMCredentials(
             provider="ollama",
             base_url="http://localhost:11434",
@@ -161,7 +158,6 @@ class EnsureBlockTest(unittest.TestCase):
                 "WALLATAG_AI_BASE_URL": "http://localhost:11434",
                 "WALLATAG_AI_MODEL": "qwen2.5:3b",
                 "WALLATAG_AI_API_KEY": "sk-123",
-                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.85",
             },
             clear=True,
         ):
@@ -173,7 +169,6 @@ class EnsureBlockTest(unittest.TestCase):
         self.assertEqual(block.base_url, "http://localhost:11434")
         self.assertEqual(block.model, "qwen2.5:3b")
         self.assertEqual(block.api_key.get_secret_value(), "sk-123")
-        self.assertEqual(block.confidence_threshold, 0.85)
         self.assertTrue(any("seeding" in m for m in messages))
         self.assertTrue(any("created" in m for m in messages))
 
@@ -196,7 +191,6 @@ class EnsureBlockTest(unittest.TestCase):
         self.assertEqual(block.base_url, "")
         self.assertEqual(block.model, "")
         self.assertEqual(block.api_key.get_secret_value(), "")
-        self.assertIsNone(block.confidence_threshold)
         self.assertTrue(any("creating empty" in m for m in messages))
         self.assertTrue(any("trio" in m for m in messages))
 
@@ -251,58 +245,6 @@ class EnsureBlockTest(unittest.TestCase):
 
         self.assertTrue(
             any("warning" in m and "could not save" in m for m in messages)
-        )
-
-    def test_invalid_threshold_env_skipped_with_warning(self) -> None:
-        saved = {}
-        messages = []
-
-        def fake_save(self, name, overwrite=False, client=None):
-            saved["block"] = self
-
-        with patch.object(
-            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
-        ), patch.object(self.blocks.LLMCredentials, "save", fake_save), patch.dict(
-            os.environ,
-            {
-                "WALLATAG_AI_PROVIDER": "ollama",
-                "WALLATAG_AI_BASE_URL": "http://localhost:11434",
-                "WALLATAG_AI_MODEL": "qwen2.5:3b",
-                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "not-a-number",
-            },
-            clear=True,
-        ):
-            self.blocks.ensure_wallatag_llm_credentials_block(log=messages.append)
-
-        self.assertIsNone(saved["block"].confidence_threshold)
-        self.assertTrue(
-            any("warning" in m and "not a number" in m for m in messages)
-        )
-
-    def test_out_of_range_threshold_env_skipped_with_warning(self) -> None:
-        saved = {}
-        messages = []
-
-        def fake_save(self, name, overwrite=False, client=None):
-            saved["block"] = self
-
-        with patch.object(
-            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
-        ), patch.object(self.blocks.LLMCredentials, "save", fake_save), patch.dict(
-            os.environ,
-            {
-                "WALLATAG_AI_PROVIDER": "ollama",
-                "WALLATAG_AI_BASE_URL": "http://localhost:11434",
-                "WALLATAG_AI_MODEL": "qwen2.5:3b",
-                "WALLATAG_AI_CONFIDENCE_THRESHOLD": "1.5",
-            },
-            clear=True,
-        ):
-            self.blocks.ensure_wallatag_llm_credentials_block(log=messages.append)
-
-        self.assertIsNone(saved["block"].confidence_threshold)
-        self.assertTrue(
-            any("warning" in m and "out of range" in m for m in messages)
         )
 
     def test_wallabag_seeds_from_env_when_quintet_set(self) -> None:

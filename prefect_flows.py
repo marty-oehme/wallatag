@@ -54,23 +54,22 @@ FOCUS_GROUPS_VARIABLE = "WALLATAG_FOCUS_GROUPS"
 
 def build_wallatag_command(
     max_articles: int,
-    tag_policy: str | None,
     focus: str | None,
 ) -> list[str]:
     """Build the `wallatag run` command line for a batch.
 
-    ``focus`` is a comma-separated list of focus-group names (e.g.
-    ``"methods, languages"``); each name is emitted as its own ``--focus``
-    flag, in order. Segments are stripped; empty/whitespace-only segments are
-    dropped; a value with no usable names (or None) emits no ``--focus``
-    flags at all. Comma-splitting lives here in the flow layer on purpose:
-    the CLI never splits on commas, because a TOML focus-group NAME may
-    itself contain a comma (such groups can only be selected via the CLI,
-    not via the flow parameter).
+    The tag policy is deliberately NOT a CLI flag here: it comes from the
+    ``WALLATAG_TAG_POLICY`` Prefect Variable / container env / TOML, which the
+    flow merges into the subprocess env. ``focus`` is a comma-separated list
+    of focus-group names (e.g. ``"methods, languages"``); each name is
+    emitted as its own ``--focus`` flag, in order. Segments are stripped;
+    empty/whitespace-only segments are dropped; a value with no usable names
+    (or None) emits no ``--focus`` flags at all. Comma-splitting lives here
+    in the flow layer on purpose: the CLI never splits on commas, because a
+    TOML focus-group NAME may itself contain a comma (such groups can only be
+    selected via the CLI, not via the flow parameter).
     """
     cmd = ["wallatag", "run", "--max", str(max_articles)]
-    if tag_policy is not None:
-        cmd += ["--tag-policy", tag_policy]
     if focus is not None:
         for name in focus.split(","):
             name = name.strip()
@@ -316,7 +315,6 @@ def focus_groups_env() -> dict[str, str]:
 @flow(log_prints=True)
 def wallatag_batch(
     max_articles: int = 50,
-    tag_policy: str | None = None,
     focus: str | None = None,
 ) -> str:
     """Run one headless wallatag batch against the wallabag API.
@@ -329,15 +327,17 @@ def wallatag_batch(
     settings) and the wallabag-credentials block (wallabag URL/credentials)
     → container env vars (dokku config:set) → Prefect Variables (the scalar
     settings in WALLATAG_VARIABLES plus the WALLATAG_FOCUS_GROUPS JSON,
-    managed in the Prefect UI) → CLI options (--tag-policy/--focus). So a
-    Prefect Variable overrides the container env var and the block for that
-    setting; secrets (client_secret/password/api_key) never come from
-    variables; missing variables fall through to the container env / TOML;
-    and CLI flags still win for --tag-policy/--focus. Empty block fields fall
-    back to TOML/env. The flow's ``focus`` parameter is a comma-separated
-    list of group names, each emitted as its own ``--focus`` flag (a group
-    whose NAME contains a literal comma is unreachable from the flow — use
-    the CLI for those).
+    managed in the Prefect UI) → CLI options (--focus). So a Prefect
+    Variable overrides the container env var and the block for that setting;
+    secrets (client_secret/password/api_key) never come from variables;
+    missing variables fall through to the container env / TOML; and CLI
+    flags still win for --focus. The tag policy is owned by the
+    WALLATAG_TAG_POLICY variable (managed in the Prefect UI): it lands in
+    the subprocess env, with container env / TOML as fallbacks — there is no
+    --tag-policy flow parameter. Empty block fields fall back to TOML/env.
+    The flow's ``focus`` parameter is a comma-separated list of group names,
+    each emitted as its own ``--focus`` flag (a group whose NAME contains a
+    literal comma is unreachable from the flow — use the CLI for those).
     Returns the captured stdout on success. Raises on a non-zero exit so
     Prefect marks the run Failed and can notify on problems.
     """
@@ -354,7 +354,7 @@ def wallatag_batch(
     }
     try:
         completed = subprocess.run(
-            build_wallatag_command(max_articles, tag_policy, focus),
+            build_wallatag_command(max_articles, focus),
             capture_output=True,
             text=True,
             timeout=1800,
