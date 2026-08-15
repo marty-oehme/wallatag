@@ -86,14 +86,22 @@ deployments:
 - name: wallatag
   entrypoint: flows.py:wallatag_batch
   parameters:
-    max_articles: 50
+    max_articles: 5
   # Modern plural `schedules:` list (the singular `schedule:` key is the legacy
   # form). Per-schedule `parameters` is the documented mechanism if different
   # config per cron is wanted later (e.g. max_articles per time of day) — not
   # added yet, the two daily runs share the deployment-level parameters above.
   schedules:
-  - cron: "0 5,17 * * *"
+  - cron: "0 5 * * *"
+    slug: hourly
     timezone: UTC
+    parameters:
+      max_articles: 5
+  - cron: "0 2 * * *"
+    slug: backfill
+    timezone: UTC
+    parameters:
+      max_articles: 50
   work_pool:
     name: wallatag-pool
   tags:
