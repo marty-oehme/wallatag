@@ -83,8 +83,8 @@ pull:
     directory: /app
 
 deployments:
-- name: wallatag-batch
-  entrypoint: prefect_flows.py:wallatag_batch
+- name: wallatag
+  entrypoint: flows.py:wallatag_batch
   parameters:
     max_articles: 50
   # Modern plural `schedules:` list (the singular `schedule:` key is the legacy
