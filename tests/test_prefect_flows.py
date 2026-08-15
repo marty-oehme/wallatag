@@ -106,6 +106,26 @@ class PrefectFlowsTest(unittest.TestCase):
         cls.flows = flows
         cls.NO_CACHE = NO_CACHE
 
+    def setUp(self) -> None:
+        # APILogHandler warns (UserWarning) when a run logger emits outside a
+        # FlowRunContext. The flow tests call wallatag_batch.fn directly (no
+        # flow run context), so every tagged outcome in this module would
+        # warn. Silence it for the whole class. (Prefect 3.8.2's Setting has
+        # no writable .value attribute, and os.environ is ineffective because
+        # settings are cached, so temporary_settings is the correct API.)
+        from prefect.settings import (
+            PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW,
+            temporary_settings,
+        )
+
+        self._missing_flow_ctx = temporary_settings(
+            {PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW: "ignore"}
+        )
+        self._missing_flow_ctx.__enter__()
+
+    def tearDown(self) -> None:
+        self._missing_flow_ctx.__exit__(None, None, None)
+
     def make_config(self, store_path=None, max_articles=50):
         """A Config the flow can drive (WallabagClient is patched anyway)."""
         return dataclasses.replace(
@@ -156,10 +176,13 @@ class PrefectFlowsTest(unittest.TestCase):
             task_mock = None
             if spy_task:
                 # Spy over the task's own underlying function: each call is
-                # recorded AND still drives the real engine code.
+                # recorded AND still drives the real engine code. Patches
+                # tag_article.fn (not the Task object) so the call still runs
+                # through the Prefect task engine and a TaskRunContext is
+                # active (get_run_logger() requires one).
                 task_mock = stack.enter_context(
                     patch(
-                        "flows.tag_article",
+                        "flows.tag_article.fn",
                         side_effect=self.flows.tag_article.fn,
                     )
                 )
@@ -846,6 +869,46 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])])
         self.assertEqual(
             result, "run: tagged 2 articles (2 tags applied), skipped 0"
+        )
+        self.assertIn(result, out)
+        self.assertTrue(client.closed)
+
+    def test_flow_tagged_log_line_run_attributed(self) -> None:
+        """A tag-article task run logs its tagged line via the run logger.
+
+        get_run_logger() returns a PrefectLogAdapter over
+        ``prefect.task_runs`` whose ``extra`` dict (task_run_id,
+        task_run_name, task_name, ...) lands on each emitted record, so
+        assertLogs on that logger captures the per-article line with the
+        article id, title, and applied tags AND the task-run attribution
+        extras — the task run id is set and the task name is ``tag-article``.
+        (The flow runs via run_batch, which calls wallatag_batch.fn
+        directly, so there is no FlowRunContext and flow_run_id is None
+        here; production attribution of the line to the task run in the
+        UI/DB is done by prefect's APILogHandler.) The engine's own INFO
+        lines (wallatag.auto) are dropped in the flow (root handler at
+        WARNING, basicConfig a no-op; bug edf2338). The flow's return value
+        is unaffected.
+        """
+        client = FakeClient(
+            entries=[entry(42, "fix and todo")], tags=["fix", "todo"]
+        )
+        with self.assertLogs("prefect.task_runs", level="INFO") as cm:
+            result, out, _ = self.run_batch(client)
+        joined = "\n".join(cm.output)
+        self.assertIn("tagged article 42 (fix and todo): fix, todo", joined)
+        tagged = next(
+            rec
+            for rec in cm.records
+            if "tagged article" in rec.getMessage()
+        )
+        self.assertIsNotNone(tagged.task_run_id)
+        self.assertEqual(tagged.task_name, "tag-article")
+        self.assertEqual(tagged.task_run_name, "tag-article")
+        self.assertIsNone(tagged.flow_run_id)
+        self.assertEqual(client.add_calls, [(42, ["fix", "todo"])])
+        self.assertEqual(
+            result, "run: tagged 1 articles (2 tags applied), skipped 0"
         )
         self.assertIn(result, out)
         self.assertTrue(client.closed)

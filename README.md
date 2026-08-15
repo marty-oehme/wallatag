@@ -271,7 +271,11 @@ schedules runs, stores results, and can notify you on failures; the worker in
 this container executes them by driving the wallatag tagging engine
 IN-PROCESS — one Prefect task per article (`tag-article`), sharing the same
 engine code as the CLI — with each article's logs and timing visible as its
-own task run in the dashboard. A `git push dokku main` deploys the app and
+own task run in the dashboard. Each `tag-article` task run also logs its
+per-article tagged line to that task run in the dashboard —
+`tagged article <id> (<title>): <tags>` — via the run logger, so applied tags
+are visible per article in the UI/DB (the engine's own INFO lines don't
+surface in the flow). A `git push dokku main` deploys the app and
 the flow together.
 
 Requirements: Dokku with the current default Python buildpack

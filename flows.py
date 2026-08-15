@@ -26,7 +26,7 @@ from blocks import (
     LLMCredentials,
     WallabagCredentials,
 )
-from prefect import flow, task
+from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NO_CACHE
 from prefect.variables import Variable
 from wallatag import auto
@@ -132,9 +132,15 @@ def tag_article(
     Thin adapter over ``auto.process_entry`` (dry-run off). The shared
     client/tagger/store are stateful and not parallel-safe, so calls are
     strictly sequential; each task run shows the article's own logs/timing
-    in the dashboard.
+    in the dashboard. When the article is tagged, the task also logs one
+    run-attributed line via ``get_run_logger()`` — article id, title and
+    the applied tags — so the UI/DB shows what each task run applied.
+    It must use the run logger, not the plain module logger: the engine's
+    own per-article INFO lines (wallatag.auto) never surface in the flow
+    because the Prefect-installed root handler is at WARNING and
+    ``logging.basicConfig`` is a no-op here (bug edf2338).
     """
-    return auto.process_entry(
+    result = auto.process_entry(
         client,
         tagger,
         store,
@@ -143,6 +149,14 @@ def tag_article(
         dry_run=False,
         fallback_tagger=fallback_tagger,
     )
+    if result.outcome == "tagged":
+        get_run_logger().info(
+            "tagged article %s (%s): %s",
+            result.entry_id,
+            entry.get("title", ""),
+            ", ".join(result.tags),
+        )
+    return result
 
 
 def llm_env_from_block() -> dict[str, str]:
