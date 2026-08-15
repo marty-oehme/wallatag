@@ -27,6 +27,7 @@ from blocks import (
     WallabagCredentials,
 )
 from prefect import flow, task
+from prefect.cache_policies import NO_CACHE
 from prefect.variables import Variable
 from wallatag import auto
 from wallatag.cli import _build_tagger
@@ -111,7 +112,12 @@ def _split_focus(focus: str | None) -> list[str] | None:
     return names or None
 
 
-@task(name="tag-article")
+# This task takes the shared, non-serializable runtime objects (client, tagger,
+# store holding a sqlite3 connection, cfg, fallback_tagger) by reference, so the
+# default cache policy's input hashing raises HashError when computing the cache
+# key. Cache is disabled: per-article results must never be cache-reused —
+# pick-up dedupe is the Store's job.
+@task(name="tag-article", cache_policy=NO_CACHE)
 def tag_article(
     entry,
     *,

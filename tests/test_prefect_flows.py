@@ -101,8 +101,10 @@ class PrefectFlowsTest(unittest.TestCase):
         except ImportError:
             raise unittest.SkipTest("prefect not installed (uv sync --group prefect)")
         import flows
+        from prefect.cache_policies import NO_CACHE
 
         cls.flows = flows
+        cls.NO_CACHE = NO_CACHE
 
     def make_config(self, store_path=None, max_articles=50):
         """A Config the flow can drive (WallabagClient is patched anyway)."""
@@ -847,6 +849,15 @@ class PrefectFlowsTest(unittest.TestCase):
         )
         self.assertIn(result, out)
         self.assertTrue(client.closed)
+
+    def test_tag_article_task_disables_result_caching(self) -> None:
+        """Per-article results must never be cache-reused (dedupe is the Store's job).
+
+        The default cache policy's input hashing tries to serialize the shared
+        runtime objects (client/tagger/store/cfg) and logged a HashError per task
+        run (bug 8d10af5); the task pins cache_policy=NO_CACHE.
+        """
+        self.assertIs(self.flows.tag_article.cache_policy, self.NO_CACHE)
 
     # -- flow: feed errors -------------------------------------------------
 
