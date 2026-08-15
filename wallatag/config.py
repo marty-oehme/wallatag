@@ -100,8 +100,10 @@ class VocabularyConfig:
 
     ``skip_ignored_tags`` (default True): when True the vocabulary matcher
     skips tags on the [tagger] ignore lists (``ignore_tags`` exact casefolded
-    match, ``ignore_tags_regex`` re.search), mirroring the fetch filter; False
-    restores suggesting ignored vocabulary labels.
+    match, ``ignore_tags_regex`` re.search), mirroring the fetch filter; the
+    LLM tagger filters the same tags out of its system-prompt "Existing tag
+    vocabulary" line (and drops them from its suggestions) by default. False
+    restores suggesting/presenting ignored vocabulary labels.
     """
 
     fields: tuple[str, ...] = VALID_MATCH_FIELDS

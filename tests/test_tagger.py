@@ -802,6 +802,9 @@ def make_llm_tagger(
     confidence_threshold=0.7,
     use_focus_groups=True,
     verbose=False,
+    ignore_tags=(),
+    ignore_tags_regex=(),
+    skip_ignored_tags=True,
 ):
     return LLMTagger(
         client,
@@ -813,6 +816,9 @@ def make_llm_tagger(
         confidence_threshold=confidence_threshold,
         use_focus_groups=use_focus_groups,
         verbose=verbose,
+        ignore_tags=ignore_tags,
+        ignore_tags_regex=ignore_tags_regex,
+        skip_ignored_tags=skip_ignored_tags,
     )
 
 
@@ -1091,6 +1097,141 @@ class LLMTaggerMalformedResponseTest(unittest.TestCase):
         result = make_llm_tagger(client).suggest(entry(title="x"))
 
         self.assertEqual([s.tag for s in result], ["ok"])
+
+
+class LLMTaggerIgnoredTagsTest(unittest.TestCase):
+    """Issue db9f4c5: the LLM prompt vocabulary skips ignored tags by default."""
+
+    def _prompt(self, title="x", **kwargs):
+        client = FakeLLMClient("[]")
+        make_llm_tagger(client, **kwargs).suggest(entry(title=title))
+        return client.system_prompts[0]
+
+    def test_ignored_tag_dropped_from_vocabulary_line_by_default(self):
+        # "fix" is on ignore_tags: it is excluded from the "Existing tag
+        # vocabulary" line; the unrelated label is still presented.
+        prompt = self._prompt(
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+        )
+        self.assertNotIn("fix", prompt)
+        self.assertIn("python", prompt)
+        self.assertIn("Existing tag vocabulary: python.", prompt)
+
+    def test_ignored_match_is_case_insensitive(self):
+        # "Fix" vs ignore_tags ["fix"]: casefolded exact match -> dropped.
+        prompt = self._prompt(
+            existing_tags=["Fix"],
+            ignore_tags=["fix"],
+        )
+        self.assertIn("Existing tag vocabulary: none", prompt)
+
+    def test_ignored_regex_drops_tag_from_prompt(self):
+        prompt = self._prompt(
+            existing_tags=["fixed", "python"],
+            ignore_tags_regex=["^fix"],
+        )
+        self.assertNotIn("fixed", prompt)
+        self.assertIn("python", prompt)
+        self.assertIn("Existing tag vocabulary: python.", prompt)
+
+    def test_skip_ignored_tags_false_keeps_tag_in_prompt(self):
+        # Opt-out restores the pre-issue behavior: ignored tags ARE presented.
+        prompt = self._prompt(
+            existing_tags=["fix"],
+            ignore_tags=["fix"],
+            skip_ignored_tags=False,
+        )
+        self.assertIn("Existing tag vocabulary: fix.", prompt)
+
+    def test_skip_ignored_tags_true_explicit_drops_tag(self):
+        # Explicit True matches the default: ignored tags are dropped.
+        prompt = self._prompt(
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+            skip_ignored_tags=True,
+        )
+        self.assertIn("Existing tag vocabulary: python.", prompt)
+        self.assertNotIn("fix", prompt)
+
+    def test_non_ignored_vocabulary_tags_still_listed(self):
+        # Regression guard: unrelated labels and ignore-list config coexist.
+        prompt = self._prompt(
+            existing_tags=["python", "rust"],
+            ignore_tags=["fix"],
+            ignore_tags_regex=["^todo"],
+        )
+        self.assertIn("Existing tag vocabulary: python, rust.", prompt)
+
+    def test_empty_ignore_lists_no_prompt_change(self):
+        prompt = self._prompt(existing_tags=["python"])
+        self.assertIn("Existing tag vocabulary: python.", prompt)
+        prompt = self._prompt(
+            existing_tags=["python"],
+            ignore_tags=[],
+            ignore_tags_regex=[],
+        )
+        self.assertIn("Existing tag vocabulary: python.", prompt)
+
+    def test_ignored_tag_suggestion_dropped_from_result(self):
+        # Defense-in-depth: a model proposing an ignored tag despite the
+        # prompt must not get it applied (silently, like the threshold drop).
+        client = FakeLLMClient(
+            '[{"tag": "fix", "confidence": 0.9}, '
+            '{"tag": "python", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(
+            client,
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+        ).suggest(entry(title="fix the python setup"))
+        self.assertEqual([s.tag for s in result], ["python"])
+        self.assertEqual([s.source for s in result], ["llm"])
+
+    def test_ignored_tag_suggestion_kept_when_skip_false(self):
+        client = FakeLLMClient(
+            '[{"tag": "fix", "confidence": 0.9}, '
+            '{"tag": "python", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(
+            client,
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+            skip_ignored_tags=False,
+        ).suggest(entry(title="fix the python setup"))
+        self.assertEqual([s.tag for s in result], ["fix", "python"])
+
+    def test_focus_areas_line_not_filtered(self):
+        # Focus-group tags are preferred TOPICS, not available vocabulary: the
+        # tag "fix" is both the focus group's tag AND on ignore_tags, yet it
+        # still reaches the prompt via the "Focus areas" line.
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("fix",)),
+        }
+        prompt = self._prompt(groups=groups, title="pomodoro", ignore_tags=["fix"])
+        self.assertIn("Focus areas: fix.", prompt)
+        # The vocabulary line itself is unaffected (no existing tags here).
+        self.assertIn("Existing tag vocabulary: none", prompt)
+
+    def test_only_existing_plus_ignored_tag_dropped(self):
+        # Both gates compose: the only-existing vocabulary gate survives, and
+        # the ignored tag is dropped regardless of its confidence.
+        client = FakeLLMClient(
+            '[{"tag": "fix", "confidence": 0.9}, '
+            '{"tag": "python", "confidence": 0.9}]'
+        )
+        result = make_llm_tagger(
+            client,
+            tag_policy="only-existing",
+            existing_tags=["fix", "python"],
+            ignore_tags=["fix"],
+        ).suggest(entry(title="fix the python setup"))
+        self.assertEqual([s.tag for s in result], ["python"])
+
+    def test_non_bool_skip_ignored_tags_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            make_llm_tagger(FakeLLMClient("[]"), skip_ignored_tags=1)
+        self.assertIn("skip_ignored_tags", str(ctx.exception))
 
 
 class LLMTaggerPromptTest(unittest.TestCase):

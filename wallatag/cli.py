@@ -176,6 +176,9 @@ def _build_tagger(
             confidence_threshold=config.ai.confidence_threshold,
             use_focus_groups=config.ai.use_focus_groups,
             verbose=config.verbose,
+            ignore_tags=config.tagger.ignore_tags,
+            ignore_tags_regex=config.tagger.ignore_tags_regex,
+            skip_ignored_tags=config.vocabulary.skip_ignored_tags,
         )
         fallback_tagger = None
         if config.ai.fallback_on_fail:

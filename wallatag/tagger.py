@@ -471,6 +471,18 @@ class LLMTagger:
     a ``[debug]`` prefix, so an interactive ``wallatag manual --verbose`` run
     shows exactly what is sent to and returned by the model. Default False:
     no extra output is produced.
+
+    By default (``skip_ignored_tags=True``) tags on the ``ignore_tags`` /
+    ``ignore_tags_regex`` lists (exact casefolded match against
+    ``ignore_tags``, or ``re.search`` against ``ignore_tags_regex``, mirroring
+    the wallabag fetch-side semantics) are treated as unavailable vocabulary:
+    they are excluded from the system prompt's "Existing tag vocabulary" line,
+    and a model-proposed ignored tag is dropped inside ``suggest()`` even when
+    it clears the confidence threshold (defense in depth against a model that
+    ignores the prompt). Set ``skip_ignored_tags=False`` to present ignored
+    tags as available vocabulary again. Focus-area tags are preferred topics,
+    not available vocabulary, so the "Focus areas" line is never filtered this
+    way.
     """
 
     def __init__(
@@ -485,6 +497,9 @@ class LLMTagger:
         confidence_threshold: float = 0.7,
         use_focus_groups: bool = True,
         verbose: bool = False,
+        ignore_tags: Iterable[str] = (),
+        ignore_tags_regex: Iterable[str] = (),
+        skip_ignored_tags: bool = True,
     ) -> None:
         if tag_policy not in VALID_TAG_POLICIES:
             raise ValueError(
@@ -520,6 +535,8 @@ class LLMTagger:
             raise ValueError("use_focus_groups must be a boolean")
         if not isinstance(verbose, bool):
             raise ValueError("verbose must be a boolean")
+        if not isinstance(skip_ignored_tags, bool):
+            raise ValueError("skip_ignored_tags must be a boolean")
         self.client = client
         self.focus_groups = dict(focus_groups)
         # Pre-compile each group's regex patterns (shared with KeywordTagger)
@@ -541,6 +558,35 @@ class LLMTagger:
         self.confidence_threshold = float(confidence_threshold)
         self.use_focus_groups = use_focus_groups
         self.verbose = verbose
+        # Ignore lists mirrored from the wallabag fetch side (wallabag.py
+        # iter_untagged/untagged_entries/_should_fetch): exact matching is
+        # casefolded (with surrounding whitespace stripped, consistent with
+        # _existing_tag_keys); regexes search the RAW label with
+        # re.IGNORECASE. config.py already validated compilability, so the
+        # patterns are compiled directly. Same semantics as KeywordTagger's
+        # ignore handling, so the two taggers agree on what is ignored.
+        self._ignored_keys: frozenset[str] = frozenset(
+            tag.strip().casefold()
+            for tag in ignore_tags
+            if isinstance(tag, str) and tag.strip()
+        )
+        self._ignored_patterns: tuple[re.Pattern, ...] = tuple(
+            re.compile(p, re.IGNORECASE) for p in ignore_tags_regex
+        )
+        self.skip_ignored_tags = skip_ignored_tags
+
+    def _ignored(self, tag: str) -> bool:
+        """True if the tag is on the ignore lists (fetch-side semantics).
+
+        Identical to KeywordTagger._ignored: exact matching is casefolded
+        (and whitespace-stripped on both sides); regexes search the RAW label
+        (``re.search``, compiled with ``re.IGNORECASE``) — mirroring
+        wallabag.py's ``_should_fetch``.
+        """
+        key = tag.strip().casefold()
+        if key in self._ignored_keys:
+            return True
+        return any(p.search(tag) for p in self._ignored_patterns)
 
     def _system_prompt(self, entry: dict) -> str:
         """Build the system prompt: role, vocabulary rule, focus, policy.
@@ -552,7 +598,9 @@ class LLMTagger:
         existing_tags = [
             tag
             for tag in self.existing_tags
-            if isinstance(tag, str) and tag.strip()
+            if isinstance(tag, str)
+            and tag.strip()
+            and not (self.skip_ignored_tags and self._ignored(tag))
         ]
         lines = [
             "You are a tagging assistant for a personal read-it-later archive.",
@@ -693,6 +741,12 @@ class LLMTagger:
         suggestions = [
             s for s in suggestions if s.confidence >= self.confidence_threshold
         ]
+        # Issue db9f4c5: by default ignored tags are dropped here too, so a
+        # model proposing an ignored tag despite the prompt can never apply it
+        # (mirrors the vocabulary matcher's skip in KeywordTagger). Silently
+        # dropped like the threshold filter, not an LLMError.
+        if self.skip_ignored_tags and suggestions:
+            suggestions = [s for s in suggestions if not self._ignored(s.tag)]
         if self.tag_policy == "only-existing":
             # Normalization shared with KeywordTagger: a tag counts as
             # existing iff its stripped+casefolded form is in the vocabulary
