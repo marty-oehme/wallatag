@@ -9,14 +9,16 @@ wallatag is installed and configured (git-bug issue 3d0b22f).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import select
-import shutil
 import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING
+
+import requests
 
 from blocks import (
     BLOCK_NAME,
@@ -24,11 +26,18 @@ from blocks import (
     LLMCredentials,
     WallabagCredentials,
 )
-from prefect import flow
+from prefect import flow, task
 from prefect.variables import Variable
+from wallatag import auto
+from wallatag.cli import _build_tagger
+from wallatag.config import apply_run_overrides, load_config
+from wallatag.store import Store
+from wallatag.wallabag import WallabagClient, WallabagError
 
 if TYPE_CHECKING:
     from prefect.flows import Flow
+
+logger = logging.getLogger(__name__)
 
 # Scalar settings that can be overridden per project/deployment through the
 # Prefect UI (Variables page). Names mirror the env vars EXACTLY, LOWERCASED:
@@ -58,6 +67,8 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
 FOCUS_GROUPS_VARIABLE = "wallatag_focus_groups"
 
 
+# Temporary keep — unused by the flow since the in-process engine cutover (bug
+# 189911f). Removal after production soak tracked in bug 262b48c.
 def build_wallatag_command(
     max_articles: int,
     focus: str | None,
@@ -83,6 +94,49 @@ def build_wallatag_command(
             if name:
                 cmd += ["--focus", name]
     return cmd
+
+
+def _split_focus(focus: str | None) -> list[str] | None:
+    """Split the flow's comma-separated ``focus`` parameter into names.
+
+    Comma-splitting lives in the flow layer on purpose: a TOML focus-group
+    NAME may itself contain a comma, so the CLI never splits on commas (a
+    comma-named group can only be selected via the CLI, not via the flow
+    parameter). ``None`` returns ``None``; an empty or whitespace-only value
+    also returns ``None`` (no narrowing); empty names are dropped.
+    """
+    if focus is None:
+        return None
+    names = [name.strip() for name in focus.split(",") if name.strip()]
+    return names or None
+
+
+@task(name="tag-article")
+def tag_article(
+    entry,
+    *,
+    client,
+    tagger,
+    store,
+    cfg,
+    fallback_tagger=None,
+) -> auto.EntryResult:
+    """One Prefect task per candidate article: drive the engine in-process.
+
+    Thin adapter over ``auto.process_entry`` (dry-run off). The shared
+    client/tagger/store are stateful and not parallel-safe, so calls are
+    strictly sequential; each task run shows the article's own logs/timing
+    in the dashboard.
+    """
+    return auto.process_entry(
+        client,
+        tagger,
+        store,
+        cfg,
+        entry,
+        dry_run=False,
+        fallback_tagger=fallback_tagger,
+    )
 
 
 def llm_env_from_block() -> dict[str, str]:
@@ -321,6 +375,8 @@ def focus_groups_env() -> dict[str, str]:
     return env
 
 
+# Temporary keep — unused by the flow since the in-process engine cutover (bug
+# 189911f). Removal after production soak tracked in bug 262b48c.
 def _run_wallatag(
     cmd: list[str],
     env: dict[str, str],
@@ -420,37 +476,40 @@ def wallatag_batch(
 ) -> str:
     """Run one headless wallatag batch against the wallabag API.
 
-    The flow executes inside the Dokku container, so it shells out to the
-    installed `wallatag` console script (which reads WALLATAG_* env vars).
-    Settings merge with the following precedence (lowest to highest):
-    wallatag.toml defaults → the auto-created blocks (blocks.py), which
-    provide defaults for scheduled runs: the wallatag-llm block (LLM
-    settings) and the wallabag-credentials block (wallabag URL/credentials)
-    → container env vars (dokku config:set) → Prefect Variables (the scalar
-    settings in WALLATAG_VARIABLES — lowercase names the flow uppercases
-    into the WALLATAG_* env vars — plus the wallatag_focus_groups JSON,
-    managed in the Prefect UI) → CLI options (--focus). So a Prefect
-    Variable overrides the container env var and the block for that setting;
-    secrets (client_secret/password/api_key) never come from variables;
-    missing variables fall through to the container env / TOML; and CLI
-    flags still win for --focus. The tag policy is owned by the
-    wallatag_tag_policy variable (managed in the Prefect UI): it lands in
-    the subprocess env, with container env / TOML as fallbacks — there is no
+    The flow executes inside the Dokku container and drives the wallatag
+    tagging engine IN-PROCESS (no subprocess): one Prefect task per candidate
+    article (``tag-article``), sharing the same engine code as the CLI
+    (``wallatag run``) — two drivers, one engine. Settings merge with the
+    following precedence (lowest to highest): wallatag.toml defaults → the
+    auto-created blocks (blocks.py), which provide defaults for scheduled
+    runs: the wallatag-llm block (LLM settings) and the wallabag-credentials
+    block (wallabag URL/credentials) → container env vars (dokku config:set)
+    → Prefect Variables (the scalar settings in WALLATAG_VARIABLES — lowercase
+    names the flow uppercases into the WALLATAG_* env vars — plus the
+    wallatag_focus_groups JSON, managed in the Prefect UI) → the flow's
+    ``focus`` parameter (--focus equivalent). So a Prefect Variable overrides
+    the container env var and the block for that setting; secrets
+    (client_secret/password/api_key) never come from variables; missing
+    variables fall through to the container env / TOML; and the ``focus``
+    parameter still wins for group selection. The tag policy is owned by the
+    wallatag_tag_policy variable (managed in the Prefect UI): it lands in the
+    merged env / config, with container env / TOML as fallbacks — there is no
     --tag-policy flow parameter. Empty block fields fall back to TOML/env.
-    The flow's ``focus`` parameter is a comma-separated list of group names,
-    each emitted as its own ``--focus`` flag (a group whose NAME contains a
-    literal comma is unreachable from the flow — use the CLI for those).
-    Output is streamed to the flow log line by line as it is produced
-    (log_prints=True), so a long backfill shows live progress instead of
-    a single dump at the end. Returns the captured merged stdout+stderr
-    output on success. Raises on a non-zero exit or if the run exceeds
-    the absolute timeout, so Prefect marks the run Failed and can notify
-    on problems.
+    The flow's ``focus`` parameter is a comma-separated list of group names
+    (split by ``_split_focus``); a group whose NAME contains a literal comma
+    is unreachable from the flow — use the CLI for those.
+
+    Per-article work runs as sequential ``tag-article`` tasks (the shared
+    client/tagger/store are stateful and not parallel-safe), so each article's
+    logs and timing appear as its own task run in the dashboard. The engine
+    itself has no run timeout (the old subprocess 1800s timeout was for the
+    child process; Prefect's own run timeout applies to the flow). Returns the
+    summary line (the same one the CLI prints), and raises RuntimeError when
+    the article feed fails entirely (feed error with nothing presented), so
+    Prefect marks the run Failed and can notify on problems.
     """
-    if shutil.which("wallatag") is None:
-        raise RuntimeError(
-            "wallatag console script not found on PATH; is the package installed?"
-        )
+    if max_articles == 0:
+        return ""
     env = {
         **llm_env_from_block(),
         **wallabag_env_from_block(),
@@ -458,8 +517,79 @@ def wallatag_batch(
         **variable_env(),
         **focus_groups_env(),
     }
-    output = _run_wallatag(
-        build_wallatag_command(max_articles, focus),
-        env,
+    config = apply_run_overrides(
+        load_config(env=env),
+        max_articles=max_articles,
+        focus=_split_focus(focus),
     )
-    return output.strip()
+    # Mirror cmd_run's logging setup so engine logs (wallatag.auto) land on
+    # stdout and become flow log lines via log_prints; harmless when Prefect
+    # log handlers already exist.
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
+    # Unlike cmd_run's exit codes, exceptions here propagate: a flow run must
+    # FAIL on bad config, missing credentials, or an unreachable API. All
+    # resource construction (client, tagger/llm_client, store) lives INSIDE
+    # this try so the finally closes whichever were created even when a
+    # pre-loop step raises (mirrors cmd_run's explicit closes): a get_tags()
+    # failure, a _build_tagger failure, or a Store() failure leaks nothing.
+    client = None
+    llm_client = None
+    store = None
+    try:
+        client = WallabagClient(
+            config.wallabag.url,
+            config.wallabag.client_id,
+            config.wallabag.client_secret,
+            username=config.wallabag.username,
+            password=config.wallabag.password,
+        )
+        existing_tags = [tag["label"] for tag in client.get_tags()]
+        tagger, llm_client, fallback_tagger = _build_tagger(config, existing_tags)
+        store = Store(config.store.path)
+        summary = auto.AutoSummary()
+        try:
+            # iter_candidates is a plain function whose returned islice
+            # eagerly evaluates client.iter_untagged(...) at the call site —
+            # which is inside this guard, exactly like run_auto — so a feed
+            # error sets feed_error instead of escaping the flow.
+            for entry in auto.iter_candidates(client, store, config):
+                result = tag_article(
+                    entry,
+                    client=client,
+                    tagger=tagger,
+                    store=store,
+                    cfg=config,
+                    fallback_tagger=fallback_tagger,
+                )
+                summary.presented += result.presented
+                summary.tagged += result.tagged
+                summary.tags_applied += result.tags_applied
+                summary.skipped += result.skipped
+                summary.llm_failed += result.llm_failed
+                summary.llm_fallback += result.llm_fallback
+        except (WallabagError, requests.RequestException) as exc:
+            # The feed fetch died: report and stop gracefully, the same way
+            # run_auto does (the flag distinguishes total from partial runs).
+            summary.feed_error = True
+            logger.error("error fetching entries: %s", exc)
+    finally:
+        if store is not None:
+            store.close()
+        if client is not None:
+            client.close()
+        if llm_client is not None:
+            llm_client.close()
+    # Total feed failure (nothing presented) must fail the flow run, mirroring
+    # cmd_run's exit-2 condition; a partial run still returns its summary.
+    if summary.feed_error and summary.presented == 0:
+        raise RuntimeError(
+            "wallatag run failed: could not fetch the article feed "
+            "(feed error, nothing presented)"
+        )
+    line = auto.summary_line(summary)
+    print(line)
+    return line

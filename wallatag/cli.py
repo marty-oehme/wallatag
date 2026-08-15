@@ -15,6 +15,7 @@ from wallatag.config import (
     Config,
     ConfigError,
     StoreConfig,
+    apply_run_overrides,
     load_config,
 )
 from wallatag.manual import run_manual, summary_line
@@ -101,12 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
-    """Apply CLI flag overrides on top of a loaded config (flags win)."""
-    if args.max is not None:
-        if args.max < 0:
-            raise ConfigError("--max must be a non-negative integer")
-        # Runtime run limit only: never touches [tagger] max_applied_tags.
-        config = dataclasses.replace(config, max_articles=args.max)
+    """Apply CLI flag overrides on top of a loaded config (flags win).
+
+    The ``--max`` and ``--focus`` parts are shared with the Prefect flow via
+    ``apply_run_overrides`` (both drivers must apply identical run-scope
+    semantics); the rest is CLI-only flag handling.
+    """
+    config = apply_run_overrides(
+        config,
+        max_articles=args.max,
+        focus=getattr(args, "focus", None),
+    )
     if args.tag_policy is not None:
         config = dataclasses.replace(
             config, tagger=dataclasses.replace(config.tagger, tag_policy=args.tag_policy)
@@ -115,29 +121,6 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
         config = dataclasses.replace(config, store=StoreConfig(path=None))
     if getattr(args, "verbose", False):
         config = dataclasses.replace(config, verbose=True)
-    focus = getattr(args, "focus", None)
-    if focus is not None:
-        names = [focus] if isinstance(focus, str) else focus
-        if names:
-            # Validate every name before touching the config (all-or-nothing):
-            # an unknown name raises here, before any narrowing is applied.
-            selected_groups = {}
-            for name in names:
-                selected = config.tagger.focus_groups.get(name)
-                if selected is None:
-                    available = (
-                        ", ".join(config.tagger.focus_groups) or "(none configured)"
-                    )
-                    raise ConfigError(
-                        f"unknown focus group {name!r}; available focus groups: {available}"
-                    )
-                selected_groups[name] = selected
-            config = dataclasses.replace(
-                config,
-                tagger=dataclasses.replace(
-                    config.tagger, focus_groups=selected_groups
-                ),
-            )
     return config
 
 

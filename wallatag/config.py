@@ -955,3 +955,48 @@ def load_config(
     config = _parse_toml_config(_parse_toml(path)) if path is not None else Config()
     config = _apply_env(config, env)
     return config
+
+
+def apply_run_overrides(
+    config: Config,
+    *,
+    max_articles: int | None = None,
+    focus: str | list[str] | None = None,
+) -> Config:
+    """Apply runtime run-scope overrides on top of a loaded config.
+
+    The ``--max`` / ``--focus`` logic shared by the two drivers — the CLI
+    (``apply_flag_overrides``) and the Prefect flow — so both apply identical
+    run-scope semantics. ``max_articles`` is a runtime run limit only: it
+    NEVER touches ``[tagger] max_applied_tags``. ``focus`` validates ALL names
+    first (an unknown name raises ConfigError before any narrowing is applied)
+    then narrows ``config.tagger.focus_groups`` via ``dataclasses.replace``;
+    both values default to None (no-op), so a caller can pass just the one it
+    wants. Returns a new Config; the input is never mutated.
+    """
+    if max_articles is not None:
+        if max_articles < 0:
+            raise ConfigError("--max must be a non-negative integer")
+        # Runtime run limit only: never touches [tagger] max_applied_tags.
+        config = replace(config, max_articles=max_articles)
+    if focus is not None:
+        names = [focus] if isinstance(focus, str) else focus
+        if names:
+            # Validate every name before touching the config (all-or-nothing):
+            # an unknown name raises here, before any narrowing is applied.
+            selected_groups = {}
+            for name in names:
+                selected = config.tagger.focus_groups.get(name)
+                if selected is None:
+                    available = (
+                        ", ".join(config.tagger.focus_groups) or "(none configured)"
+                    )
+                    raise ConfigError(
+                        f"unknown focus group {name!r}; available focus groups: {available}"
+                    )
+                selected_groups[name] = selected
+            config = replace(
+                config,
+                tagger=replace(config.tagger, focus_groups=selected_groups),
+            )
+    return config

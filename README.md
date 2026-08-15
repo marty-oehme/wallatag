@@ -268,8 +268,11 @@ wallatag is hosted on a Dokku server and runs its own Prefect worker there. The
 `worker` process keeps the container alive and joins the `wallatag-pool` work
 pool; there is no web process. The Prefect *server* (on your incus host)
 schedules runs, stores results, and can notify you on failures; the worker in
-this container executes them by running the installed `wallatag run` against
-the wallabag API. A `git push dokku main` deploys the app and the flow together.
+this container executes them by driving the wallatag tagging engine
+IN-PROCESS — one Prefect task per article (`tag-article`), sharing the same
+engine code as the CLI — with each article's logs and timing visible as its
+own task run in the dashboard. A `git push dokku main` deploys the app and
+the flow together.
 
 Requirements: Dokku with the current default Python buildpack
 (heroku-buildpack-python ≥ v286, i.e. uv support) and `dokku run` support.
@@ -301,11 +304,11 @@ openai-compatible providers). Fill or edit it in the Prefect UI (Blocks >
 Wallatag LLM Credentials) to configure the LLM for scheduled runs without
 redeploying.
 
-For scheduled runs, the flow reads the block each run and passes its non-empty
-fields to the wallatag CLI as `WALLATAG_AI_*` env vars. Precedence for LLM
-settings, lowest to highest: `wallatag.toml` defaults → LLM credentials block
-(defaults for scheduled runs) → `WALLATAG_AI_*` env vars (`dokku config:set`)
-→ CLI options (none exist for AI config today). So container env vars
+For scheduled runs, the flow reads the block each run and merges its non-empty
+fields into the `WALLATAG_AI_*` env vars it feeds wallatag's config loading.
+Precedence for LLM settings, lowest to highest: `wallatag.toml` defaults →
+LLM credentials block (defaults for scheduled runs) → `WALLATAG_AI_*` env
+vars (`dokku config:set`). So container env vars
 *override* the block: rotate or override credentials with `dokku config:set
 wallatag WALLATAG_AI_...` and the change takes effect on scheduled runs
 without touching the block, while editing the block in the Prefect UI changes
@@ -333,10 +336,10 @@ the Prefect UI (Blocks > Wallabag Credentials) to configure the wallabag
 URL/credentials for scheduled runs without redeploying.
 
 For scheduled runs, the flow reads the wallabag-credentials block each run and
-passes its non-empty fields to the wallatag CLI as `WALLATAG_*` env vars.
-Precedence for wallabag credentials, lowest to highest: `wallatag.toml`
-defaults → wallabag-credentials block (defaults for scheduled runs) →
-`WALLATAG_*` env vars (`dokku config:set`). So container env vars
+merges its non-empty fields into the `WALLATAG_*` env vars it feeds wallatag's
+config loading. Precedence for wallabag credentials, lowest to highest:
+`wallatag.toml` defaults → wallabag-credentials block (defaults for scheduled
+runs) → `WALLATAG_*` env vars (`dokku config:set`). So container env vars
 *override* the block: rotate or override credentials with `dokku config:set
 wallatag WALLATAG_...` and the change takes effect on scheduled runs without
 touching the block, while editing the block in the Prefect UI changes the
@@ -372,7 +375,7 @@ Rules of thumb:
 - Blocks are for credentials and connection details; SecretStr fields are
   encrypted at rest and rotatable without redeploy.
 - Precedence, lowest to highest: `wallatag.toml` → blocks → container env vars
-  → Prefect Variables → flow parameters (CLI flags).
+  → Prefect Variables → flow parameters (`focus`, the CLI `--focus` equivalent).
 
 ### Prefect UI configuration (Variables)
 
@@ -432,13 +435,13 @@ focus groups entirely, delete the variable rather than blanking it out.
 
 Precedence for Prefect-scheduled runs, lowest to highest: `wallatag.toml`
 defaults → blocks → container env vars (`dokku config:set`) → Prefect
-Variables (scalar settings + `wallatag_focus_groups`) → CLI options
-(`--focus`). So a variable overrides the container env var for
-that setting; the focus JSON overrides same-named `WALLATAG_FOCUS_<NAME>_*`
-env vars for the fields it emits, per-field (an empty `keywords`/`tags`/
-`keywords_regex` list omits that env var entirely, so the container env var
-survives); and CLI flags
-still win. Variables set only partially fall through:
+Variables (scalar settings + `wallatag_focus_groups`) → the flow's `focus`
+parameter (the CLI `--focus` equivalent). So a variable overrides the
+container env var for that setting; the focus JSON overrides same-named
+`WALLATAG_FOCUS_<NAME>_*` env vars for the fields it emits, per-field (an
+empty `keywords`/`tags`/`keywords_regex` list omits that env var entirely, so
+the container env var survives); and the flow's `focus`
+parameter still wins. Variables set only partially fall through:
 a missing variable leaves the container env / TOML value in place for that
 setting, so you can migrate settings to the UI one at a time. Secrets never
 come from variables — `WALLATAG_CLIENT_SECRET`, `WALLATAG_PASSWORD` and
@@ -446,9 +449,11 @@ come from variables — `WALLATAG_CLIENT_SECRET`, `WALLATAG_PASSWORD` and
 
 The `wallatag_batch` flow itself takes two parameters (defaults shown):
 `max_articles=50`, `focus=None`. `focus` is a
-comma-separated list of focus-group names (e.g. `methods, languages`), each
-mapped to its own repeated `--focus` CLI flag; a group whose NAME contains a
-literal comma can only be selected via the CLI, not via the flow parameter.
+comma-separated list of focus-group names (e.g. `methods, languages`), split
+in the flow layer and narrowed onto the config through the shared
+`apply_run_overrides` helper (the CLI `--focus` equivalent); a group whose
+NAME contains a literal comma can only be selected via the CLI, not via the
+flow parameter.
 The tag policy is not a flow parameter: it is owned by the
 `wallatag_tag_policy` Prefect Variable (see the table below).
 

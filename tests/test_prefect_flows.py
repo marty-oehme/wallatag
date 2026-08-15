@@ -1,14 +1,96 @@
-"""Tests for flows (skipped when the prefect group isn't installed)."""
+"""Tests for flows (skipped when the prefect group isn't installed).
+
+The wallatag_batch flow-run tests exercise the Prefect adapter at the
+auto.py port level (style of tests/test_auto.py): the wallabag API is faked
+with a FakeClient, the tagger is a real KeywordTagger, and only the flow's
+own seams are patched (flows._build_tagger, flows.WallabagClient,
+flows.load_config, the env-merge helpers). No subprocess is ever spawned.
+"""
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import os
+import re
+import sqlite3
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
+
+from wallatag.config import Config, ConfigError, StoreConfig, WallabagConfig
+from wallatag.tagger import KeywordTagger
+from wallatag.wallabag import WallabagError, _should_fetch, _tag_labels
+
+
+def entry(eid, title, url="https://example.com/x", domain="example.com",
+          content="", reading_time=5, tags=()):
+    return {
+        "id": eid,
+        "title": title,
+        "url": url,
+        "domain_name": domain,
+        "content": content,
+        "reading_time": reading_time,
+        "language": "en",
+        "tags": list(tags),
+    }
+
+
+class FakeClient:
+    """Minimal wallabag client fake (mirrors tests/test_auto.py)."""
+
+    def __init__(self, entries=(), tags=(), fail_first=0, feed_error=None,
+                 feed_fail_after=None):
+        self.entries = list(entries)
+        self.tags = list(tags)
+        self.fail_first = fail_first
+        self.feed_error = feed_error
+        self.feed_fail_after = feed_fail_after
+        self.add_calls = []
+        self.closed = False
+
+    def iter_untagged(self, per_page=30, ignored_tags=(), ignored_regex=()):
+        if self.feed_error is not None:
+            raise self.feed_error
+        # Faithful to WallabagClient.iter_untagged: drop entries whose tags
+        # are non-empty and not all in the ignore-any list (literal or regex).
+        ignored = frozenset(t.casefold() for t in ignored_tags)
+        patterns = tuple(re.compile(p, re.IGNORECASE) for p in ignored_regex)
+        entries = [
+            dict(item)
+            for item in self.entries
+            if _should_fetch(_tag_labels(item.get("tags")), ignored, patterns)
+        ]
+        if self.feed_fail_after is not None:
+            for i, item in enumerate(entries):
+                if i >= self.feed_fail_after:
+                    raise WallabagError("network died")
+                yield item
+            return
+        yield from entries
+
+    def get_tags(self):
+        return [{"label": t, "slug": t, "nbEntries": 0} for t in self.tags]
+
+    def add_tags(self, entry_id, tags):
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            raise WallabagError("boom")
+        self.add_calls.append((entry_id, sorted(tags)))
+
+    def close(self):
+        self.closed = True
+
+
+def decision_rows(db_path):
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT entry_id, tag, action, source FROM decisions ORDER BY rowid"
+        ).fetchall()
 
 
 class PrefectFlowsTest(unittest.TestCase):
@@ -21,6 +103,71 @@ class PrefectFlowsTest(unittest.TestCase):
         import flows
 
         cls.flows = flows
+
+    def make_config(self, store_path=None, max_articles=50):
+        """A Config the flow can drive (WallabagClient is patched anyway)."""
+        return dataclasses.replace(
+            Config(),
+            wallabag=WallabagConfig(
+                url="https://wallabag.example.com",
+                client_id="cid",
+                client_secret="secret",
+                username="alice",
+                password="wonderland",
+            ),
+            store=StoreConfig(path=store_path),
+            max_articles=max_articles,
+        )
+
+    def run_batch(self, client, config=None, *, focus=None, max_articles=50,
+                  store_path=None, spy_task=False):
+        """Run wallatag_batch with the adapter seams patched to engine fakes.
+
+        ``spy_task=True`` replaces the tag-article task with a spy over the
+        real engine function (auto.process_entry) so call counts per
+        candidate can be asserted; with ``spy_task=False`` the real Prefect
+        task runs end to end.
+        """
+        config = config if config is not None else self.make_config(
+            store_path=store_path, max_articles=max_articles
+        )
+        tagger = KeywordTagger(
+            {},
+            max_applied_tags=10,
+            tag_policy="all",
+            existing_tags=list(client.tags),
+        )
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("flows.load_config", return_value=config))
+            stack.enter_context(patch("flows.llm_env_from_block", return_value={}))
+            stack.enter_context(
+                patch("flows.wallabag_env_from_block", return_value={})
+            )
+            stack.enter_context(patch("flows.Variable.get", return_value=None))
+            stack.enter_context(
+                patch("flows._build_tagger", return_value=(tagger, None, None))
+            )
+            stack.enter_context(
+                patch("flows.WallabagClient", return_value=client)
+            )
+            task_mock = None
+            if spy_task:
+                # Spy over the task's own underlying function: each call is
+                # recorded AND still drives the real engine code.
+                task_mock = stack.enter_context(
+                    patch(
+                        "flows.tag_article",
+                        side_effect=self.flows.tag_article.fn,
+                    )
+                )
+            with contextlib.redirect_stdout(out):
+                result = self.flows.wallatag_batch.fn(
+                    max_articles=max_articles, focus=focus
+                )
+        return result, out.getvalue(), task_mock
+
+    # -- temporary keep: command builder (removal tracked in bug 262b48c) ----
 
     def test_command_build_defaults(self) -> None:
         self.assertEqual(
@@ -87,6 +234,8 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertTrue(hasattr(self.flows, "wallatag_batch"))
         self.assertEqual(self.flows.wallatag_batch.name, "wallatag-batch")
 
+    # -- env-merge helpers -------------------------------------------------
+
     def test_llm_env_from_block_fail_open(self) -> None:
         with patch(
             "flows.LLMCredentials.load",
@@ -94,110 +243,6 @@ class PrefectFlowsTest(unittest.TestCase):
         ), contextlib.redirect_stdout(io.StringIO()) as out:
             env = self.flows.llm_env_from_block()
         self.assertEqual(env, {})
-        self.assertIn("falling back to config/env", out.getvalue())
-
-    def test_flow_env_overrides_block_env_for_same_var(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows.llm_env_from_block",
-                 return_value={"WALLATAG_AI_PROVIDER": "openai-compatible"},
-             ), \
-             patch.dict(
-                 os.environ,
-                 {"WALLATAG_AI_PROVIDER": "ollama"},
-                 clear=True,
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # When both the block and os.environ define the same var, os.environ
-        # (container env) wins over the block value.
-        self.assertEqual(
-            captured["env"], {"WALLATAG_AI_PROVIDER": "ollama"}
-        )
-
-    def test_flow_block_fills_env_gaps(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows.llm_env_from_block",
-                 return_value={
-                     "WALLATAG_AI_PROVIDER": "openai-compatible",
-                     "WALLATAG_AI_MODEL": "gpt-4o-mini",
-                     "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
-                 },
-             ), \
-             patch.dict(os.environ, {}, clear=True), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # Block values fill in WALLATAG_AI_* vars that os.environ does not set.
-        self.assertEqual(
-            captured["env"],
-            {
-                "WALLATAG_AI_PROVIDER": "openai-compatible",
-                "WALLATAG_AI_MODEL": "gpt-4o-mini",
-                "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
-            },
-        )
-
-    def test_flow_passes_present_but_empty_env_var_through(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows.llm_env_from_block",
-                 return_value={"WALLATAG_AI_MODEL": "gpt-4o-mini"},
-             ), \
-             patch.dict(
-                 os.environ,
-                 {"WALLATAG_AI_MODEL": ""},
-                 clear=True,
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # A present-but-empty env var overrides the block with "" verbatim
-        # (documents the merge: wallatag's config validation then rejects it,
-        # which is why the docs say to `dokku config:unset` a block value
-        # rather than `config:set` it to an empty string).
-        self.assertEqual(captured["env"], {"WALLATAG_AI_MODEL": ""})
-
-    def test_flow_falls_back_to_os_environ_when_block_unavailable(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows.LLMCredentials.load",
-                 side_effect=Exception("prefect server unreachable"),
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()) as out:
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        self.assertEqual(captured["env"], {**os.environ})
         self.assertIn("falling back to config/env", out.getvalue())
 
     def test_wallabag_env_from_block_fail_open(self) -> None:
@@ -208,261 +253,6 @@ class PrefectFlowsTest(unittest.TestCase):
             env = self.flows.wallabag_env_from_block()
         self.assertEqual(env, {})
         self.assertIn("falling back to config/env", out.getvalue())
-
-    def test_flow_wallabag_block_fills_env_gaps(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch(
-                 "flows.wallabag_env_from_block",
-                 return_value={
-                     "WALLATAG_URL": "https://wallabag.example.com",
-                     "WALLATAG_CLIENT_ID": "client-id-123",
-                     "WALLATAG_CLIENT_SECRET": "client-secret-456",
-                     "WALLATAG_USERNAME": "reader@example.com",
-                     "WALLATAG_PASSWORD": "hunter2",
-                 },
-             ), \
-             patch.dict(os.environ, {}, clear=True), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # Block values fill in WALLATAG_* vars that os.environ does not set.
-        self.assertEqual(
-            captured["env"],
-            {
-                "WALLATAG_URL": "https://wallabag.example.com",
-                "WALLATAG_CLIENT_ID": "client-id-123",
-                "WALLATAG_CLIENT_SECRET": "client-secret-456",
-                "WALLATAG_USERNAME": "reader@example.com",
-                "WALLATAG_PASSWORD": "hunter2",
-            },
-        )
-
-    def test_flow_wallabag_env_overrides_block_for_same_var(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch(
-                 "flows.wallabag_env_from_block",
-                 return_value={"WALLATAG_URL": "https://block.example"},
-             ), \
-             patch.dict(
-                 os.environ,
-                 {"WALLATAG_URL": "https://env.example"},
-                 clear=True,
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # When both the block and os.environ define the same var, os.environ
-        # (container env) wins over the block value.
-        self.assertEqual(
-            captured["env"], {"WALLATAG_URL": "https://env.example"}
-        )
-
-    def test_flow_passes_present_but_empty_wallabag_env_var_through(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch(
-                 "flows.wallabag_env_from_block",
-                 return_value={"WALLATAG_URL": "https://block.example"},
-             ), \
-             patch.dict(
-                 os.environ,
-                 {"WALLATAG_URL": ""},
-                 clear=True,
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # A present-but-empty env var overrides the block with "" verbatim
-        # (wallatag's config validation then rejects it, which is why the docs
-        # say to `dokku config:unset` a block value rather than `config:set`
-        # it to an empty string).
-        self.assertEqual(captured["env"], {"WALLATAG_URL": ""})
-
-    def test_flow_falls_back_to_os_environ_when_wallabag_block_unavailable(
-        self,
-    ) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows.WallabagCredentials.load",
-                 side_effect=Exception("prefect server unreachable"),
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()) as out:
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        self.assertEqual(captured["env"], {**os.environ})
-        self.assertIn("falling back to config/env", out.getvalue())
-
-    def test_missing_console_script_raises(self) -> None:
-        with patch("flows.shutil.which", return_value=None):
-            with self.assertRaises(RuntimeError):
-                self.flows.wallatag_batch.fn(max_articles=50)
-
-    def test_nonzero_exit_raises(self) -> None:
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows._run_wallatag",
-                 side_effect=RuntimeError("wallatag run exited with code 1: boom"),
-             ), \
-             contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(RuntimeError) as ctx:
-                self.flows.wallatag_batch.fn(max_articles=50)
-        message = str(ctx.exception)
-        self.assertIn("wallatag run exited with code 1", message)
-        # The CLI output detail is carried in the raised message.
-        self.assertIn("boom", message)
-
-    def test_success_returns_output(self) -> None:
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows._run_wallatag", return_value="wallatag run output"), \
-             contextlib.redirect_stdout(io.StringIO()):
-            result = self.flows.wallatag_batch.fn(max_articles=50)
-        self.assertEqual(result, "wallatag run output")
-
-    def test_timeout_raises(self) -> None:
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch(
-                 "flows._run_wallatag",
-                 side_effect=RuntimeError("wallatag run timed out after 1800s"),
-             ), \
-             contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(RuntimeError) as ctx:
-                self.flows.wallatag_batch.fn(max_articles=50)
-        self.assertIn("timed out after 1800s", str(ctx.exception))
-
-    def test_run_wallatag_streams_all_lines_to_flow_log(self) -> None:
-        # The child prints a first line, sleeps, then prints a second line.
-        # Both lines must land in the STREAMED print output (what becomes the
-        # flow log via log_prints=True) AND in the returned captured output.
-        # This asserts the output is captured on both channels; the live
-        # streaming-before-exit guarantee itself is covered by
-        # test_run_wallatag_burst_then_hang_streams_all_lines.
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            output = self.flows._run_wallatag(
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys,time; print('first', flush=True);"
-                    " time.sleep(1); print('second', flush=True)",
-                ],
-                env=dict(os.environ),
-                timeout=30,
-            )
-        self.assertIn("first", out.getvalue())
-        self.assertIn("second", out.getvalue())
-        self.assertIn("first", output)
-        self.assertIn("second", output)
-
-    def test_run_wallatag_merges_stdout_and_stderr(self) -> None:
-        # stderr=STDOUT merges both streams: both lines must be streamed and
-        # captured in the returned string.
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            output = self.flows._run_wallatag(
-                [
-                    sys.executable,
-                    "-c",
-                    "print('a'); import sys; print('b', file=sys.stderr)",
-                ],
-                env=dict(os.environ),
-                timeout=30,
-            )
-        self.assertIn("a", out.getvalue())
-        self.assertIn("b", out.getvalue())
-        self.assertIn("a", output)
-        self.assertIn("b", output)
-
-    def test_run_wallatag_partial_line_then_hang_times_out(self) -> None:
-        # A partial line (no trailing newline) followed by a hang must still
-        # hit the deadline: the timeout bounds the read itself, not just idle
-        # waits between complete lines. elapsed < 5 proves the old readline()
-        # watchdog (which fired at t=10.1s for this scenario) is gone.
-        start = time.monotonic()
-        with self.assertRaises(RuntimeError) as ctx:
-            self.flows._run_wallatag(
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys,time; sys.stdout.write('x');"
-                    " sys.stdout.flush(); time.sleep(10)",
-                ],
-                env=dict(os.environ),
-                timeout=1,
-            )
-        elapsed = time.monotonic() - start
-        self.assertEqual(
-            str(ctx.exception), "wallatag run timed out after 1s"
-        )
-        self.assertLess(elapsed, 5)
-
-    def test_run_wallatag_burst_then_hang_streams_all_lines(self) -> None:
-        # A burst of 50 lines followed by a hang must stream ALL 50 lines
-        # before the timeout fires. Regression test for the buffered
-        # read-ahead bug where only the first line was streamed and the
-        # healthy process was killed at the deadline.
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            with self.assertRaises(RuntimeError) as ctx:
-                self.flows._run_wallatag(
-                    [
-                        sys.executable,
-                        "-c",
-                        "import sys,time; [print(f'line{i}', flush=True)"
-                        " for i in range(50)]; time.sleep(10)",
-                    ],
-                    env=dict(os.environ),
-                    timeout=2,
-                )
-        self.assertEqual(
-            str(ctx.exception), "wallatag run timed out after 2s"
-        )
-        streamed = out.getvalue()
-        for i in range(50):
-            self.assertIn(f"line{i}", streamed)
-
-    def test_run_wallatag_nonzero_exit_raises_with_detail(self) -> None:
-        with contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(RuntimeError) as ctx:
-                self.flows._run_wallatag(
-                    [
-                        sys.executable,
-                        "-c",
-                        "print('boom'); import sys; sys.exit(3)",
-                    ],
-                    env=dict(os.environ),
-                )
-        message = str(ctx.exception)
-        self.assertIn("exited with code 3", message)
-        # The child's own output (the merged capture tail) must be carried in
-        # the error detail, not just the exit code.
-        self.assertIn("boom", message)
 
     def test_variable_names_exact_no_secrets(self) -> None:
         self.assertEqual(
@@ -763,131 +553,351 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertIn("'^a,b$'", message)
         self.assertIn("comma", message)
 
-    def test_flow_variable_env_beats_container_env(self) -> None:
+    # -- temporary keep: subprocess runner (removal tracked in bug 262b48c) -
+
+    def test_run_wallatag_streams_all_lines_to_flow_log(self) -> None:
+        # The child prints a first line, sleeps, then prints a second line.
+        # Both lines must land in the STREAMED print output (what becomes the
+        # flow log via log_prints=True) AND in the returned captured output.
+        # This asserts the output is captured on both channels; the live
+        # streaming-before-exit guarantee itself is covered by
+        # test_run_wallatag_burst_then_hang_streams_all_lines.
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            output = self.flows._run_wallatag(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys,time; print('first', flush=True);"
+                    " time.sleep(1); print('second', flush=True)",
+                ],
+                env=dict(os.environ),
+                timeout=30,
+            )
+        self.assertIn("first", out.getvalue())
+        self.assertIn("second", out.getvalue())
+        self.assertIn("first", output)
+        self.assertIn("second", output)
+
+    def test_run_wallatag_merges_stdout_and_stderr(self) -> None:
+        # stderr=STDOUT merges both streams: both lines must be streamed and
+        # captured in the returned string.
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            output = self.flows._run_wallatag(
+                [
+                    sys.executable,
+                    "-c",
+                    "print('a'); import sys; print('b', file=sys.stderr)",
+                ],
+                env=dict(os.environ),
+                timeout=30,
+            )
+        self.assertIn("a", out.getvalue())
+        self.assertIn("b", out.getvalue())
+        self.assertIn("a", output)
+        self.assertIn("b", output)
+
+    def test_run_wallatag_partial_line_then_hang_times_out(self) -> None:
+        # A partial line (no trailing newline) followed by a hang must still
+        # hit the deadline: the timeout bounds the read itself, not just idle
+        # waits between complete lines. elapsed < 5 proves the old readline()
+        # watchdog (which fired at t=10.1s for this scenario) is gone.
+        start = time.monotonic()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.flows._run_wallatag(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys,time; sys.stdout.write('x');"
+                    " sys.stdout.flush(); time.sleep(10)",
+                ],
+                env=dict(os.environ),
+                timeout=1,
+            )
+        elapsed = time.monotonic() - start
+        self.assertEqual(
+            str(ctx.exception), "wallatag run timed out after 1s"
+        )
+        self.assertLess(elapsed, 5)
+
+    def test_run_wallatag_burst_then_hang_streams_all_lines(self) -> None:
+        # A burst of 50 lines followed by a hang must stream ALL 50 lines
+        # before the timeout fires. Regression test for the buffered
+        # read-ahead bug where only the first line was streamed and the
+        # healthy process was killed at the deadline.
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            with self.assertRaises(RuntimeError) as ctx:
+                self.flows._run_wallatag(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys,time; [print(f'line{i}', flush=True)"
+                        " for i in range(50)]; time.sleep(10)",
+                    ],
+                    env=dict(os.environ),
+                    timeout=2,
+                )
+        self.assertEqual(
+            str(ctx.exception), "wallatag run timed out after 2s"
+        )
+        streamed = out.getvalue()
+        for i in range(50):
+            self.assertIn(f"line{i}", streamed)
+
+    def test_run_wallatag_nonzero_exit_raises_with_detail(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.flows._run_wallatag(
+                    [
+                        sys.executable,
+                        "-c",
+                        "print('boom'); import sys; sys.exit(3)",
+                    ],
+                    env=dict(os.environ),
+                )
+        message = str(ctx.exception)
+        self.assertIn("exited with code 3", message)
+        # The child's own output (the merged capture tail) must be carried in
+        # the error detail, not just the exit code.
+        self.assertIn("boom", message)
+
+    # -- flow: env merge ---------------------------------------------------
+
+    def test_flow_env_precedence_merge(self) -> None:
+        # merged env order: blocks < container env < variables < focus JSON.
         captured = {}
 
-        def fake_run(cmd, env, timeout=1800):
+        def fake_load_config(env=None, **kwargs):
             captured["env"] = env
-            return "wallatag run output"
+            return self.make_config()
 
         def fake_get(name, default=None):
-            if name == "wallatag_ignore_tags":
-                return "from-var"
-            return default
-
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch("flows.wallabag_env_from_block", return_value={}), \
-             patch.dict(
-                 os.environ,
-                 {"WALLATAG_IGNORE_TAGS": "from-env"},
-                 clear=True,
-             ), \
-             patch("flows.Variable.get", side_effect=fake_get), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(max_articles=50)
-
-        # Prefect Variables override container env vars (os.environ) for the
-        # same setting; the winning value is what reaches the subprocess.
-        self.assertEqual(captured["env"]["WALLATAG_IGNORE_TAGS"], "from-var")
-
-    def test_flow_focus_groups_json_beats_per_group_env_var(self) -> None:
-        captured = {}
-
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
-
-        def fake_get(name, default=None):
+            if name == "wallatag_tag_policy":
+                return "all"
             if name == self.flows.FOCUS_GROUPS_VARIABLE:
                 return {"methods": {"keywords": ["from-json"]}}
             return default
 
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch("flows.wallabag_env_from_block", return_value={}), \
+        client = FakeClient()
+        with patch("flows.load_config", side_effect=fake_load_config), \
+             patch(
+                 "flows.llm_env_from_block",
+                 return_value={"WALLATAG_AI_PROVIDER": "openai-compatible"},
+             ), \
+             patch(
+                 "flows.wallabag_env_from_block",
+                 return_value={"WALLATAG_URL": "https://block.example"},
+             ), \
              patch.dict(
                  os.environ,
-                 {"WALLATAG_FOCUS_methods_KEYWORDS": "from-env"},
+                 {
+                     "WALLATAG_AI_PROVIDER": "ollama",
+                     "WALLATAG_URL": "https://env.example",
+                     "WALLATAG_DB": "/data/wallatag.db",
+                 },
                  clear=True,
              ), \
              patch("flows.Variable.get", side_effect=fake_get), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
+             patch(
+                 "flows._build_tagger", return_value=(object(), None, None)
+             ), \
+             patch("flows.WallabagClient", return_value=client), \
              contextlib.redirect_stdout(io.StringIO()):
             self.flows.wallatag_batch.fn(max_articles=50)
 
-        self.assertEqual(
-            captured["env"]["WALLATAG_FOCUS_methods_KEYWORDS"], "from-json"
-        )
+        env = captured["env"]
+        # Container env wins over the blocks for the same var.
+        self.assertEqual(env["WALLATAG_AI_PROVIDER"], "ollama")
+        self.assertEqual(env["WALLATAG_URL"], "https://env.example")
+        # Variables fill gaps / win over container env.
+        self.assertEqual(env["WALLATAG_TAG_POLICY"], "all")
+        # The focus-groups JSON variable is folded in last.
+        self.assertEqual(env["WALLATAG_FOCUS_methods_KEYWORDS"], "from-json")
+        # Container env vars pass through untouched.
+        self.assertEqual(env["WALLATAG_DB"], "/data/wallatag.db")
 
-    def test_flow_focus_param_emits_repeated_flags(self) -> None:
+    def test_flow_falls_back_to_env_when_blocks_unavailable(self) -> None:
+        # Block reads failing (no Prefect server) falls back to container env.
         captured = {}
 
-        def fake_run(cmd, env, timeout=1800):
-            captured["cmd"] = cmd
+        def fake_load_config(env=None, **kwargs):
             captured["env"] = env
-            return "wallatag run output"
+            return self.make_config()
 
-        def fake_get(name, default=None):
-            if name == "wallatag_tag_policy":
-                return "prefer-existing"
-            return default
+        with patch("flows.load_config", side_effect=fake_load_config), \
+             patch(
+                 "flows.LLMCredentials.load",
+                 side_effect=Exception("prefect server unreachable"),
+             ), \
+             patch(
+                 "flows.WallabagCredentials.load",
+                 side_effect=Exception("prefect server unreachable"),
+             ), \
+             patch.dict(
+                 os.environ, {"WALLATAG_IGNORE_TAGS": "fix"}, clear=True
+             ), \
+             patch("flows.Variable.get", return_value=None), \
+             patch(
+                 "flows._build_tagger", return_value=(object(), None, None)
+             ), \
+             patch("flows.WallabagClient", return_value=FakeClient()), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.flows.wallatag_batch.fn(max_articles=50)
 
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
+        self.assertEqual(captured["env"], {"WALLATAG_IGNORE_TAGS": "fix"})
+        self.assertIn("falling back to config/env", out.getvalue())
+
+    # -- flow: focus splitting ---------------------------------------------
+
+    def test_split_focus_variants(self) -> None:
+        self.assertIsNone(self.flows._split_focus(None))
+        self.assertIsNone(self.flows._split_focus(""))
+        self.assertIsNone(self.flows._split_focus("   "))
+        self.assertIsNone(self.flows._split_focus(" , , "))
+        self.assertEqual(self.flows._split_focus("methods"), ["methods"])
+        self.assertEqual(
+            self.flows._split_focus("methods, languages"),
+            ["methods", "languages"],
+        )
+        self.assertEqual(
+            self.flows._split_focus(" methods , , languages "),
+            ["methods", "languages"],
+        )
+
+    def test_flow_focus_param_split_passed_to_apply_run_overrides(self) -> None:
+        captured = {}
+
+        def fake_apply(config, **kwargs):
+            captured.update(kwargs)
+            return config
+
+        with patch("flows.load_config", return_value=self.make_config()), \
+             patch("flows.apply_run_overrides", side_effect=fake_apply), \
              patch("flows.llm_env_from_block", return_value={}), \
              patch("flows.wallabag_env_from_block", return_value={}), \
              patch.dict(os.environ, {}, clear=True), \
-             patch("flows.Variable.get", side_effect=fake_get), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
+             patch("flows.Variable.get", return_value=None), \
+             patch(
+                 "flows._build_tagger", return_value=(object(), None, None)
+             ), \
+             patch("flows.WallabagClient", return_value=FakeClient()), \
              contextlib.redirect_stdout(io.StringIO()):
             self.flows.wallatag_batch.fn(
                 max_articles=50, focus="methods, languages"
             )
+        self.assertEqual(captured["focus"], ["methods", "languages"])
+        self.assertEqual(captured["max_articles"], 50)
 
-        # The comma-separated focus param is split in the flow layer and each
-        # name becomes its own --focus flag (order preserved).
-        self.assertEqual(
-            captured["cmd"],
-            [
-                "wallatag",
-                "run",
-                "--max",
-                "50",
-                "--focus",
-                "methods",
-                "--focus",
-                "languages",
-            ],
+    def test_flow_unknown_focus_raises(self) -> None:
+        # An unknown focus name fails the run loudly (ConfigError propagates
+        # from apply_run_overrides instead of silently ignoring the group).
+        client = FakeClient(entries=[])
+        with self.assertRaises(ConfigError) as ctx:
+            self.run_batch(client, focus="nope")
+        self.assertIn("unknown focus group 'nope'", str(ctx.exception))
+
+    # -- flow: engine driving ----------------------------------------------
+
+    def test_flow_drives_engine_one_task_per_article(self) -> None:
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus"), entry(2, "pomodoro again")],
+            tags=["Pomodoro"],
         )
+        result, out, task_mock = self.run_batch(client, spy_task=True)
+        # One tag-article task call per candidate article, in feed order.
+        self.assertEqual(task_mock.call_count, 2)
+        self.assertEqual(
+            [call.args[0]["id"] for call in task_mock.call_args_list], [1, 2]
+        )
+        # Tags were applied through the shared engine.
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])])
+        # The summary line is returned AND printed.
+        self.assertEqual(
+            result, "run: tagged 2 articles (2 tags applied), skipped 0"
+        )
+        self.assertIn(result, out)
+        self.assertTrue(client.closed)
 
-    def test_flow_unchanged_when_variable_get_raises(self) -> None:
-        captured = {}
+    def test_flow_tags_applied_and_decisions_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            client = FakeClient(
+                entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+            )
+            result, _, _ = self.run_batch(client, store_path=db)
+            self.assertEqual(
+                result, "run: tagged 1 articles (1 tags applied), skipped 0"
+            )
+            self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+            self.assertEqual(
+                decision_rows(db), [(1, "Pomodoro", "accept", "vocabulary")]
+            )
 
-        def fake_run(cmd, env, timeout=1800):
-            captured["env"] = env
-            return "wallatag run output"
+    def test_flow_real_task_runs_end_to_end(self) -> None:
+        # No spy: the actual @task runs through the Prefect task engine and
+        # still drives the shared engine code per article.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus"), entry(2, "pomodoro again")],
+            tags=["Pomodoro"],
+        )
+        result, out, task_mock = self.run_batch(client)
+        self.assertIsNone(task_mock)
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])])
+        self.assertEqual(
+            result, "run: tagged 2 articles (2 tags applied), skipped 0"
+        )
+        self.assertIn(result, out)
+        self.assertTrue(client.closed)
 
-        with patch("flows.shutil.which", return_value="/usr/local/bin/wallatag"), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch("flows.wallabag_env_from_block", return_value={}), \
-             patch.dict(
-                 os.environ,
-                 {"WALLATAG_IGNORE_TAGS": "from-env"},
-                 clear=True,
-             ), \
-             patch(
-                 "flows.Variable.get",
-                 side_effect=Exception("prefect server unreachable"),
-             ), \
-             patch("flows._run_wallatag", side_effect=fake_run), \
+    # -- flow: feed errors -------------------------------------------------
+
+    def test_flow_total_feed_error_raises(self) -> None:
+        client = FakeClient(feed_error=WallabagError("cannot connect"))
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_batch(client)
+        self.assertIn("feed", str(ctx.exception).lower())
+        self.assertTrue(client.closed)
+
+    def test_flow_partial_feed_error_returns_summary(self) -> None:
+        client = FakeClient(
+            entries=[
+                entry(1, "pomodoro focus"),
+                entry(2, "pomodoro again"),
+                entry(3, "pomodoro third"),
+            ],
+            tags=["Pomodoro"],
+            feed_fail_after=2,  # two entries delivered, then the feed dies
+        )
+        result, out, _ = self.run_batch(client)
+        self.assertEqual(
+            result,
+            "run: tagged 2 articles (2 tags applied), skipped 0, feed error",
+        )
+        self.assertIn("feed error", out)
+        self.assertTrue(client.closed)
+
+    # -- flow: short-circuit ------------------------------------------------
+
+    def test_flow_max_articles_zero_returns_empty_without_client(self) -> None:
+        with patch("flows.WallabagClient") as client_mock, \
+             patch("flows.load_config") as load_mock, \
              contextlib.redirect_stdout(io.StringIO()) as out:
-            self.flows.wallatag_batch.fn(max_articles=50)
+            result = self.flows.wallatag_batch.fn(max_articles=0)
+        self.assertEqual(result, "")
+        self.assertEqual(out.getvalue(), "")
+        client_mock.assert_not_called()
+        load_mock.assert_not_called()
 
-        # With Variable.get failing (no server), the flow behaves exactly as
-        # before this feature: container env wins and warnings are printed.
-        self.assertEqual(captured["env"], {"WALLATAG_IGNORE_TAGS": "from-env"})
-        self.assertIn("prefect variables not available", out.getvalue())
+    def test_flow_negative_max_articles_raises(self) -> None:
+        # -1 passes the == 0 short-circuit, so the shared apply_run_overrides
+        # validation must fail the run loudly (ConfigError), matching the
+        # CLI's "--max must be a non-negative integer".
+        client = FakeClient(entries=[])
+        with self.assertRaises(ConfigError) as ctx:
+            self.run_batch(client, max_articles=-1)
+        self.assertEqual(
+            str(ctx.exception), "--max must be a non-negative integer"
+        )
+        self.assertFalse(client.closed)
 
 
 if __name__ == "__main__":
