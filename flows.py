@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
+import sys
+import time
 from typing import TYPE_CHECKING
 
 from blocks import (
@@ -318,6 +321,98 @@ def focus_groups_env() -> dict[str, str]:
     return env
 
 
+def _run_wallatag(
+    cmd: list[str],
+    env: dict[str, str],
+    timeout: int = 1800,
+) -> str:
+    """Run the wallatag CLI, streaming its output to the flow log live.
+
+    stdout and stderr are merged into one pipe (stderr=STDOUT), so the
+    CLI's per-article "tagged ..." lines — written via stdlib logging,
+    one newline-terminated line each — are printed to the flow log as
+    they are produced instead of all at once after the run finishes.
+    With log_prints=True on the flow, each ``print(..., flush=True)``
+    becomes a flow log immediately. The captured merged output is
+    returned (joined lines, newlines preserved), preserving the flow's
+    return-value shape.
+
+    ``timeout`` is an absolute total-run deadline (matching the previous
+    ``subprocess.run(timeout=...)`` semantics). The pipe is read with
+    non-blocking I/O guarded by select, so the deadline bounds the reads
+    themselves: a partial line followed by a hang still times out, and
+    already-produced lines are streamed before it fires. On a timeout
+    the subprocess is killed and a RuntimeError raised. A non-zero exit
+    also raises RuntimeError, carrying the last ~2000 chars of the
+    merged output for context.
+    """
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+    fd = process.stdout.fileno()
+    os.set_blocking(fd, False)
+    deadline = time.monotonic() + timeout
+    lines: list[str] = []
+    buffer = b""
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                raise RuntimeError(f"wallatag run timed out after {timeout}s")
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                process.kill()
+                raise RuntimeError(f"wallatag run timed out after {timeout}s")
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                # select said readable but the data was gone by the time we
+                # read (another reader/signal race); loop and re-check.
+                continue
+            if not chunk:
+                # EOF: the child closed the pipe.
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                line = raw_line.decode("utf-8", errors="replace")
+                print(line, flush=True)
+                lines.append(line + "\n")
+    finally:
+        # Always reap the child (killed or exited) and free the merged pipe,
+        # whether we return, raise on timeout, or raise on a non-zero exit.
+        # The wait is bounded: if the child closed the pipe but never exits,
+        # a short grace wait + kill still enforces the absolute total-run
+        # deadline instead of blocking forever. Record whether an exception
+        # is already in flight (inside the except handler sys.exc_info() only
+        # sees the caught TimeoutExpired), so the deadline RuntimeError is
+        # raised only when nothing else is being raised.
+        process.stdout.close()
+        in_flight = sys.exc_info()[0] is not None
+        try:
+            returncode = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            if not in_flight:
+                raise RuntimeError(f"wallatag run timed out after {timeout}s")
+    if buffer:
+        # EOF with a trailing partial line (no newline): flush it as-is.
+        line = buffer.decode("utf-8", errors="replace")
+        print(line, flush=True)
+        lines.append(line + "\n")
+    if returncode != 0:
+        detail = "".join(lines)[-2000:].strip()
+        raise RuntimeError(
+            f"wallatag run exited with code {returncode}: {detail}"
+        )
+    return "".join(lines)
+
+
 @flow(log_prints=True)
 def wallatag_batch(
     max_articles: int = 50,
@@ -345,8 +440,12 @@ def wallatag_batch(
     The flow's ``focus`` parameter is a comma-separated list of group names,
     each emitted as its own ``--focus`` flag (a group whose NAME contains a
     literal comma is unreachable from the flow — use the CLI for those).
-    Returns the captured stdout on success. Raises on a non-zero exit so
-    Prefect marks the run Failed and can notify on problems.
+    Output is streamed to the flow log line by line as it is produced
+    (log_prints=True), so a long backfill shows live progress instead of
+    a single dump at the end. Returns the captured merged stdout+stderr
+    output on success. Raises on a non-zero exit or if the run exceeds
+    the absolute timeout, so Prefect marks the run Failed and can notify
+    on problems.
     """
     if shutil.which("wallatag") is None:
         raise RuntimeError(
@@ -359,21 +458,8 @@ def wallatag_batch(
         **variable_env(),
         **focus_groups_env(),
     }
-    try:
-        completed = subprocess.run(
-            build_wallatag_command(max_articles, focus),
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            env=env,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("wallatag run timed out after 1800s") from exc
-    if completed.stdout:
-        print(completed.stdout.strip())
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(
-            f"wallatag run exited with code {completed.returncode}: {detail}"
-        )
-    return completed.stdout.strip()
+    output = _run_wallatag(
+        build_wallatag_command(max_articles, focus),
+        env,
+    )
+    return output.strip()

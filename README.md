@@ -524,7 +524,7 @@ Notes / troubleshooting:
 uv run python -m unittest discover -s tests -v
 ```
 
-Scheduling is handled exclusively by Prefect (see `prefect_flows.py`); wallatag
+Scheduling is handled exclusively by Prefect (see `flows.py`); wallatag
 itself has zero Prefect dependency. `prefect` is installed via the optional
 `prefect` dependency group (`uv sync --group prefect`): needed only when
 developing flows or rebuilding the Dokku image (see `bin/post_compile`).

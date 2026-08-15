@@ -21,7 +21,7 @@
 # provider/base_url/model trio is set (api key too when present), else created
 # empty; the block can be filled/edited in the Prefect UI without redeploying.
 #
-# The flow (prefect_flows.py) reads the block every run and passes its
+# The flow (flows.py) reads the block every run and passes its
 # non-empty fields to the wallatag CLI as WALLATAG_AI_* env vars. The block
 # provides DEFAULTS for scheduled runs; WALLATAG_AI_* container env vars
 # (dokku config:set) override them. Precedence, lowest to highest:
@@ -41,7 +41,7 @@
 # without redeploying. The block document name `wallabag` is shared with the
 # morning-digest project, so one block serves both.
 #
-# The flow (prefect_flows.py) reads the block every run and passes its
+# The flow (flows.py) reads the block every run and passes its
 # non-empty fields to the wallatag CLI as WALLATAG_* env vars. The block
 # provides DEFAULTS for scheduled runs; WALLATAG_* container env vars (dokku
 # config:set) override them. Precedence, lowest to highest: wallatag.toml
