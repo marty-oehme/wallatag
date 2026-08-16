@@ -53,7 +53,10 @@ class HelpTest(unittest.TestCase):
     def test_help(self):
         parser = build_parser()
         out = io.StringIO()
-        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stdout(out):
+        with (
+            self.assertRaises(SystemExit) as ctx,
+            contextlib.redirect_stdout(out),
+        ):
             parser.parse_args(["--help"])
         self.assertEqual(ctx.exception.code, 0)
         text = out.getvalue()
@@ -66,7 +69,10 @@ class VersionTest(unittest.TestCase):
 
     def test_version(self):
         out = io.StringIO()
-        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stdout(out):
+        with (
+            self.assertRaises(SystemExit) as ctx,
+            contextlib.redirect_stdout(out),
+        ):
             main(["--version"])
         self.assertEqual(ctx.exception.code, 0)
         self.assertIn("0.1.0", out.getvalue())
@@ -82,8 +88,10 @@ class RunStubTest(unittest.TestCase):
             out = io.StringIO()
             err = io.StringIO()
             try:
-                with contextlib.redirect_stdout(out), \
-                     contextlib.redirect_stderr(err):
+                with (
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(err),
+                ):
                     code = main(
                         [
                             "run",
@@ -112,7 +120,9 @@ class FlagOverrideTest(unittest.TestCase):
 
     def _load(self, tmp: str) -> Config:
         path = Path(tmp) / "wallatag.toml"
-        path.write_text('[tagger]\ntag_policy = "prefer-existing"\n', encoding="utf-8")
+        path.write_text(
+            '[tagger]\ntag_policy = "prefer-existing"\n', encoding="utf-8"
+        )
         return load_config(config_path=str(path), env={})
 
     def test_flag_wins(self):
@@ -145,7 +155,9 @@ class MaxArticlesTest(unittest.TestCase):
     def test_max_does_not_alter_max_applied_tags(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wallatag.toml"
-            path.write_text("[tagger]\nmax_applied_tags = 9\n", encoding="utf-8")
+            path.write_text(
+                "[tagger]\nmax_applied_tags = 9\n", encoding="utf-8"
+            )
             config = load_config(config_path=str(path), env={})
             overridden = apply_flag_overrides(config, _args(max=100))
             self.assertEqual(overridden.tagger.max_applied_tags, 9)
@@ -154,7 +166,9 @@ class MaxArticlesTest(unittest.TestCase):
     def test_status_shows_toml_max_applied_tags_and_run_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wallatag.toml"
-            path.write_text("[tagger]\nmax_applied_tags = 9\n", encoding="utf-8")
+            path.write_text(
+                "[tagger]\nmax_applied_tags = 9\n", encoding="utf-8"
+            )
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = main(["status", "--config", str(path), "--max", "100"])
@@ -184,7 +198,9 @@ class MaxArticlesTest(unittest.TestCase):
         # tagger has no such knob).
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wallatag.toml"
-            path.write_text("[tagger]\nmax_applied_tags = 9\n", encoding="utf-8")
+            path.write_text(
+                "[tagger]\nmax_applied_tags = 9\n", encoding="utf-8"
+            )
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = main(["status", "--config", str(path)])
@@ -218,7 +234,9 @@ class FocusTest(unittest.TestCase):
             path.write_text(self.FOCUS_TOML, encoding="utf-8")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                code = main(["status", "--config", str(path), "--focus", "bogus"])
+                code = main(
+                    ["status", "--config", str(path), "--focus", "bogus"]
+                )
             message = err.getvalue()
         self.assertEqual(code, 2)
         self.assertIn("unknown focus group 'bogus'", message)
@@ -243,7 +261,9 @@ class FocusTest(unittest.TestCase):
             path.write_text(self.FOCUS_TOML, encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                code = main(["status", "--config", str(path), "--focus", "methods"])
+                code = main(
+                    ["status", "--config", str(path), "--focus", "methods"]
+                )
             text = out.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("focus groups: methods", text)
@@ -254,7 +274,9 @@ class FocusTest(unittest.TestCase):
             narrowed = apply_flag_overrides(
                 config, _args(focus=["languages", "methods"])
             )
-        self.assertEqual(list(narrowed.tagger.focus_groups), ["languages", "methods"])
+        self.assertEqual(
+            list(narrowed.tagger.focus_groups), ["languages", "methods"]
+        )
         self.assertEqual(
             narrowed.tagger.focus_groups["languages"].keywords, ("python",)
         )
@@ -346,7 +368,7 @@ class StatusOutputTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[wallabag]\n'
+                    "[wallabag]\n"
                     'url = "https://wallabag.example.com"\n'
                     'client_id = "cid"\n'
                     'client_secret = "super-secret-value"\n'
@@ -356,9 +378,15 @@ class StatusOutputTest(unittest.TestCase):
                 encoding="utf-8",
             )
             config = load_config(config_path=str(path), env={})
-            args = argparse.Namespace(config=str(path), max=None, focus=None,
-                                     tag_policy=None, no_history=False,
-                                     no_apply=False, verbose=False)
+            args = argparse.Namespace(
+                config=str(path),
+                max=None,
+                focus=None,
+                tag_policy=None,
+                no_history=False,
+                no_apply=False,
+                verbose=False,
+            )
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = cmd_status(config, args)
@@ -446,8 +474,12 @@ def _entry(eid, title):
     }
 
 
-def _ai_cfg(provider="ollama", base_url="http://localhost:11434", model="qwen2.5:3b",
-            threshold=0.7):
+def _ai_cfg(
+    provider="ollama",
+    base_url="http://localhost:11434",
+    model="qwen2.5:3b",
+    threshold=0.7,
+):
     # The [ai] trio AND the opt-in enable_llm switch: this helper builds the
     # fully LLM-enabled config (provider trio alone is no longer enough).
     return dataclasses.replace(
@@ -487,7 +519,9 @@ class BuildTaggerTest(unittest.TestCase):
             ),
         )
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client, fallback = _build_tagger(config, ["python", "rust"])
+            tagger, llm_client, fallback = _build_tagger(
+                config, ["python", "rust"]
+            )
 
         client_cls.assert_called_once_with(
             "ollama", "http://localhost:11434", "qwen2.5:3b", api_key=""
@@ -557,14 +591,16 @@ class BuildTaggerTest(unittest.TestCase):
 
     def test_ai_use_focus_groups_default_true_wired_to_tagger(self):
         config = _ai_cfg()
-        with patch("wallatag.cli.LLMClient") as client_cls:
+        with patch("wallatag.cli.LLMClient"):
             tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, LLMTagger)
         self.assertTrue(tagger.use_focus_groups)
 
     def test_ai_provider_empty_with_partial_ai_still_keyword(self):
         # Threshold-only [ai]: provider is empty -> keyword tagger, no client.
-        config = dataclasses.replace(Config(), ai=AiConfig(confidence_threshold=0.9))
+        config = dataclasses.replace(
+            Config(), ai=AiConfig(confidence_threshold=0.9)
+        )
         tagger, llm_client, fallback = _build_tagger(config, [])
         self.assertIsInstance(tagger, KeywordTagger)
         self.assertIsNone(llm_client)
@@ -585,7 +621,8 @@ class BuildTaggerTest(unittest.TestCase):
         config = Config()
         tagger, _, fallback = _build_tagger(config, [])
         self.assertEqual(
-            tagger.vocabulary_fields, ("title", "url", "domain_name", "content")
+            tagger.vocabulary_fields,
+            ("title", "url", "domain_name", "content"),
         )
 
     def test_empty_fields_disable_both_sources_end_to_end(self):
@@ -640,7 +677,9 @@ class BuildTaggerTest(unittest.TestCase):
 
     def test_ai_plus_enable_llm_true_selects_llm_tagger(self):
         # [ai] fully configured AND enable_llm = true -> LLMTagger.
-        config = self._load_toml(self.AI_TOML + "\n[tagger]\nenable_llm = true\n")
+        config = self._load_toml(
+            self.AI_TOML + "\n[tagger]\nenable_llm = true\n"
+        )
         with patch("wallatag.cli.LLMClient") as client_cls:
             tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, LLMTagger)
@@ -686,7 +725,9 @@ class BuildTaggerTest(unittest.TestCase):
         self.assertFalse(tagger.enable_vocabulary)
         self.assertFalse(tagger.enable_rules)
         # The switch flags land on the tagger AND actually gate suggest().
-        self.assertEqual(tagger.suggest({"title": "python", "content": "x"}), [])
+        self.assertEqual(
+            tagger.suggest({"title": "python", "content": "x"}), []
+        )
 
     def test_keyword_tagger_default_switches_enabled(self):
         config = Config()
@@ -716,7 +757,9 @@ class BuildTaggerTest(unittest.TestCase):
             ),
         )
         with patch("wallatag.cli.LLMClient") as client_cls:
-            tagger, llm_client, fallback = _build_tagger(config, ["python", "rust"])
+            tagger, llm_client, fallback = _build_tagger(
+                config, ["python", "rust"]
+            )
 
         self.assertIsInstance(tagger, LLMTagger)
         self.assertIs(llm_client, client_cls.return_value)
@@ -745,7 +788,7 @@ class BuildTaggerTest(unittest.TestCase):
             _ai_cfg(),
             ai=dataclasses.replace(_ai_cfg().ai, fallback_on_fail=False),
         )
-        with patch("wallatag.cli.LLMClient") as client_cls:
+        with patch("wallatag.cli.LLMClient"):
             tagger, llm_client, fallback = _build_tagger(config, ["python"])
         self.assertIsInstance(tagger, LLMTagger)
         self.assertIsNone(fallback)
@@ -816,7 +859,9 @@ class CmdRunAiSelectionTest(unittest.TestCase):
             root.removeHandler(handler)
 
     def test_cmd_run_with_ai_uses_llm_tagger(self):
-        client = FakeClient(entries=[_entry(1, "python article")], tags=["python"])
+        client = FakeClient(
+            entries=[_entry(1, "python article")], tags=["python"]
+        )
         created = []
 
         class FakeLLM:
@@ -836,10 +881,12 @@ class CmdRunAiSelectionTest(unittest.TestCase):
 
         out = io.StringIO()
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             patch("wallatag.cli.LLMClient", side_effect=FakeLLM), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            patch("wallatag.cli.LLMClient", side_effect=FakeLLM),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_run(_ai_cfg(), _args())
 
         self.assertEqual(code, 0)
@@ -852,7 +899,9 @@ class CmdRunAiSelectionTest(unittest.TestCase):
         self.assertEqual(client.add_calls, [(1, ["python"])])
 
     def test_cmd_run_without_ai_skips_llm_client(self):
-        client = FakeClient(entries=[_entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[_entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         out = io.StringIO()
         err = io.StringIO()
         cfg = dataclasses.replace(
@@ -865,10 +914,12 @@ class CmdRunAiSelectionTest(unittest.TestCase):
                 password="wonderland",
             ),
         )
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             patch("wallatag.cli.LLMClient") as llm_cls, \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            patch("wallatag.cli.LLMClient") as llm_cls,
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_run(cfg, _args())
 
         self.assertEqual(code, 0)
@@ -883,11 +934,11 @@ class StatusAiLineTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[ai]\n'
+                    "[ai]\n"
                     'provider = "ollama"\n'
                     'base_url = "http://localhost:11434"\n'
                     'model = "qwen2.5:3b"\n'
-                    'confidence_threshold = 0.8\n'
+                    "confidence_threshold = 0.8\n"
                 ),
                 encoding="utf-8",
             )
@@ -906,7 +957,7 @@ class StatusAiLineTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[ai]\n'
+                    "[ai]\n"
                     'provider = "ollama"\n'
                     'base_url = "http://localhost:11434"\n'
                     'model = "qwen2.5:3b"\n'
@@ -928,15 +979,15 @@ class StatusAiLineTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[ai]\n'
+                    "[ai]\n"
                     'provider = "ollama"\n'
                     'base_url = "http://localhost:11434"\n'
                     'model = "qwen2.5:3b"\n'
-                    'confidence_threshold = 0.8\n'
-                    'fallback_on_fail = true\n'
-                    '\n'
-                    '[tagger]\n'
-                    'enable_llm = true\n'
+                    "confidence_threshold = 0.8\n"
+                    "fallback_on_fail = true\n"
+                    "\n"
+                    "[tagger]\n"
+                    "enable_llm = true\n"
                 ),
                 encoding="utf-8",
             )
@@ -958,11 +1009,11 @@ class StatusAiLineTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[ai]\n'
+                    "[ai]\n"
                     'provider = "ollama"\n'
                     'base_url = "http://localhost:11434"\n'
                     'model = "qwen2.5:3b"\n'
-                    'fallback_on_fail = true\n'
+                    "fallback_on_fail = true\n"
                 ),
                 encoding="utf-8",
             )
@@ -983,14 +1034,14 @@ class StatusAiLineTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[ai]\n'
+                    "[ai]\n"
                     'provider = "ollama"\n'
                     'base_url = "http://localhost:11434"\n'
                     'model = "qwen2.5:3b"\n'
-                    'confidence_threshold = 0.8\n'
-                    '\n'
-                    '[tagger]\n'
-                    'enable_llm = true\n'
+                    "confidence_threshold = 0.8\n"
+                    "\n"
+                    "[tagger]\n"
+                    "enable_llm = true\n"
                 ),
                 encoding="utf-8",
             )
@@ -1022,7 +1073,7 @@ class StatusAiLineTest(unittest.TestCase):
             path = Path(tmp) / "wallatag.toml"
             path.write_text(
                 (
-                    '[ai]\n'
+                    "[ai]\n"
                     'provider = "openai-compatible"\n'
                     'base_url = "https://api.example.com/v1"\n'
                     'model = "gpt-4o-mini"\n'

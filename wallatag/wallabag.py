@@ -111,9 +111,9 @@ class WallabagClient:
     ) -> None:
         if not username or not password:
             raise ValueError(
-                "wallabag username and password are required (OAuth2 password " +
-                "grant); set them via config or WALLATAG_USERNAME/" +
-                "WALLATAG_PASSWORD"
+                "wallabag username and password are required (OAuth2 password "
+                + "grant); set them via config or WALLATAG_USERNAME/"
+                + "WALLATAG_PASSWORD"
             )
         self.base_url: str = base_url.rstrip("/")
         self.client_id: str = client_id
@@ -152,7 +152,8 @@ class WallabagClient:
             raise WallabagError(f"token request failed: {exc}") from exc
         if not 200 <= resp.status_code < 300:
             raise WallabagError(
-                self._http_error("token request", resp), status=resp.status_code
+                self._http_error("token request", resp),
+                status=resp.status_code,
             )
         try:
             payload = resp.json()
@@ -242,7 +243,8 @@ class WallabagClient:
 
         if not 200 <= resp.status_code < 300:
             raise WallabagError(
-                self._http_error(f"{method} {path}", resp), status=resp.status_code
+                self._http_error(f"{method} {path}", resp),
+                status=resp.status_code,
             )
         try:
             return resp.json()
@@ -256,7 +258,9 @@ class WallabagClient:
     def _http_error(context: str, resp: Any) -> str:
         snippet = (resp.text or "").strip().replace("\n", " ")[:200]
         if snippet:
-            return f"{context} failed with status {resp.status_code}: {snippet}"
+            return (
+                f"{context} failed with status {resp.status_code}: {snippet}"
+            )
         return f"{context} failed with status {resp.status_code}"
 
     # -- entries ---------------------------------------------------------

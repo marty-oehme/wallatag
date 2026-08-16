@@ -48,7 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--config", metavar="PATH", help="path to configuration file")
+    common.add_argument(
+        "--config", metavar="PATH", help="path to configuration file"
+    )
     common.add_argument(
         "--max",
         type=_non_negative_max,
@@ -115,7 +117,10 @@ def apply_flag_overrides(config: Config, args: argparse.Namespace) -> Config:
     )
     if args.tag_policy is not None:
         config = dataclasses.replace(
-            config, tagger=dataclasses.replace(config.tagger, tag_policy=args.tag_policy)
+            config,
+            tagger=dataclasses.replace(
+                config.tagger, tag_policy=args.tag_policy
+            ),
         )
     if args.no_history:
         config = dataclasses.replace(config, store=StoreConfig(path=None))
@@ -222,7 +227,10 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
     try:
         existing_tags = [tag["label"] for tag in client.get_tags()]
     except WallabagError as exc:
-        print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
+        print(
+            f"wallatag: error: could not fetch existing tags: {exc}",
+            file=sys.stderr,
+        )
         client.close()
         return 2
     tagger, llm_client, fallback_tagger = _build_tagger(config, existing_tags)
@@ -297,7 +305,10 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
     try:
         existing_tags = [tag["label"] for tag in client.get_tags()]
     except WallabagError as exc:
-        print(f"wallatag: error: could not fetch existing tags: {exc}", file=sys.stderr)
+        print(
+            f"wallatag: error: could not fetch existing tags: {exc}",
+            file=sys.stderr,
+        )
         client.close()
         return 2
     tagger, llm_client, fallback_tagger = _build_tagger(config, existing_tags)

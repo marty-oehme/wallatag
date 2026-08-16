@@ -143,7 +143,9 @@ def _group_fires(group, entry: dict, regexes: tuple[re.Pattern, ...]) -> bool:
     matching (casefolded substring, per field) OR ANY regex searching the
     RAW field values (re.IGNORECASE, per-field, never across fields).
     """
-    group_fields = group.fields if group.fields is not None else _DEFAULT_MATCH_FIELDS
+    group_fields = (
+        group.fields if group.fields is not None else _DEFAULT_MATCH_FIELDS
+    )
     fields = _field_needles(entry, group_fields)
     if any(_matches(kw, fields) for kw in group.keywords):
         return True
@@ -163,8 +165,7 @@ class TagSuggestion:
 
 
 class Tagger(Protocol):
-    def suggest(self, entry: dict) -> list[TagSuggestion]:
-        ...
+    def suggest(self, entry: dict) -> list[TagSuggestion]: ...
 
 
 class LLMClientLike(Protocol):
@@ -174,8 +175,7 @@ class LLMClientLike(Protocol):
     wallatag.llm at runtime beyond the error type.
     """
 
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
-        ...
+    def complete(self, system_prompt: str, user_prompt: str) -> str: ...
 
 
 class KeywordTagger:
@@ -285,8 +285,8 @@ class KeywordTagger:
         # semantics). config.py already validated compilability, so the
         # ValueError backstop is for groups constructed directly (mirroring
         # the enable_* ValueError style).
-        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = _compile_group_regexes(
-            self.focus_groups
+        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = (
+            _compile_group_regexes(self.focus_groups)
         )
         self.max_applied_tags = max_applied_tags
         self.tag_policy = tag_policy
@@ -352,7 +352,9 @@ class KeywordTagger:
             return True
         return any(p.search(tag) for p in self._ignored_patterns)
 
-    def _vocabulary_suggestions(self, fields: tuple[str, ...]) -> list[TagSuggestion]:
+    def _vocabulary_suggestions(
+        self, fields: tuple[str, ...]
+    ) -> list[TagSuggestion]:
         suggestions = []
         for label in self.existing_tags:
             if self._matches(label, fields):
@@ -384,14 +386,18 @@ class KeywordTagger:
                 if isinstance(tag, str) and tag.strip():
                     suggestions.append(
                         TagSuggestion(
-                            tag=tag, source="rules", confidence=_RULE_CONFIDENCE
+                            tag=tag,
+                            source="rules",
+                            confidence=_RULE_CONFIDENCE,
                         )
                     )
         return suggestions
 
     def suggest(self, entry: dict) -> list[TagSuggestion]:
         vocabulary = (
-            self._vocabulary_suggestions(self._field_needles(entry, self.vocabulary_fields))
+            self._vocabulary_suggestions(
+                self._field_needles(entry, self.vocabulary_fields)
+            )
             if self.enable_vocabulary
             else []
         )
@@ -403,10 +409,7 @@ class KeywordTagger:
         # merge, so an ignored tag that a rule also fires still survives as a
         # normal RULE suggestion.
         if self.skip_ignored_tags and vocabulary:
-            vocabulary = [
-                s for s in vocabulary
-                if not self._ignored(s.tag)
-            ]
+            vocabulary = [s for s in vocabulary if not self._ignored(s.tag)]
 
         # Issue 69ad357: "only-existing" no longer drops rule suggestions; it
         # filters them to the existing vocabulary. The policy means "never
@@ -543,8 +546,8 @@ class LLMTagger:
         # so _system_prompt can reuse the keyword tagger's matching semantics.
         # config.py already validated compilability, so no practical behavior
         # change at load time; the eager validation mirrors KeywordTagger.
-        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = _compile_group_regexes(
-            self.focus_groups
+        self._group_regexes: dict[str, tuple[re.Pattern, ...]] = (
+            _compile_group_regexes(self.focus_groups)
         )
         self.max_applied_tags = max_applied_tags
         self.max_proposals = max_proposals
@@ -604,7 +607,9 @@ class LLMTagger:
         ]
         lines = [
             "You are a tagging assistant for a personal read-it-later archive.",
-            "Existing tag vocabulary: " + (", ".join(existing_tags) or "none") + ".",
+            "Existing tag vocabulary: "
+            + (", ".join(existing_tags) or "none")
+            + ".",
         ]
         if self.tag_policy == "prefer-existing":
             # The vocabulary-preference rule is verbatim from the issue spec.
@@ -627,7 +632,9 @@ class LLMTagger:
                 for tag in group.tags
                 if isinstance(tag, str) and tag.strip()
             ]
-            lines.append("Focus areas: " + (", ".join(focus_tags) or "none") + ".")
+            lines.append(
+                "Focus areas: " + (", ".join(focus_tags) or "none") + "."
+            )
         lines.append(f"Return at most {self._proposal_bound} tags.")
         if self.tag_policy == "only-existing":
             lines.append(
@@ -637,7 +644,9 @@ class LLMTagger:
         elif self.tag_policy == "prefer-existing":
             lines.append("Tag policy: prefer existing vocabulary tags.")
         else:  # "all"
-            lines.append("Tag policy: new tags beyond the vocabulary are welcome.")
+            lines.append(
+                "Tag policy: new tags beyond the vocabulary are welcome."
+            )
         lines.append(
             'Reply with ONLY a JSON array of objects with "tag" (string) and '
             '"confidence" (number between 0 and 1) fields. No prose, no '
@@ -647,7 +656,9 @@ class LLMTagger:
 
     def _user_prompt(self, entry: dict) -> str:
         """Build the user prompt: a plain-text digest of the article."""
-        content = _clean_content(entry.get("content") or "")[:_MAX_CONTENT_CHARS]
+        content = _clean_content(entry.get("content") or "")[
+            :_MAX_CONTENT_CHARS
+        ]
         return "\n".join(
             [
                 f"Title: {entry.get('title') or '(untitled)'}",
@@ -671,7 +682,9 @@ class LLMTagger:
         try:
             parsed = json.loads(body)
         except ValueError as exc:
-            raise LLMError(f"LLM returned invalid JSON: {body[:200]!r}") from exc
+            raise LLMError(
+                f"LLM returned invalid JSON: {body[:200]!r}"
+            ) from exc
         if not isinstance(parsed, list):
             raise LLMError(f"LLM response is not a JSON array: {body[:200]!r}")
         result = []
@@ -682,7 +695,9 @@ class LLMTagger:
             confidence = item.get("confidence")
             if not isinstance(tag, str) or not tag.strip():
                 continue
-            if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            if not isinstance(confidence, (int, float)) or isinstance(
+                confidence, bool
+            ):
                 continue
             result.append(
                 {

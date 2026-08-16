@@ -96,7 +96,9 @@ class WallabagCredentials(Block):
         if self.client_id:
             env["WALLATAG_CLIENT_ID"] = self.client_id
         if self.client_secret.get_secret_value():
-            env["WALLATAG_CLIENT_SECRET"] = self.client_secret.get_secret_value()
+            env["WALLATAG_CLIENT_SECRET"] = (
+                self.client_secret.get_secret_value()
+            )
         if self.username:
             env["WALLATAG_USERNAME"] = self.username
         if self.password.get_secret_value():

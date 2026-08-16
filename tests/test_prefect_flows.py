@@ -26,8 +26,15 @@ from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError, _should_fetch, _tag_labels
 
 
-def entry(eid, title, url="https://example.com/x", domain="example.com",
-          content="", reading_time=5, tags=()):
+def entry(
+    eid,
+    title,
+    url="https://example.com/x",
+    domain="example.com",
+    content="",
+    reading_time=5,
+    tags=(),
+):
     return {
         "id": eid,
         "title": title,
@@ -43,8 +50,14 @@ def entry(eid, title, url="https://example.com/x", domain="example.com",
 class FakeClient:
     """Minimal wallabag client fake (mirrors tests/test_auto.py)."""
 
-    def __init__(self, entries=(), tags=(), fail_first=0, feed_error=None,
-                 feed_fail_after=None):
+    def __init__(
+        self,
+        entries=(),
+        tags=(),
+        fail_first=0,
+        feed_error=None,
+        feed_fail_after=None,
+    ):
         self.entries = list(entries)
         self.tags = list(tags)
         self.fail_first = fail_first
@@ -99,7 +112,9 @@ class PrefectFlowsTest(unittest.TestCase):
         try:
             import prefect  # noqa: F401
         except ImportError:
-            raise unittest.SkipTest("prefect not installed (uv sync --group prefect)")
+            raise unittest.SkipTest(
+                "prefect not installed (uv sync --group prefect)"
+            )
         import flows
         from prefect.cache_policies import NO_CACHE
 
@@ -141,8 +156,16 @@ class PrefectFlowsTest(unittest.TestCase):
             max_articles=max_articles,
         )
 
-    def run_batch(self, client, config=None, *, focus=None, max_articles=50,
-                  store_path=None, spy_task=False):
+    def run_batch(
+        self,
+        client,
+        config=None,
+        *,
+        focus=None,
+        max_articles=50,
+        store_path=None,
+        spy_task=False,
+    ):
         """Run wallatag_batch with the adapter seams patched to engine fakes.
 
         ``spy_task=True`` replaces the tag-article task with a spy over the
@@ -150,8 +173,12 @@ class PrefectFlowsTest(unittest.TestCase):
         candidate can be asserted; with ``spy_task=False`` the real Prefect
         task runs end to end.
         """
-        config = config if config is not None else self.make_config(
-            store_path=store_path, max_articles=max_articles
+        config = (
+            config
+            if config is not None
+            else self.make_config(
+                store_path=store_path, max_articles=max_articles
+            )
         )
         tagger = KeywordTagger(
             {},
@@ -161,8 +188,12 @@ class PrefectFlowsTest(unittest.TestCase):
         )
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
-            stack.enter_context(patch("flows.load_config", return_value=config))
-            stack.enter_context(patch("flows.llm_env_from_block", return_value={}))
+            stack.enter_context(
+                patch("flows.load_config", return_value=config)
+            )
+            stack.enter_context(
+                patch("flows.llm_env_from_block", return_value={})
+            )
             stack.enter_context(
                 patch("flows.wallabag_env_from_block", return_value={})
             )
@@ -199,19 +230,25 @@ class PrefectFlowsTest(unittest.TestCase):
     # -- env-merge helpers -------------------------------------------------
 
     def test_llm_env_from_block_fail_open(self) -> None:
-        with patch(
-            "flows.LLMCredentials.load",
-            side_effect=Exception("prefect server unreachable"),
-        ), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch(
+                "flows.LLMCredentials.load",
+                side_effect=Exception("prefect server unreachable"),
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             env = self.flows.llm_env_from_block()
         self.assertEqual(env, {})
         self.assertIn("falling back to config/env", out.getvalue())
 
     def test_wallabag_env_from_block_fail_open(self) -> None:
-        with patch(
-            "flows.WallabagCredentials.load",
-            side_effect=Exception("prefect server unreachable"),
-        ), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch(
+                "flows.WallabagCredentials.load",
+                side_effect=Exception("prefect server unreachable"),
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             env = self.flows.wallabag_env_from_block()
         self.assertEqual(env, {})
         self.assertIn("falling back to config/env", out.getvalue())
@@ -296,10 +333,13 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(env, {})
 
     def test_variable_env_fail_open(self) -> None:
-        with patch(
-            "flows.Variable.get",
-            side_effect=Exception("prefect server unreachable"),
-        ), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch(
+                "flows.Variable.get",
+                side_effect=Exception("prefect server unreachable"),
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             env = self.flows.variable_env()
         self.assertEqual(env, {})
         self.assertIn("prefect variables not available", out.getvalue())
@@ -315,8 +355,10 @@ class PrefectFlowsTest(unittest.TestCase):
                 return 7
             raise Exception("prefect server unreachable")
 
-        with patch("flows.Variable.get", side_effect=fake_get), \
-             contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch("flows.Variable.get", side_effect=fake_get),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             env = self.flows.variable_env()
         # Values read before the failure are kept; later names fall through
         # to the container env / TOML, and the warning is still printed.
@@ -391,10 +433,13 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(env, {})
 
     def test_focus_groups_env_fail_open_on_read_error(self) -> None:
-        with patch(
-            "flows.Variable.get",
-            side_effect=Exception("prefect server unreachable"),
-        ), contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch(
+                "flows.Variable.get",
+                side_effect=Exception("prefect server unreachable"),
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             env = self.flows.focus_groups_env()
         self.assertEqual(env, {})
         self.assertIn("prefect variables not available", out.getvalue())
@@ -412,8 +457,9 @@ class PrefectFlowsTest(unittest.TestCase):
             "not json at all",
         ]
         for raw in cases:
-            with self.subTest(raw=raw), patch(
-                "flows.Variable.get", return_value=raw
+            with (
+                self.subTest(raw=raw),
+                patch("flows.Variable.get", return_value=raw),
             ):
                 with self.assertRaises(RuntimeError) as ctx:
                     self.flows.focus_groups_env()
@@ -533,30 +579,30 @@ class PrefectFlowsTest(unittest.TestCase):
             return default
 
         client = FakeClient()
-        with patch("flows.load_config", side_effect=fake_load_config), \
-             patch(
-                 "flows.llm_env_from_block",
-                 return_value={"WALLATAG_AI_PROVIDER": "openai-compatible"},
-             ), \
-             patch(
-                 "flows.wallabag_env_from_block",
-                 return_value={"WALLATAG_URL": "https://block.example"},
-             ), \
-             patch.dict(
-                 os.environ,
-                 {
-                     "WALLATAG_AI_PROVIDER": "ollama",
-                     "WALLATAG_URL": "https://env.example",
-                     "WALLATAG_DB": "/data/wallatag.db",
-                 },
-                 clear=True,
-             ), \
-             patch("flows.Variable.get", side_effect=fake_get), \
-             patch(
-                 "flows._build_tagger", return_value=(object(), None, None)
-             ), \
-             patch("flows.WallabagClient", return_value=client), \
-             contextlib.redirect_stdout(io.StringIO()):
+        with (
+            patch("flows.load_config", side_effect=fake_load_config),
+            patch(
+                "flows.llm_env_from_block",
+                return_value={"WALLATAG_AI_PROVIDER": "openai-compatible"},
+            ),
+            patch(
+                "flows.wallabag_env_from_block",
+                return_value={"WALLATAG_URL": "https://block.example"},
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "WALLATAG_AI_PROVIDER": "ollama",
+                    "WALLATAG_URL": "https://env.example",
+                    "WALLATAG_DB": "/data/wallatag.db",
+                },
+                clear=True,
+            ),
+            patch("flows.Variable.get", side_effect=fake_get),
+            patch("flows._build_tagger", return_value=(object(), None, None)),
+            patch("flows.WallabagClient", return_value=client),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             self.flows.wallatag_batch.fn(max_articles=50)
 
         env = captured["env"]
@@ -578,24 +624,24 @@ class PrefectFlowsTest(unittest.TestCase):
             captured["env"] = env
             return self.make_config()
 
-        with patch("flows.load_config", side_effect=fake_load_config), \
-             patch(
-                 "flows.LLMCredentials.load",
-                 side_effect=Exception("prefect server unreachable"),
-             ), \
-             patch(
-                 "flows.WallabagCredentials.load",
-                 side_effect=Exception("prefect server unreachable"),
-             ), \
-             patch.dict(
-                 os.environ, {"WALLATAG_IGNORE_TAGS": "fix"}, clear=True
-             ), \
-             patch("flows.Variable.get", return_value=None), \
-             patch(
-                 "flows._build_tagger", return_value=(object(), None, None)
-             ), \
-             patch("flows.WallabagClient", return_value=FakeClient()), \
-             contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch("flows.load_config", side_effect=fake_load_config),
+            patch(
+                "flows.LLMCredentials.load",
+                side_effect=Exception("prefect server unreachable"),
+            ),
+            patch(
+                "flows.WallabagCredentials.load",
+                side_effect=Exception("prefect server unreachable"),
+            ),
+            patch.dict(
+                os.environ, {"WALLATAG_IGNORE_TAGS": "fix"}, clear=True
+            ),
+            patch("flows.Variable.get", return_value=None),
+            patch("flows._build_tagger", return_value=(object(), None, None)),
+            patch("flows.WallabagClient", return_value=FakeClient()),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             self.flows.wallatag_batch.fn(max_articles=50)
 
         self.assertEqual(captured["env"], {"WALLATAG_IGNORE_TAGS": "fix"})
@@ -603,7 +649,9 @@ class PrefectFlowsTest(unittest.TestCase):
 
     # -- flow: focus splitting ---------------------------------------------
 
-    def test_flow_focus_param_split_passed_to_apply_run_overrides(self) -> None:
+    def test_flow_focus_param_split_passed_to_apply_run_overrides(
+        self,
+    ) -> None:
         # The inlined comma-split must behave exactly like the removed
         # _split_focus helper: None and empty/whitespace-only values pass
         # focus=None (no narrowing); segments are stripped and empty ones
@@ -624,27 +672,23 @@ class PrefectFlowsTest(unittest.TestCase):
                     captured.update(kwargs)
                     return config
 
-                with patch(
-                    "flows.load_config", return_value=self.make_config()
-                ), \
-                     patch(
-                         "flows.apply_run_overrides", side_effect=fake_apply
-                     ), \
-                     patch("flows.llm_env_from_block", return_value={}), \
-                     patch(
-                         "flows.wallabag_env_from_block", return_value={}
-                     ), \
-                     patch.dict(os.environ, {}, clear=True), \
-                     patch("flows.Variable.get", return_value=None), \
-                     patch(
-                         "flows._build_tagger",
-                         return_value=(object(), None, None),
-                     ), \
-                     patch("flows.WallabagClient", return_value=FakeClient()), \
-                     contextlib.redirect_stdout(io.StringIO()):
-                    self.flows.wallatag_batch.fn(
-                        max_articles=50, focus=focus
-                    )
+                with (
+                    patch(
+                        "flows.load_config", return_value=self.make_config()
+                    ),
+                    patch("flows.apply_run_overrides", side_effect=fake_apply),
+                    patch("flows.llm_env_from_block", return_value={}),
+                    patch("flows.wallabag_env_from_block", return_value={}),
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("flows.Variable.get", return_value=None),
+                    patch(
+                        "flows._build_tagger",
+                        return_value=(object(), None, None),
+                    ),
+                    patch("flows.WallabagClient", return_value=FakeClient()),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.flows.wallatag_batch.fn(max_articles=50, focus=focus)
                 self.assertEqual(captured["focus"], expected)
                 self.assertEqual(captured["max_articles"], 50)
 
@@ -670,7 +714,9 @@ class PrefectFlowsTest(unittest.TestCase):
             [call.args[0]["id"] for call in task_mock.call_args_list], [1, 2]
         )
         # Tags were applied through the shared engine.
-        self.assertEqual(client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])])
+        self.assertEqual(
+            client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])]
+        )
         # The summary line is returned AND printed.
         self.assertEqual(
             result, "run: tagged 2 articles (2 tags applied), skipped 0"
@@ -702,7 +748,9 @@ class PrefectFlowsTest(unittest.TestCase):
         )
         result, out, task_mock = self.run_batch(client)
         self.assertIsNone(task_mock)
-        self.assertEqual(client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])])
+        self.assertEqual(
+            client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])]
+        )
         self.assertEqual(
             result, "run: tagged 2 articles (2 tags applied), skipped 0"
         )
@@ -734,9 +782,7 @@ class PrefectFlowsTest(unittest.TestCase):
         joined = "\n".join(cm.output)
         self.assertIn("tagged article 42 (fix and todo): fix, todo", joined)
         tagged = next(
-            rec
-            for rec in cm.records
-            if "tagged article" in rec.getMessage()
+            rec for rec in cm.records if "tagged article" in rec.getMessage()
         )
         self.assertIsNotNone(tagged.task_run_id)
         self.assertEqual(tagged.task_name, "tag-article")
@@ -775,8 +821,10 @@ class PrefectFlowsTest(unittest.TestCase):
         # ephemeral-server readiness loop (which advances its timeout budget
         # per iteration, not per wall second) busy-spins to a startup timeout
         # when this test runs in isolation.
-        with patch("wallatag.auto.time.sleep", side_effect=time.sleep), \
-             self.assertLogs("prefect.task_runs", level="INFO") as cm:
+        with (
+            patch("wallatag.auto.time.sleep", side_effect=time.sleep),
+            self.assertLogs("prefect.task_runs", level="INFO") as cm,
+        ):
             result, out, _ = self.run_batch(client)
         joined = "\n".join(cm.output)
         self.assertIn("tagging failed article 7 (pomodoro doomed)", joined)
@@ -835,9 +883,11 @@ class PrefectFlowsTest(unittest.TestCase):
     # -- flow: short-circuit ------------------------------------------------
 
     def test_flow_max_articles_zero_returns_empty_without_client(self) -> None:
-        with patch("flows.WallabagClient") as client_mock, \
-             patch("flows.load_config") as load_mock, \
-             contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            patch("flows.WallabagClient") as client_mock,
+            patch("flows.load_config") as load_mock,
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             result = self.flows.wallatag_batch.fn(max_articles=0)
         self.assertEqual(result, "")
         self.assertEqual(out.getvalue(), "")

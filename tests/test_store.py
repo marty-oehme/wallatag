@@ -40,7 +40,7 @@ def _concurrent_constructor(db_path, barrier, entry_id, results):
         store.mark_seen(entry_id)
         store.close()
         results.put(None)
-    except Exception as exc:  # noqa: BLE001: report, don't crash the process
+    except Exception as exc:  # noqa: BLE001 -- report, don't crash the process
         results.put(repr(exc))
 
 
@@ -149,7 +149,10 @@ class DecisionsTest(unittest.TestCase):
             ).fetchall()
         self.assertEqual(
             rows,
-            [(1, "python", "accept", "rules"), (1, "cooking", "reject", "vocabulary")],
+            [
+                (1, "python", "accept", "rules"),
+                (1, "cooking", "reject", "vocabulary"),
+            ],
         )
 
     def test_record_decision_invalid_action_raises_valueerror(self):
@@ -157,7 +160,9 @@ class DecisionsTest(unittest.TestCase):
             self.store.record_decision(1, "python", "nonsense", "rules")
         # Nothing was written by the rejected call.
         with sqlite3.connect(db_path(self._tmp.name)) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[
+                0
+            ]
         self.assertEqual(count, 0)
 
     def test_record_decision_none_tag_raises_valueerror(self):
@@ -222,7 +227,9 @@ class ConcurrencyTest(unittest.TestCase):
             for proc in procs:
                 proc.join(timeout=30)
             for proc in procs:
-                self.assertFalse(proc.is_alive(), "writer process did not exit")
+                self.assertFalse(
+                    proc.is_alive(), "writer process did not exit"
+                )
 
             outcomes = [results.get(timeout=5) for _ in procs]
             self.assertEqual(sorted(outcomes), [False, True])
@@ -253,14 +260,18 @@ class ConstructorRaceTest(unittest.TestCase):
             for proc in procs:
                 proc.join(timeout=60)
             for proc in procs:
-                self.assertFalse(proc.is_alive(), "constructor process did not exit")
+                self.assertFalse(
+                    proc.is_alive(), "constructor process did not exit"
+                )
 
             errors = []
             for _ in procs:
                 outcome = results.get(timeout=5)
                 if outcome is not None:
                     errors.append(outcome)
-            self.assertEqual(errors, [], "concurrent Store() raised: %r" % (errors,))
+            self.assertEqual(
+                errors, [], "concurrent Store() raised: %r" % (errors,)
+            )
 
             with sqlite3.connect(path) as conn:
                 rows = conn.execute(

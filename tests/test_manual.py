@@ -32,8 +32,15 @@ class RaisingTagger:
         raise LLMError("model unavailable", status=500)
 
 
-def entry(eid, title, url="https://example.com/x", domain="example.com",
-          content="", reading_time=5, tags=()):
+def entry(
+    eid,
+    title,
+    url="https://example.com/x",
+    domain="example.com",
+    content="",
+    reading_time=5,
+    tags=(),
+):
     return {
         "id": eid,
         "title": title,
@@ -134,7 +141,9 @@ def make_args(**overrides):
     return argparse.Namespace(**defaults)
 
 
-def make_tagger(existing_tags=(), groups=None, tag_policy="all", max_applied_tags=10):
+def make_tagger(
+    existing_tags=(), groups=None, tag_policy="all", max_applied_tags=10
+):
     return KeywordTagger(
         groups or {},
         max_applied_tags=max_applied_tags,
@@ -143,7 +152,9 @@ def make_tagger(existing_tags=(), groups=None, tag_policy="all", max_applied_tag
     )
 
 
-def make_cfg(url="https://wallabag.example.com", max_articles=None, store_path=None):
+def make_cfg(
+    url="https://wallabag.example.com", max_articles=None, store_path=None
+):
     return dataclasses.replace(
         Config(),
         wallabag=WallabagConfig(
@@ -166,15 +177,30 @@ def decision_rows(db_path):
 
 
 class ManualBase(unittest.TestCase):
-    def run_manual(self, client, inputs, *, tagger=None, cfg=None, store=None,
-                   dry_run=False, fallback_tagger=None):
+    def run_manual(
+        self,
+        client,
+        inputs,
+        *,
+        tagger=None,
+        cfg=None,
+        store=None,
+        dry_run=False,
+        fallback_tagger=None,
+    ):
         tagger = tagger if tagger is not None else make_tagger()
         cfg = cfg if cfg is not None else Config()
         out = io.StringIO()
-        with patch("builtins.input", side_effect=list(inputs)), \
-             contextlib.redirect_stdout(out):
+        with (
+            patch("builtins.input", side_effect=list(inputs)),
+            contextlib.redirect_stdout(out),
+        ):
             summary = run_manual(
-                client, tagger, store, cfg, dry_run=dry_run,
+                client,
+                tagger,
+                store,
+                cfg,
+                dry_run=dry_run,
                 fallback_tagger=fallback_tagger,
             )
         return summary, out.getvalue()
@@ -182,7 +208,9 @@ class ManualBase(unittest.TestCase):
 
 class NextFlowTest(ManualBase):
     def test_next_on_untouched_suggestions_applies(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -361,7 +389,9 @@ class DropFlowTest(ManualBase):
                 store.close()
 
             # The article was re-displayed after the drop (loop stayed).
-            self.assertGreaterEqual(out.count("pomodoro productivity guide"), 2)
+            self.assertGreaterEqual(
+                out.count("pomodoro productivity guide"), 2
+            )
             self.assertEqual(client.add_calls, [(1, ["productivity"])])
             self.assertEqual(
                 decision_rows(db),
@@ -375,7 +405,9 @@ class DropFlowTest(ManualBase):
 
 class DropAllTest(ManualBase):
     def test_drop_all_commits_nothing_but_records_rejects(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -416,7 +448,10 @@ class AddFlowTest(ManualBase):
             self.assertEqual(client.add_calls, [(1, ["cooking", "dinner"])])
             self.assertEqual(
                 decision_rows(db),
-                [("cooking", "accept", "manual"), ("dinner", "accept", "manual")],
+                [
+                    ("cooking", "accept", "manual"),
+                    ("dinner", "accept", "manual"),
+                ],
             )
         self.assertEqual(summary.added, 2)
 
@@ -466,7 +501,9 @@ class SubPromptQuitTest(ManualBase):
             db = os.path.join(tmp, "s.db")
             store = Store(db)
             try:
-                summary, _ = self.run_manual(client, ["a", "q", "q"], store=store)
+                summary, _ = self.run_manual(
+                    client, ["a", "q", "q"], store=store
+                )
             finally:
                 store.close()
 
@@ -475,7 +512,9 @@ class SubPromptQuitTest(ManualBase):
         self.assertEqual(summary.added, 0)
 
     def test_q_at_drop_prompt_aborts_back_to_menu(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -510,14 +549,19 @@ class AddDedupTest(ManualBase):
             self.assertEqual(client.add_calls, [(1, ["cooking", "dinner"])])
             self.assertEqual(
                 decision_rows(db),
-                [("cooking", "accept", "manual"), ("dinner", "accept", "manual")],
+                [
+                    ("cooking", "accept", "manual"),
+                    ("dinner", "accept", "manual"),
+                ],
             )
         self.assertEqual(summary.added, 2)
 
 
 class DryRunTest(ManualBase):
     def test_dry_run_makes_no_writes(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -572,7 +616,9 @@ class ZeroTagsArticleTest(ManualBase):
 
 class SummaryWordingTest(ManualBase):
     def test_summary_reflects_new_counts(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         summary, _ = self.run_manual(
             client,
             ["a", "cooking", ""],
@@ -595,9 +641,11 @@ class QuitTest(ManualBase):
         client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
         out = io.StringIO()
         cfg = make_cfg()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             patch("builtins.input", side_effect=["q"]), \
-             contextlib.redirect_stdout(out):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            patch("builtins.input", side_effect=["q"]),
+            contextlib.redirect_stdout(out),
+        ):
             code = cmd_manual(cfg, make_args())
         self.assertEqual(code, 0)
         self.assertTrue(client.closed)
@@ -607,7 +655,9 @@ class QuitTest(ManualBase):
 
 class SeenDedupeTest(ManualBase):
     def test_store_pre_seen_entry_not_presented(self):
-        client = FakeClient(entries=[entry(1, "already done"), entry(2, "new one")])
+        client = FakeClient(
+            entries=[entry(1, "already done"), entry(2, "new one")]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -643,10 +693,15 @@ class AddTagsErrorTest(ManualBase):
             fail_on_add=WallabagError("boom"),
         )
         out = io.StringIO()
-        with patch("builtins.input", side_effect=["", "q"]), \
-             contextlib.redirect_stdout(out):
+        with (
+            patch("builtins.input", side_effect=["", "q"]),
+            contextlib.redirect_stdout(out),
+        ):
             summary = run_manual(
-                client, make_tagger(existing_tags=["Pomodoro"]), Store(None), Config()
+                client,
+                make_tagger(existing_tags=["Pomodoro"]),
+                Store(None),
+                Config(),
             )
 
         self.assertIn("error tagging entry 1", out.getvalue())
@@ -657,13 +712,17 @@ class AddTagsErrorTest(ManualBase):
 
 class KeyboardInterruptTest(ManualBase):
     def test_keyboard_interrupt_clean_exit_closes_client(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         out = io.StringIO()
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             patch("builtins.input", side_effect=KeyboardInterrupt), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_manual(make_cfg(), make_args())
 
         self.assertEqual(code, 130)
@@ -674,8 +733,10 @@ class KeyboardInterruptTest(ManualBase):
 class NoUrlTest(ManualBase):
     def test_missing_url_exits_2_without_client(self):
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient") as client_cls, \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient") as client_cls,
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_manual(Config(), make_args())
 
         self.assertEqual(code, 2)
@@ -685,12 +746,19 @@ class NoUrlTest(ManualBase):
 
 class InvalidChoiceTest(ManualBase):
     def test_invalid_choice_reprompts(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         out = io.StringIO()
-        with patch("builtins.input", side_effect=["x", "q"]), \
-             contextlib.redirect_stdout(out):
+        with (
+            patch("builtins.input", side_effect=["x", "q"]),
+            contextlib.redirect_stdout(out),
+        ):
             summary = run_manual(
-                client, make_tagger(existing_tags=["Pomodoro"]), Store(None), Config()
+                client,
+                make_tagger(existing_tags=["Pomodoro"]),
+                Store(None),
+                Config(),
             )
 
         self.assertIn("invalid choice", out.getvalue())
@@ -705,9 +773,11 @@ class FeedFetchErrorTest(ManualBase):
         client = FailingFeedClient()
         out = io.StringIO()
         err = io.StringIO()
-        with patch("builtins.input", side_effect=["", ""]), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("builtins.input", side_effect=["", ""]),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             summary = run_manual(client, make_tagger(), Store(None), Config())
 
         self.assertEqual(summary.presented, 2)
@@ -723,10 +793,14 @@ class LLMErrorTest(ManualBase):
         client = FakeClient(entries=[entry(1, "first"), entry(2, "second")])
         out = io.StringIO()
         err = io.StringIO()
-        with patch("builtins.input", side_effect=["q"]), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
-            summary = run_manual(client, RaisingTagger(), Store(None), Config())
+        with (
+            patch("builtins.input", side_effect=["q"]),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            summary = run_manual(
+                client, RaisingTagger(), Store(None), Config()
+            )
 
         self.assertEqual((summary.presented, summary.tagged), (2, 0))
         self.assertEqual(client.add_calls, [])
@@ -743,9 +817,11 @@ class LLMErrorTest(ManualBase):
             db = os.path.join(tmp, "s.db")
             store = Store(db)
             err = io.StringIO()
-            with patch("builtins.input", side_effect=["q"]), \
-                 contextlib.redirect_stdout(io.StringIO()), \
-                 contextlib.redirect_stderr(err):
+            with (
+                patch("builtins.input", side_effect=["q"]),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(err),
+            ):
                 summary = run_manual(client, RaisingTagger(), store, Config())
 
             self.assertFalse(store.is_seen(1))
@@ -765,12 +841,14 @@ class LLMErrorTest(ManualBase):
             store = Store(db)
             err = io.StringIO()
             try:
-                with patch("builtins.input", side_effect=["q"]), \
-                     contextlib.redirect_stdout(io.StringIO()), \
-                     contextlib.redirect_stderr(err), \
-                     patch.object(
-                         store, "unmark_seen", wraps=store.unmark_seen
-                     ) as unmark:
+                with (
+                    patch("builtins.input", side_effect=["q"]),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(err),
+                    patch.object(
+                        store, "unmark_seen", wraps=store.unmark_seen
+                    ) as unmark,
+                ):
                     summary = run_manual(
                         client, RaisingTagger(), store, Config(), dry_run=True
                     )
@@ -793,22 +871,28 @@ class LLMFallbackTest(ManualBase):
         # (a) The LLM fails, the keyword fallback suggests: the suggestions
         # enter the review loop (not the error path) — "next" applies them, no
         # LLM-failure message is printed, and the article is NOT unmarked.
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
             out = io.StringIO()
             err = io.StringIO()
             try:
-                with patch("builtins.input", side_effect=[""]), \
-                     contextlib.redirect_stdout(out), \
-                     contextlib.redirect_stderr(err):
+                with (
+                    patch("builtins.input", side_effect=[""]),
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(err),
+                ):
                     summary = run_manual(
                         client,
                         RaisingTagger(),
                         store,
                         Config(),
-                        fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+                        fallback_tagger=make_tagger(
+                            existing_tags=["Pomodoro"]
+                        ),
                     )
                 # Fallback success: the article stays seen (like any reviewed
                 # article) and the vocabulary source lands in the decision log.
@@ -831,8 +915,10 @@ class LLMFallbackTest(ManualBase):
             store = Store(db)
             err = io.StringIO()
             try:
-                with contextlib.redirect_stdout(io.StringIO()), \
-                     contextlib.redirect_stderr(err):
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(err),
+                ):
                     summary = run_manual(
                         client,
                         RaisingTagger(),
@@ -855,11 +941,13 @@ class LLMFallbackTest(ManualBase):
             store = Store(db)
             err = io.StringIO()
             try:
-                with contextlib.redirect_stdout(io.StringIO()), \
-                     contextlib.redirect_stderr(err), \
-                     patch.object(
-                         store, "unmark_seen", wraps=store.unmark_seen
-                     ) as unmark:
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(err),
+                    patch.object(
+                        store, "unmark_seen", wraps=store.unmark_seen
+                    ) as unmark,
+                ):
                     summary = run_manual(
                         client,
                         RaisingTagger(),
@@ -880,28 +968,36 @@ class LLMFallbackTest(ManualBase):
         # the fallback's suggestions still enter the review loop (the article
         # is presented and the working list is offered), but _apply in dry-run
         # mode writes NOTHING: no mark_seen, no add_tags, no decisions.
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
             out = io.StringIO()
             err = io.StringIO()
             try:
-                with patch("builtins.input", side_effect=[""]), \
-                     contextlib.redirect_stdout(out), \
-                     contextlib.redirect_stderr(err):
+                with (
+                    patch("builtins.input", side_effect=[""]),
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(err),
+                ):
                     summary = run_manual(
                         client,
                         RaisingTagger(),
                         store,
                         Config(),
                         dry_run=True,
-                        fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+                        fallback_tagger=make_tagger(
+                            existing_tags=["Pomodoro"]
+                        ),
                     )
                 # Review loop was entered with the fallback's suggestions.
                 self.assertIn("--- entry 1 ---", out.getvalue())
                 self.assertIn("Pomodoro", out.getvalue())
-                self.assertIn("(dry run) would apply: Pomodoro", out.getvalue())
+                self.assertIn(
+                    "(dry run) would apply: Pomodoro", out.getvalue()
+                )
                 self.assertNotIn("LLM tagging failed", err.getvalue())
                 # _apply did nothing: no mark_seen, no add_tags, no decisions.
                 self.assertFalse(store.is_seen(1))
@@ -917,10 +1013,12 @@ class EofExitTest(ManualBase):
         client = FakeClient(entries=[entry(1, "pomodoro focus")])
         out = io.StringIO()
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             patch("builtins.input", side_effect=EOFError), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            patch("builtins.input", side_effect=EOFError),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_manual(make_cfg(), make_args())
         self.assertEqual(code, 0)
         self.assertTrue(client.closed)
@@ -949,8 +1047,10 @@ class GetTagsErrorTest(ManualBase):
 
         client.get_tags = failing_get_tags
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_manual(make_cfg(), make_args())
         self.assertEqual(code, 2)
         self.assertIn("could not fetch existing tags", err.getvalue())
@@ -972,8 +1072,7 @@ class EagerFeedErrorTest(ManualBase):
         client = EagerFailingClient()
         out = io.StringIO()
         err = io.StringIO()
-        with contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             summary = run_manual(client, make_tagger(), Store(None), Config())
 
         self.assertEqual(summary.presented, 0)
@@ -989,9 +1088,11 @@ class FeedErrorExitCodeTest(ManualBase):
         client = EagerFailingClient()
         out = io.StringIO()
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_manual(make_cfg(), make_args())
         self.assertEqual(code, 2)
         self.assertTrue(client.closed)
@@ -1003,10 +1104,12 @@ class FeedErrorExitCodeTest(ManualBase):
         client = FailingFeedClient()
         out = io.StringIO()
         err = io.StringIO()
-        with patch("wallatag.cli.WallabagClient", return_value=client), \
-             patch("builtins.input", side_effect=["", ""]), \
-             contextlib.redirect_stdout(out), \
-             contextlib.redirect_stderr(err):
+        with (
+            patch("wallatag.cli.WallabagClient", return_value=client),
+            patch("builtins.input", side_effect=["", ""]),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_manual(make_cfg(), make_args())
         self.assertEqual(code, 0)
         self.assertIn("error fetching entries", err.getvalue())
@@ -1019,8 +1122,10 @@ class StoreOpenErrorTest(ManualBase):
         with tempfile.TemporaryDirectory() as tmp:
             bad_path = os.path.join(tmp, "no_such_dir", "store.db")
             err = io.StringIO()
-            with patch("wallatag.cli.WallabagClient", return_value=client), \
-                 contextlib.redirect_stderr(err):
+            with (
+                patch("wallatag.cli.WallabagClient", return_value=client),
+                contextlib.redirect_stderr(err),
+            ):
                 code = cmd_manual(make_cfg(store_path=bad_path), make_args())
         self.assertEqual(code, 2)
         self.assertIn("could not open store", err.getvalue())

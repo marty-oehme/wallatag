@@ -33,7 +33,9 @@ ADD_TAGS_RETRIES = 2  # retries AFTER the first attempt -> up to 3 total
 ADD_TAGS_RETRY_DELAY = 2.0  # base seconds; exponential backoff: 2.0, 4.0
 # HTTP statuses worth re-attempting: timeouts/queueing/transient server-side
 # errors. Deterministic 4xx failures (400, 403, 404, ...) are NOT retried.
-RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+RETRYABLE_STATUSES: frozenset[int] = frozenset(
+    {408, 425, 429, 500, 502, 503, 504}
+)
 
 
 @dataclass
@@ -197,7 +199,9 @@ def process_entry(
             result.skipped = 1
             result.llm_failed = 1
             if not dry_run:
-                store.unmark_seen(entry_id)  # defer: keep the article in the queue
+                store.unmark_seen(
+                    entry_id
+                )  # defer: keep the article in the queue
             return result
         try:
             suggestions = fallback_tagger.suggest(entry)
@@ -212,7 +216,9 @@ def process_entry(
             result.skipped = 1
             result.llm_failed = 1
             if not dry_run:
-                store.unmark_seen(entry_id)  # defer: keep the article in the queue
+                store.unmark_seen(
+                    entry_id
+                )  # defer: keep the article in the queue
             return result
         # The keyword fallback rescued this article: report the failure
         # as a WARNING (the article is still tagged below), and count
@@ -256,11 +262,17 @@ def process_entry(
             client.add_tags(entry_id, tags)
         except (WallabagError, requests.RequestException) as exc:
             last_exc = exc
-            if not _is_retryable_add_tags_error(exc) or attempt == add_tags_retries:
+            if (
+                not _is_retryable_add_tags_error(exc)
+                or attempt == add_tags_retries
+            ):
                 break
             logger.warning(
                 "tagging failed %s: %s (retry %d/%d)",
-                entry_id, exc, attempt + 1, add_tags_retries,
+                entry_id,
+                exc,
+                attempt + 1,
+                add_tags_retries,
             )
             time.sleep(add_tags_retry_delay * (2**attempt))
         else:

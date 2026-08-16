@@ -22,8 +22,10 @@ class FakeResponse:
     def __init__(self, status_code=200, body=None, text=None):
         self.status_code = status_code
         self._body = body
-        self.text = text if text is not None else (
-            json.dumps(body) if body is not None else ""
+        self.text = (
+            text
+            if text is not None
+            else (json.dumps(body) if body is not None else "")
         )
 
     def json(self):
@@ -78,7 +80,7 @@ def client_for(response=None, error=None, responses=None, **kwargs):
     return client, session
 
 
-def ok_response(content="[{\"tag\": \"python\"}]"):
+def ok_response(content='[{"tag": "python"}]'):
     return FakeResponse(
         status_code=200,
         body={"choices": [{"message": {"content": content}}]},
@@ -90,7 +92,8 @@ class UrlTest(unittest.TestCase):
         client, session = client_for(ok_response())
         client.complete(SYSTEM, USER)
         self.assertEqual(
-            session.posts[0]["url"], "http://localhost:11434/v1/chat/completions"
+            session.posts[0]["url"],
+            "http://localhost:11434/v1/chat/completions",
         )
 
     def test_openai_compatible_url_uses_base_url_as_is(self):
@@ -101,20 +104,26 @@ class UrlTest(unittest.TestCase):
         )
         client.complete(SYSTEM, USER)
         self.assertEqual(
-            session.posts[0]["url"], "https://api.example.com/v1/chat/completions"
+            session.posts[0]["url"],
+            "https://api.example.com/v1/chat/completions",
         )
 
     def test_trailing_slash_stripped(self):
-        client, session = client_for(ok_response(), base_url="http://localhost:11434/")
+        client, session = client_for(
+            ok_response(), base_url="http://localhost:11434/"
+        )
         client.complete(SYSTEM, USER)
         self.assertEqual(
-            session.posts[0]["url"], "http://localhost:11434/v1/chat/completions"
+            session.posts[0]["url"],
+            "http://localhost:11434/v1/chat/completions",
         )
 
     def test_ollama_base_url_with_v1_prefix_no_double_prefix(self):
         # Ollama docs commonly give http://host:11434/v1 as the
         # OpenAI-compatible base_url; the client must not double the /v1.
-        client, session = client_for(ok_response(), base_url="http://host:11434/v1")
+        client, session = client_for(
+            ok_response(), base_url="http://host:11434/v1"
+        )
         client.complete(SYSTEM, USER)
         self.assertEqual(
             session.posts[0]["url"], "http://host:11434/v1/chat/completions"
@@ -122,7 +131,9 @@ class UrlTest(unittest.TestCase):
 
     def test_ollama_base_url_with_v1_prefix_and_trailing_slash(self):
         # The /v1/ form survives __init__ rstrip as /v1 and is then de-duped.
-        client, session = client_for(ok_response(), base_url="http://host:11434/v1/")
+        client, session = client_for(
+            ok_response(), base_url="http://host:11434/v1/"
+        )
         client.complete(SYSTEM, USER)
         self.assertEqual(
             session.posts[0]["url"], "http://host:11434/v1/chat/completions"
@@ -130,7 +141,9 @@ class UrlTest(unittest.TestCase):
 
     def test_ollama_bare_host_still_gets_v1_prefix(self):
         # Bare-host form must keep its documented behavior.
-        client, session = client_for(ok_response(), base_url="http://host:11434")
+        client, session = client_for(
+            ok_response(), base_url="http://host:11434"
+        )
         client.complete(SYSTEM, USER)
         self.assertEqual(
             session.posts[0]["url"], "http://host:11434/v1/chat/completions"
@@ -256,7 +269,9 @@ class ErrorTest(unittest.TestCase):
         self.assertIsNone(ctx.exception.status)
 
     def test_non_json_body_raises_llm_error(self):
-        client, _ = client_for(FakeResponse(status_code=200, body=None, text="<html>"))
+        client, _ = client_for(
+            FakeResponse(status_code=200, body=None, text="<html>")
+        )
         with self.assertRaises(LLMError) as ctx:
             client.complete(SYSTEM, USER)
         self.assertEqual(ctx.exception.status, 200)
@@ -281,7 +296,8 @@ class ErrorTest(unittest.TestCase):
     def test_non_string_content_raises_llm_error(self):
         client, _ = client_for(
             FakeResponse(
-                status_code=200, body={"choices": [{"message": {"content": 42}}]}
+                status_code=200,
+                body={"choices": [{"message": {"content": 42}}]},
             )
         )
         with self.assertRaises(LLMError) as ctx:
@@ -348,7 +364,9 @@ class RetryTest(unittest.TestCase):
                 client, session = client_for(
                     None,
                     responses=[
-                        FakeResponse(status_code=status, body={"error": "transient"}),
+                        FakeResponse(
+                            status_code=status, body={"error": "transient"}
+                        ),
                         ok_response(content="a tag"),
                     ],
                     retries=1,
@@ -361,7 +379,9 @@ class RetryTest(unittest.TestCase):
         # (d) a 400 is a protocol/config error: exactly one attempt, no sleep.
         client, session = client_for(
             None,
-            responses=[FakeResponse(status_code=400, body={"error": "bad request"})],
+            responses=[
+                FakeResponse(status_code=400, body={"error": "bad request"})
+            ],
         )
         with self.assertRaises(LLMError) as ctx:
             client.complete(SYSTEM, USER)
@@ -376,7 +396,9 @@ class RetryTest(unittest.TestCase):
             with self.subTest(status=status):
                 client, session = client_for(
                     None,
-                    responses=[FakeResponse(status_code=status, body={"error": "no"})],
+                    responses=[
+                        FakeResponse(status_code=status, body={"error": "no"})
+                    ],
                     retries=2,
                 )
                 with self.assertRaises(LLMError) as ctx:
@@ -389,7 +411,9 @@ class RetryTest(unittest.TestCase):
         # retried, even though the status is 200.
         client, session = client_for(
             None,
-            responses=[FakeResponse(status_code=200, body=None, text="<html>")],
+            responses=[
+                FakeResponse(status_code=200, body=None, text="<html>")
+            ],
         )
         with self.assertRaises(LLMError) as ctx:
             client.complete(SYSTEM, USER)
@@ -488,19 +512,30 @@ class RetryValidationTest(unittest.TestCase):
 
     def test_negative_retries_rejected(self):
         with self.assertRaises(ValueError):
-            LLMClient("ollama", "http://localhost:11434", "qwen2.5:3b", retries=-1)
+            LLMClient(
+                "ollama", "http://localhost:11434", "qwen2.5:3b", retries=-1
+            )
 
     def test_string_retries_rejected(self):
         with self.assertRaises(ValueError):
-            LLMClient("ollama", "http://localhost:11434", "qwen2.5:3b", retries="2")
+            LLMClient(
+                "ollama", "http://localhost:11434", "qwen2.5:3b", retries="2"
+            )
 
     def test_bool_retries_rejected(self):
         with self.assertRaises(ValueError):
-            LLMClient("ollama", "http://localhost:11434", "qwen2.5:3b", retries=True)
+            LLMClient(
+                "ollama", "http://localhost:11434", "qwen2.5:3b", retries=True
+            )
 
     def test_zero_backoff_rejected(self):
         with self.assertRaises(ValueError):
-            LLMClient("ollama", "http://localhost:11434", "qwen2.5:3b", backoff_base=0)
+            LLMClient(
+                "ollama",
+                "http://localhost:11434",
+                "qwen2.5:3b",
+                backoff_base=0,
+            )
 
     def test_defaults_retries_two_backoff_one(self):
         client, _ = client_for(ok_response())

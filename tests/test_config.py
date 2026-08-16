@@ -81,7 +81,9 @@ base_url = "http://localhost:11434"
 model = "qwen2.5:3b"
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
 
         self.assertEqual(config.wallabag.url, "https://wallabag.example.com")
         self.assertEqual(config.wallabag.client_id, "cid")
@@ -94,8 +96,12 @@ model = "qwen2.5:3b"
         self.assertEqual(
             config.tagger.focus_groups["methods"].keywords, ("pomodoro", "gtd")
         )
-        self.assertEqual(config.tagger.focus_groups["methods"].tags, ("productivity",))
-        self.assertEqual(config.tagger.focus_groups["languages"].tags, ("programming",))
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].tags, ("productivity",)
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["languages"].tags, ("programming",)
+        )
         self.assertEqual(config.ai.provider, "ollama")
         self.assertEqual(config.ai.base_url, "http://localhost:11434")
         self.assertEqual(config.ai.model, "qwen2.5:3b")
@@ -112,7 +118,9 @@ tags = ["productivity"]
 [ai]
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
 
         group = config.tagger.focus_groups["methods"]
         self.assertEqual(group.keywords, ())
@@ -329,7 +337,9 @@ keywords = ["pomodoro", "gtd"]
 tags = ["productivity"]
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
 
         group = config.tagger.focus_groups["methods"]
         self.assertEqual(group.keywords, ("pomodoro", "gtd"))
@@ -347,7 +357,9 @@ tags = ["productivity"]
 keywords_regex = ["^how.?to", "(?-i:GTD)"]
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
 
         group = config.tagger.focus_groups["methods"]
         self.assertEqual(group.keywords_regex, ("^how.?to", "(?-i:GTD)"))
@@ -366,9 +378,13 @@ keywords = ["pomodoro"]
 tags = ["productivity"]
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
 
-        self.assertEqual(config.tagger.focus_groups["methods"].keywords_regex, ())
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords_regex, ()
+        )
 
     def test_keywords_regex_empty_list_parses_to_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,12 +400,18 @@ keywords_regex = []
 keywords = ["meeting"]
 """,
             )
-            config = load_config(config_path=str(tmp / "wallatag.toml"), env={})
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
 
         # `keywords_regex = []` and an absent key behave identically: both
         # leave the field at its dataclass default ().
-        self.assertEqual(config.tagger.focus_groups["methods"].keywords_regex, ())
-        self.assertEqual(config.tagger.focus_groups["notes"].keywords_regex, ())
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords_regex, ()
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["notes"].keywords_regex, ()
+        )
 
     def test_invalid_keywords_regex_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -498,11 +520,11 @@ class AiConfigTomlTest(unittest.TestCase):
 
     def test_full_ai_block_parsed(self):
         config = self._load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n'
-            'confidence_threshold = 0.8\n'
+            "confidence_threshold = 0.8\n"
         )
         self.assertEqual(config.ai.provider, "ollama")
         self.assertEqual(config.ai.base_url, "http://localhost:11434")
@@ -511,7 +533,7 @@ class AiConfigTomlTest(unittest.TestCase):
 
     def test_default_confidence_threshold(self):
         config = self._load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n'
@@ -520,7 +542,7 @@ class AiConfigTomlTest(unittest.TestCase):
 
     def test_api_key_parsed(self):
         config = self._load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n'
@@ -531,7 +553,7 @@ class AiConfigTomlTest(unittest.TestCase):
     def test_api_key_optional_not_part_of_trio(self):
         # provider/base_url/model without api_key stays valid.
         config = self._load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "openai-compatible"\n'
             'base_url = "https://api.example.com/v1"\n'
             'model = "gpt-4o-mini"\n'
@@ -546,7 +568,9 @@ class AiConfigTomlTest(unittest.TestCase):
         self.assertEqual(config.ai.provider, "")
 
     def test_api_key_default_is_empty(self):
-        config = self._load("[ai]\nprovider = \"ollama\"\nbase_url = \"http://x\"\nmodel = \"m\"\n")
+        config = self._load(
+            '[ai]\nprovider = "ollama"\nbase_url = "http://x"\nmodel = "m"\n'
+        )
         self.assertEqual(config.ai.api_key, "")
 
     def test_api_key_missing_section_disabled(self):
@@ -570,7 +594,7 @@ class AiConfigTomlTest(unittest.TestCase):
     def test_missing_model_with_provider_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load(
-                '[ai]\n'
+                "[ai]\n"
                 'provider = "ollama"\n'
                 'base_url = "http://localhost:11434"\n'
             )
@@ -579,9 +603,7 @@ class AiConfigTomlTest(unittest.TestCase):
 
     def test_missing_base_url_with_provider_raises(self):
         with self.assertRaises(ConfigError):
-            self._load(
-                '[ai]\nprovider = "ollama"\nmodel = "qwen2.5:3b"\n'
-            )
+            self._load('[ai]\nprovider = "ollama"\nmodel = "qwen2.5:3b"\n')
 
     def test_partial_trio_with_fallback_on_fail_still_raises(self):
         # [ai] fallback_on_fail does NOT relax the atomic provider/base_url/
@@ -589,9 +611,9 @@ class AiConfigTomlTest(unittest.TestCase):
         # still raise ConfigError.
         with self.assertRaises(ConfigError) as ctx:
             self._load(
-                '[ai]\n'
+                "[ai]\n"
                 'provider = "openai-compatible"\n'
-                'fallback_on_fail = true\n'
+                "fallback_on_fail = true\n"
             )
         self.assertIn("provider", str(ctx.exception))
         self.assertIn("base_url", str(ctx.exception))
@@ -600,7 +622,7 @@ class AiConfigTomlTest(unittest.TestCase):
     def test_bad_provider_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load(
-                '[ai]\n'
+                "[ai]\n"
                 'provider = "openai"\n'
                 'base_url = "http://localhost:11434"\n'
                 'model = "gpt-4o"\n'
@@ -639,11 +661,11 @@ class AiConfigEnvTest(unittest.TestCase):
 
     def test_env_overrides_all_ai_fields(self):
         config = self._env_load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n'
-            'confidence_threshold = 0.7\n',
+            "confidence_threshold = 0.7\n",
             {
                 "WALLATAG_AI_PROVIDER": "openai-compatible",
                 "WALLATAG_AI_BASE_URL": "https://api.example.com/v1",
@@ -659,7 +681,7 @@ class AiConfigEnvTest(unittest.TestCase):
     def test_env_partial_trio_completes_from_toml(self):
         # Env sets only the provider; base_url/model come from TOML.
         config = self._env_load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n',
@@ -694,13 +716,15 @@ class AiConfigEnvTest(unittest.TestCase):
             self._env_load("", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "2"})
 
     def test_env_threshold_only_disables_llm(self):
-        config = self._env_load("", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.8"})
+        config = self._env_load(
+            "", {"WALLATAG_AI_CONFIDENCE_THRESHOLD": "0.8"}
+        )
         self.assertEqual(config.ai.confidence_threshold, 0.8)
         self.assertEqual(config.ai.provider, "")
 
     def test_env_api_key_overrides_toml(self):
         config = self._env_load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "openai-compatible"\n'
             'base_url = "https://api.example.com/v1"\n'
             'model = "gpt-4o-mini"\n'
@@ -713,7 +737,7 @@ class AiConfigEnvTest(unittest.TestCase):
         # A present-but-empty WALLATAG_AI_API_KEY clears the TOML value,
         # matching the WALLATAG_DB="" pattern.
         config = self._env_load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "openai-compatible"\n'
             'base_url = "https://api.example.com/v1"\n'
             'model = "gpt-4o-mini"\n'
@@ -801,7 +825,7 @@ class AiUseFocusGroupsTomlTest(unittest.TestCase):
     def test_default_true_keeps_existing_ai_behavior(self):
         # A full [ai] block without the flag keeps the default True.
         config = self._load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n'
@@ -908,7 +932,7 @@ class AiFallbackOnFailTomlTest(unittest.TestCase):
     def test_default_false_keeps_existing_ai_behavior(self):
         # A full [ai] block without the flag keeps the default False.
         config = self._load(
-            '[ai]\n'
+            "[ai]\n"
             'provider = "ollama"\n'
             'base_url = "http://localhost:11434"\n'
             'model = "qwen2.5:3b"\n'
@@ -993,23 +1017,31 @@ class AiMaxProposalsTomlTest(unittest.TestCase):
     def test_negative_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load("[ai]\nmax_proposals = -1\n")
-        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+        self.assertIn(
+            "max_proposals must be a non-negative integer", str(ctx.exception)
+        )
 
     def test_bool_raises(self):
         # bool is an int subclass in TOML too: `= true` must not parse.
         with self.assertRaises(ConfigError) as ctx:
             self._load("[ai]\nmax_proposals = true\n")
-        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+        self.assertIn(
+            "max_proposals must be a non-negative integer", str(ctx.exception)
+        )
 
     def test_float_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load("[ai]\nmax_proposals = 2.5\n")
-        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+        self.assertIn(
+            "max_proposals must be a non-negative integer", str(ctx.exception)
+        )
 
     def test_string_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load('[ai]\nmax_proposals = "high"\n')
-        self.assertIn("max_proposals must be a non-negative integer", str(ctx.exception))
+        self.assertIn(
+            "max_proposals must be a non-negative integer", str(ctx.exception)
+        )
 
     def test_independent_of_trio(self):
         # max_proposals alone, without provider/base_url/model, is valid (LLM
@@ -1108,9 +1140,7 @@ class TaggerEnvTest(unittest.TestCase):
         self.assertEqual(config.tagger.ignore_tags, ("fix", "_frigo"))
 
     def test_env_ignore_tags_strips_whitespace_and_drops_empties(self):
-        config = self._env_load(
-            "", {"WALLATAG_IGNORE_TAGS": " fix , _frigo "}
-        )
+        config = self._env_load("", {"WALLATAG_IGNORE_TAGS": " fix , _frigo "})
         self.assertEqual(config.tagger.ignore_tags, ("fix", "_frigo"))
         config = self._env_load("", {"WALLATAG_IGNORE_TAGS": "fix,"})
         self.assertEqual(config.tagger.ignore_tags, ("fix",))
@@ -1247,9 +1277,7 @@ class TaggerEnvTest(unittest.TestCase):
         # every comma and each fragment is validated INDEPENDENTLY, so "^a,b$"
         # becomes two VALID patterns with no error — the matching semantics
         # change silently. Comma-containing regexes must use TOML.
-        config = self._env_load(
-            "", {"WALLATAG_IGNORE_TAGS_REGEX": "^a,b$"}
-        )
+        config = self._env_load("", {"WALLATAG_IGNORE_TAGS_REGEX": "^a,b$"})
         self.assertEqual(config.tagger.ignore_tags_regex, ("^a", "b$"))
 
     def test_env_empty_tag_policy_raises(self):
@@ -1329,7 +1357,9 @@ class FindConfigFileTest(unittest.TestCase):
 
     def test_env_missing_path_raises(self):
         with self.assertRaises(ConfigError):
-            find_config_file(env={"WALLATAG_CONFIG": "/nonexistent/config.toml"})
+            find_config_file(
+                env={"WALLATAG_CONFIG": "/nonexistent/config.toml"}
+            )
 
     def test_missing_default_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1395,12 +1425,17 @@ tags = ["productivity"]
         )
         self.assertEqual(
             config.tagger.focus_groups["methods"],
-            FocusGroup(keywords=("gtd", "zettelkasten"), tags=("productivity",)),
+            FocusGroup(
+                keywords=("gtd", "zettelkasten"), tags=("productivity",)
+            ),
         )
         self.assertEqual(
-            config.tagger.focus_groups["methods"].keywords, ("gtd", "zettelkasten")
+            config.tagger.focus_groups["methods"].keywords,
+            ("gtd", "zettelkasten"),
         )
-        self.assertEqual(config.tagger.focus_groups["methods"].tags, ("productivity",))
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].tags, ("productivity",)
+        )
 
     def test_env_only_group_both_fields(self):
         config = self._env_load(
@@ -1442,17 +1477,23 @@ tags = ["productivity"]
             {"WALLATAG_FOCUS_METHODS_KEYWORDS": ""},
         )
         self.assertEqual(config.tagger.focus_groups["methods"].keywords, ())
-        self.assertEqual(config.tagger.focus_groups["methods"].tags, ("productivity",))
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].tags, ("productivity",)
+        )
 
     def test_env_only_group_keywords_only_defaults_tags(self):
-        config = self._env_load("", {"WALLATAG_FOCUS_LANGUAGES_KEYWORDS": "python"})
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_LANGUAGES_KEYWORDS": "python"}
+        )
         self.assertEqual(
             config.tagger.focus_groups["languages"],
             FocusGroup(keywords=("python",), tags=()),
         )
 
     def test_env_only_group_tags_only_defaults_keywords(self):
-        config = self._env_load("", {"WALLATAG_FOCUS_LANGUAGES_TAGS": "programming"})
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_LANGUAGES_TAGS": "programming"}
+        )
         self.assertEqual(
             config.tagger.focus_groups["languages"],
             FocusGroup(keywords=(), tags=("programming",)),
@@ -1487,8 +1528,12 @@ tags = ["productivity"]
         self.assertEqual(
             config.tagger.focus_groups["methods"].keywords, ("fix", "_frigo")
         )
-        config = self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS": "fix,"})
-        self.assertEqual(config.tagger.focus_groups["methods"].keywords, ("fix",))
+        config = self._env_load(
+            "", {"WALLATAG_FOCUS_METHODS_KEYWORDS": "fix,"}
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords, ("fix",)
+        )
 
     def test_toml_groups_without_env_counterpart_survive(self):
         # Unrelated env vars (WALLATAG_URL, FOO) must not touch focus groups.
@@ -1582,8 +1627,12 @@ keywords_regex = ["^howto"]
 """,
             {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": ""},
         )
-        self.assertEqual(config.tagger.focus_groups["methods"].keywords_regex, ())
-        self.assertEqual(config.tagger.focus_groups["methods"].keywords, ("pomodoro",))
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords_regex, ()
+        )
+        self.assertEqual(
+            config.tagger.focus_groups["methods"].keywords, ("pomodoro",)
+        )
 
     def test_env_only_group_with_keywords_regex(self):
         config = self._env_load(
@@ -1615,7 +1664,9 @@ keywords_regex = ["^howto"]
         # split and the fragments fail to compile. Use TOML or the
         # wallatag_focus_groups JSON variable for such patterns.
         with self.assertRaises(ConfigError) as ctx:
-            self._env_load("", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "[a,b]"})
+            self._env_load(
+                "", {"WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX": "[a,b]"}
+            )
         message = str(ctx.exception)
         self.assertIn("WALLATAG_FOCUS_METHODS_KEYWORDS_REGEX", message)
         self.assertIn("'[a'", message)
@@ -1657,12 +1708,14 @@ class VocabularyTomlTest(unittest.TestCase):
     def test_absent_defaults_all_four(self):
         config = self._load("")
         self.assertEqual(
-            config.vocabulary.fields, ("title", "url", "domain_name", "content")
+            config.vocabulary.fields,
+            ("title", "url", "domain_name", "content"),
         )
         # A [vocabulary] table without a fields key also defaults to all four.
         config = self._load("[vocabulary]\n")
         self.assertEqual(
-            config.vocabulary.fields, ("title", "url", "domain_name", "content")
+            config.vocabulary.fields,
+            ("title", "url", "domain_name", "content"),
         )
 
     def test_empty_fields_disables_vocabulary(self):
@@ -1701,26 +1754,34 @@ class VocabularyTomlTest(unittest.TestCase):
     def test_non_table_raises(self):
         with self.assertRaises(ConfigError) as ctx:
             self._load('vocabulary = "foo"\n')
-        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+        self.assertIn(
+            "section [vocabulary] must be a table", str(ctx.exception)
+        )
 
     def test_empty_string_non_table_raises(self):
         # Falsy non-tables must NOT be masked by `or {}` normalization.
         with self.assertRaises(ConfigError) as ctx:
             self._load('vocabulary = ""\n')
-        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+        self.assertIn(
+            "section [vocabulary] must be a table", str(ctx.exception)
+        )
 
     def test_false_non_table_raises(self):
         # `vocabulary = false` is a falsy non-table: it must raise, not parse
         # as an empty table with the all-four-fields default.
         with self.assertRaises(ConfigError) as ctx:
             self._load("vocabulary = false\n")
-        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+        self.assertIn(
+            "section [vocabulary] must be a table", str(ctx.exception)
+        )
 
     def test_empty_array_non_table_raises(self):
         # A falsy [] is still a non-table: it must raise, not parse as empty.
         with self.assertRaises(ConfigError) as ctx:
             self._load("vocabulary = []\n")
-        self.assertIn("section [vocabulary] must be a table", str(ctx.exception))
+        self.assertIn(
+            "section [vocabulary] must be a table", str(ctx.exception)
+        )
 
     def test_fields_survive_env_without_touch(self):
         # No vocabulary env vars -> TOML fields survive unchanged.
@@ -1921,7 +1982,9 @@ fields = ["title", "content"]
 
     def test_non_list_raises(self):
         with self.assertRaises(ConfigError) as ctx:
-            self._load('[focus.methods]\nkeywords = ["pomodoro"]\nfields = "title"\n')
+            self._load(
+                '[focus.methods]\nkeywords = ["pomodoro"]\nfields = "title"\n'
+            )
         message = str(ctx.exception)
         self.assertIn("methods", message)
         self.assertIn("fields", message)

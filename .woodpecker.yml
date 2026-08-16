@@ -1,0 +1,26 @@
+# Official uv image, version-pinned (uv 0.11.19, python 3.13; matches .python-version).
+# Steps share the workspace, so the setup step's .venv persists for the rest.
+when:
+  event: push
+  branch: main
+
+steps:
+  setup:
+    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    commands:
+      - uv sync --all-groups --locked
+
+  lint:
+    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    commands:
+      - uv run ruff check .
+
+  format:
+    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    commands:
+      - uv run ruff format --check .
+
+  test:
+    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    commands:
+      - uv run python -m unittest discover -s tests

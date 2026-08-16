@@ -20,7 +20,13 @@ from unittest.mock import patch
 
 from wallatag.auto import AutoSummary, run_auto, summary_line
 from wallatag.cli import cmd_run
-from wallatag.config import Config, FocusGroup, StoreConfig, TaggerConfig, WallabagConfig
+from wallatag.config import (
+    Config,
+    FocusGroup,
+    StoreConfig,
+    TaggerConfig,
+    WallabagConfig,
+)
 from wallatag.llm import LLMError
 from wallatag.store import Store
 from wallatag.tagger import KeywordTagger
@@ -34,8 +40,15 @@ class RaisingTagger:
         raise LLMError("model unavailable", status=500)
 
 
-def entry(eid, title, url="https://example.com/x", domain="example.com",
-          content="", reading_time=5, tags=()):
+def entry(
+    eid,
+    title,
+    url="https://example.com/x",
+    domain="example.com",
+    content="",
+    reading_time=5,
+    tags=(),
+):
     return {
         "id": eid,
         "title": title,
@@ -49,8 +62,14 @@ def entry(eid, title, url="https://example.com/x", domain="example.com",
 
 
 class FakeClient:
-    def __init__(self, entries=(), tags=(), fail_first=0, feed_error=None,
-                 feed_fail_after=None):
+    def __init__(
+        self,
+        entries=(),
+        tags=(),
+        fail_first=0,
+        feed_error=None,
+        feed_fail_after=None,
+    ):
         self.entries = list(entries)
         self.tags = list(tags)
         self.fail_first = fail_first
@@ -128,7 +147,9 @@ def make_args(**overrides):
     return argparse.Namespace(**defaults)
 
 
-def make_tagger(existing_tags=(), groups=None, tag_policy="all", max_applied_tags=10):
+def make_tagger(
+    existing_tags=(), groups=None, tag_policy="all", max_applied_tags=10
+):
     return KeywordTagger(
         groups or {},
         max_applied_tags=max_applied_tags,
@@ -137,7 +158,9 @@ def make_tagger(existing_tags=(), groups=None, tag_policy="all", max_applied_tag
     )
 
 
-def make_cfg(url="https://wallabag.example.com", max_articles=None, store_path=None):
+def make_cfg(
+    url="https://wallabag.example.com", max_articles=None, store_path=None
+):
     return dataclasses.replace(
         Config(),
         wallabag=WallabagConfig(
@@ -167,9 +190,17 @@ class AutoBase(unittest.TestCase):
         for handler in list(root.handlers):
             root.removeHandler(handler)
 
-    def run_auto(self, client, tagger=None, store=None, cfg=None, dry_run=False,
-                 fallback_tagger=None, add_tags_retries=None,
-                 add_tags_retry_delay=None):
+    def run_auto(
+        self,
+        client,
+        tagger=None,
+        store=None,
+        cfg=None,
+        dry_run=False,
+        fallback_tagger=None,
+        add_tags_retries=None,
+        add_tags_retry_delay=None,
+    ):
         tagger = tagger if tagger is not None else make_tagger()
         store = store if store is not None else Store(None)
         cfg = cfg if cfg is not None else Config()
@@ -180,8 +211,13 @@ class AutoBase(unittest.TestCase):
             retry_kwargs["add_tags_retry_delay"] = add_tags_retry_delay
         with self.assertLogs("wallatag.auto", level="INFO") as cm:
             summary = run_auto(
-                client, tagger, store, cfg, dry_run=dry_run,
-                fallback_tagger=fallback_tagger, **retry_kwargs,
+                client,
+                tagger,
+                store,
+                cfg,
+                dry_run=dry_run,
+                fallback_tagger=fallback_tagger,
+                **retry_kwargs,
             )
         return summary, cm.output
 
@@ -195,7 +231,11 @@ class AutoBase(unittest.TestCase):
             if client is not None
             else contextlib.nullcontext()
         )
-        with ctx, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with (
+            ctx,
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cmd_run(cfg, args)
         return code, out.getvalue(), err.getvalue()
 
@@ -222,7 +262,9 @@ class IdempotencyTest(AutoBase):
         self.assertEqual((second.presented, second.tagged), (0, 0))
         # One add_tags call per article across both runs: no double-tagging.
         self.assertEqual(len(client.add_calls), 2)
-        self.assertEqual(client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])])
+        self.assertEqual(
+            client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])]
+        )
 
 
 class NoHistoryTest(AutoBase):
@@ -271,7 +313,9 @@ class DryRunTest(AutoBase):
             self.assertEqual(client.add_calls, [])
             with sqlite3.connect(db) as conn:
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
-                decisions = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+                decisions = conn.execute(
+                    "SELECT COUNT(*) FROM decisions"
+                ).fetchone()[0]
             self.assertEqual((seen, decisions), (0, 0))
             self.assertTrue(summary.dry_run)
             self.assertEqual((summary.tagged, summary.tags_applied), (1, 1))
@@ -373,16 +417,22 @@ class IgnoredTagsTest(AutoBase):
 
 class TagPolicyTest(AutoBase):
     def _groups(self):
-        return {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        return {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
 
     def test_only_existing_drops_rule_tags(self):
         client = FakeClient(entries=[entry(1, "pomodoro focus")])
         summary, messages = self.run_auto(
             client,
-            tagger=make_tagger(groups=self._groups(), tag_policy="only-existing"),
+            tagger=make_tagger(
+                groups=self._groups(), tag_policy="only-existing"
+            ),
         )
         self.assertEqual(client.add_calls, [])
-        self.assertEqual((summary.presented, summary.tagged, summary.skipped), (1, 0, 1))
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped), (1, 0, 1)
+        )
         self.assertTrue(any("no suggestions: 1" in m for m in messages))
 
     def test_all_applies_rule_tags(self):
@@ -591,8 +641,11 @@ class FeedErrorTest(AutoBase):
 
     def test_partial_feed_failure_stops_after_presented(self):
         client = FakeClient(
-            entries=[entry(1, "pomodoro focus"), entry(2, "pomodoro again"),
-                     entry(3, "pomodoro third")],
+            entries=[
+                entry(1, "pomodoro focus"),
+                entry(2, "pomodoro again"),
+                entry(3, "pomodoro third"),
+            ],
             tags=["Pomodoro"],
             feed_fail_after=2,  # two entries delivered, then the feed dies
         )
@@ -608,7 +661,9 @@ class DeterminismTest(AutoBase):
     def test_payload_sorted_regardless_of_suggestion_order(self):
         # Vocabulary order follows existing_tags order (beta, alpha), but the
         # applied payload must be sorted.
-        client = FakeClient(entries=[entry(1, "alpha beta")], tags=["alpha", "beta"])
+        client = FakeClient(
+            entries=[entry(1, "alpha beta")], tags=["alpha", "beta"]
+        )
         summary, _ = self.run_auto(
             client, tagger=make_tagger(existing_tags=["beta", "alpha"])
         )
@@ -621,7 +676,9 @@ class SkipTest(AutoBase):
         client = FakeClient(entries=[entry(1, "unrelated soup")])
         summary, messages = self.run_auto(client)
         self.assertEqual(client.add_calls, [])
-        self.assertEqual((summary.presented, summary.tagged, summary.skipped), (1, 0, 1))
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped), (1, 0, 1)
+        )
         self.assertTrue(any("no suggestions: 1" in m for m in messages))
 
 
@@ -698,8 +755,12 @@ class LLMDeferralTest(AutoBase):
         # Both failure suffixes stack, in order, after the base "run: tagged
         # ..." wording: ", feed error" first, then ", N llm failures".
         summary = AutoSummary(
-            presented=2, tagged=1, tags_applied=2, skipped=2,
-            llm_failed=2, feed_error=True,
+            presented=2,
+            tagged=1,
+            tags_applied=2,
+            skipped=2,
+            llm_failed=2,
+            feed_error=True,
         )
         self.assertEqual(
             summary_line(summary),
@@ -734,7 +795,9 @@ class LLMFallbackTest(AutoBase):
         # (a) LLM fails, the keyword fallback suggests -> the article is
         # tagged via the normal apply path, counted as llm_fallback, and NOT
         # unmarked (it stays seen like any successfully tagged article).
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -750,8 +813,13 @@ class LLMFallbackTest(AutoBase):
                 store.close()
 
         self.assertEqual(
-            (summary.presented, summary.tagged, summary.skipped,
-             summary.llm_failed, summary.llm_fallback),
+            (
+                summary.presented,
+                summary.tagged,
+                summary.skipped,
+                summary.llm_failed,
+                summary.llm_fallback,
+            ),
             (1, 1, 0, 0, 1),
         )
         self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
@@ -779,8 +847,13 @@ class LLMFallbackTest(AutoBase):
                 store.close()
 
         self.assertEqual(
-            (summary.presented, summary.tagged, summary.skipped,
-             summary.llm_failed, summary.llm_fallback),
+            (
+                summary.presented,
+                summary.tagged,
+                summary.skipped,
+                summary.llm_failed,
+                summary.llm_fallback,
+            ),
             (1, 0, 1, 1, 0),
         )
         self.assertEqual(client.add_calls, [])
@@ -821,8 +894,12 @@ class LLMFallbackTest(AutoBase):
         # (d) A fallback with enable_vocabulary=False emits no source
         # "vocabulary" suggestions: only rule suggestions apply, and the
         # decision log records the "rules" source.
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         fallback = KeywordTagger(
             groups,
             max_applied_tags=10,
@@ -856,7 +933,9 @@ class LLMFallbackTest(AutoBase):
         client = FakeClient(
             entries=[entry(1, "pomodoro guide")], tags=["Pomodoro"]
         )
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         fallback = make_tagger(
             existing_tags=["Pomodoro"], groups=groups, tag_policy="all"
         )
@@ -885,7 +964,9 @@ class LLMFallbackTest(AutoBase):
     def test_fallback_dry_run_has_no_side_effects(self):
         # Dry-run fallback success: nothing is written and nothing is unmarked
         # (nothing was marked in the first place).
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -921,8 +1002,12 @@ class LLMFallbackTest(AutoBase):
         )
         # Both segments stack, fallback LAST.
         summary = AutoSummary(
-            presented=2, tagged=1, tags_applied=1, skipped=1,
-            llm_failed=1, llm_fallback=1,
+            presented=2,
+            tagged=1,
+            tags_applied=1,
+            skipped=1,
+            llm_failed=1,
+            llm_fallback=1,
         )
         self.assertEqual(
             summary_line(summary),
@@ -985,8 +1070,13 @@ class LLMFallbackTest(AutoBase):
                 store.close()
 
         self.assertEqual(
-            (summary.presented, summary.tagged, summary.skipped,
-             summary.llm_failed, summary.llm_fallback),
+            (
+                summary.presented,
+                summary.tagged,
+                summary.skipped,
+                summary.llm_failed,
+                summary.llm_fallback,
+            ),
             (1, 0, 0, 0, 0),
         )
         self.assertEqual(client.add_calls, [])
@@ -1010,8 +1100,13 @@ class LLMFallbackTest(AutoBase):
             fallback_tagger=EmptyTagsFallback(),
         )
         self.assertEqual(
-            (summary.presented, summary.tagged, summary.skipped,
-             summary.llm_failed, summary.llm_fallback),
+            (
+                summary.presented,
+                summary.tagged,
+                summary.skipped,
+                summary.llm_failed,
+                summary.llm_fallback,
+            ),
             (1, 0, 1, 0, 0),
         )
         self.assertEqual(client.add_calls, [])
@@ -1022,7 +1117,9 @@ class LLMFallbackTest(AutoBase):
         # (c) A rescued fallback is logged at WARNING, not ERROR: the article
         # is still tagged, so ERROR is reserved for when the fallback also
         # fails (or is not configured).
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         with self.assertLogs("wallatag.auto", level="INFO") as cm:
             run_auto(
                 client,
@@ -1050,7 +1147,9 @@ class DecisionsTest(AutoBase):
             entries=[entry(1, "pomodoro guide")],
             tags=["Pomodoro"],
         )
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
             store = Store(db)
@@ -1058,7 +1157,9 @@ class DecisionsTest(AutoBase):
                 summary, _ = self.run_auto(
                     client,
                     tagger=make_tagger(
-                        existing_tags=["Pomodoro"], groups=groups, tag_policy="all"
+                        existing_tags=["Pomodoro"],
+                        groups=groups,
+                        tag_policy="all",
                     ),
                     store=store,
                 )
@@ -1095,11 +1196,15 @@ class SummaryWordingTest(AutoBase):
 
 class CmdRunExitCodesTest(AutoBase):
     def test_success_exit_0(self):
-        client = FakeClient(entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"])
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
         code, out, _ = self.cmd_run(client=client)
         self.assertEqual(code, 0)
         self.assertTrue(client.closed)
-        self.assertIn("run: tagged 1 articles (1 tags applied), skipped 0", out)
+        self.assertIn(
+            "run: tagged 1 articles (1 tags applied), skipped 0", out
+        )
 
     def test_missing_url_exit_2(self):
         code, _, err = self.cmd_run(cfg=Config())
@@ -1146,8 +1251,11 @@ class CmdRunExitCodesTest(AutoBase):
 
     def test_partial_feed_error_exit_0(self):
         client = FakeClient(
-            entries=[entry(1, "pomodoro focus"), entry(2, "pomodoro again"),
-                     entry(3, "pomodoro third")],
+            entries=[
+                entry(1, "pomodoro focus"),
+                entry(2, "pomodoro again"),
+                entry(3, "pomodoro third"),
+            ],
             tags=["Pomodoro"],
             feed_fail_after=2,
         )

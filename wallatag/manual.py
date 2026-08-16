@@ -6,7 +6,7 @@ tagger's suggestions. The user edits it freely: add custom tags, drop entries,
 then commits with "next" or leaves the article untouched with "skip". Confirmed
 tags hit the wallabag API immediately; accept/reject decisions are logged to
 the optional SQLite store. In dry-run mode (--no-apply) nothing is written: no
-mark_seen, no record_decision, no add_tags. """
+mark_seen, no record_decision, no add_tags."""
 
 from __future__ import annotations
 
@@ -116,7 +116,9 @@ def run_manual(
                 # A model failure skips the article unless a keyword fallback
                 # is configured ([ai] fallback_on_fail); the session keeps
                 # going either way.
-                deferred = True  # dropped unless the keyword fallback rescues it
+                deferred = (
+                    True  # dropped unless the keyword fallback rescues it
+                )
                 if fallback_tagger is not None:
                     # Per-article fallback: the keyword tagger takes over for
                     # THIS article only — the LLM is still tried on subsequent
@@ -128,16 +130,29 @@ def run_manual(
                         suggestions = []
                     deferred = not suggestions
                 if deferred:
-                    print(f"LLM tagging failed {entry_id}: {exc}", file=sys.stderr)
+                    print(
+                        f"LLM tagging failed {entry_id}: {exc}",
+                        file=sys.stderr,
+                    )
                     if not dry_run:
-                        store.unmark_seen(entry_id)  # defer: keep the article in the queue
+                        store.unmark_seen(
+                            entry_id
+                        )  # defer: keep the article in the queue
                     continue
             try:
                 action, working = _edit_working_list(entry, suggestions)
             except _Quit:
                 break
             if action == "next":
-                _apply(client, store, entry_id, suggestions, working, dry_run, summary)
+                _apply(
+                    client,
+                    store,
+                    entry_id,
+                    suggestions,
+                    working,
+                    dry_run,
+                    summary,
+                )
             # "skip" applies and records nothing.
     except (WallabagError, requests.RequestException) as exc:
         # The feed fetch died (e.g. network failure while paginating): report
@@ -189,9 +204,11 @@ def _edit_working_list(entry: dict, original_suggestions: list):
     working = list(original_suggestions)
     while True:
         _redisplay(entry, working)
-        choice = input(
-            "add [a] | drop [d] | next [enter] | skip [s] | quit [q] > "
-        ).strip().lower()
+        choice = (
+            input("add [a] | drop [d] | next [enter] | skip [s] | quit [q] > ")
+            .strip()
+            .lower()
+        )
         if choice == "":
             return "next", working
         if choice == "q":
@@ -214,9 +231,13 @@ def _edit_working_list(entry: dict, original_suggestions: list):
             except _Abort:
                 continue
             remove = set(indices)
-            working = [item for i, item in enumerate(working) if i not in remove]
+            working = [
+                item for i, item in enumerate(working) if i not in remove
+            ]
             continue  # re-display the article + updated list
-        print("invalid choice; enter a, d, enter for next, s to skip, q to quit")
+        print(
+            "invalid choice; enter a, d, enter for next, s to skip, q to quit"
+        )
 
 
 def _pick_indices(count: int, *, verb: str = "drop") -> list[int]:
@@ -229,7 +250,9 @@ def _pick_indices(count: int, *, verb: str = "drop") -> list[int]:
     if count == 0:
         return []
     while True:
-        raw = input(f"  {verb} numbers (comma-separated, empty = all): ").strip()
+        raw = input(
+            f"  {verb} numbers (comma-separated, empty = all): "
+        ).strip()
         if raw.lower() == "q":
             raise _Abort()
         if raw == "":
@@ -259,7 +282,11 @@ def _ask_tags(existing: list[str]) -> list[str]:
             raise _Abort()
         tags = []
         for tag in (part.strip() for part in raw.split(",")):
-            if tag and tag.casefold() not in existing_folded and tag not in tags:
+            if (
+                tag
+                and tag.casefold() not in existing_folded
+                and tag not in tags
+            ):
                 tags.append(tag)
         if tags:
             return tags
@@ -315,4 +342,6 @@ def _apply(
     for item in working:
         store.record_decision(entry_id, item.tag, "accept", item.source)
     for suggestion in dropped:
-        store.record_decision(entry_id, suggestion.tag, "reject", suggestion.source)
+        store.record_decision(
+            entry_id, suggestion.tag, "reject", suggestion.source
+        )

@@ -18,7 +18,9 @@ class ReleaseScriptTest(unittest.TestCase):
         try:
             import prefect  # noqa: F401
         except ImportError:
-            raise unittest.SkipTest("prefect not installed (uv sync --group prefect)")
+            raise unittest.SkipTest(
+                "prefect not installed (uv sync --group prefect)"
+            )
         import deploy.release
 
         cls.release = deploy.release
@@ -33,18 +35,23 @@ class ReleaseScriptTest(unittest.TestCase):
 
     def test_main_ensures_block_before_deploy(self) -> None:
         calls = []
-        with patch(
-            "deploy.release.ensure_work_pool",
-            side_effect=lambda: calls.append("pool"),
-        ), patch(
-            "blocks.ensure_wallatag_llm_credentials_block",
-            side_effect=lambda *a, **k: calls.append("block"),
-        ), patch(
-            "blocks.ensure_wallabag_credentials_block",
-            side_effect=lambda *a, **k: calls.append("wallabag-block"),
-        ), patch(
-            "deploy.release.subprocess.run",
-            side_effect=lambda *a, **k: calls.append("deploy"),
+        with (
+            patch(
+                "deploy.release.ensure_work_pool",
+                side_effect=lambda: calls.append("pool"),
+            ),
+            patch(
+                "blocks.ensure_wallatag_llm_credentials_block",
+                side_effect=lambda *a, **k: calls.append("block"),
+            ),
+            patch(
+                "blocks.ensure_wallabag_credentials_block",
+                side_effect=lambda *a, **k: calls.append("wallabag-block"),
+            ),
+            patch(
+                "deploy.release.subprocess.run",
+                side_effect=lambda *a, **k: calls.append("deploy"),
+            ),
         ):
             self.release.main()
         self.assertEqual(calls, ["pool", "block", "wallabag-block", "deploy"])

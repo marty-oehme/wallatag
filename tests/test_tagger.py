@@ -40,8 +40,12 @@ def entry(title="", url="", domain_name="", content=""):
 
 class KeywordMatchingTest(unittest.TestCase):
     def test_matches_in_url_not_title(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
-        e = entry(title="focus timer", url="https://example.com/articles/pomodoro")
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
+        e = entry(
+            title="focus timer", url="https://example.com/articles/pomodoro"
+        )
         result = make_tagger(groups).suggest(e)
 
         self.assertEqual([s.tag for s in result], ["productivity"])
@@ -98,14 +102,18 @@ class PerFieldMatchingTest(unittest.TestCase):
 
     def test_multi_word_keyword_does_not_match_across_fields(self):
         # "rust programming" spans the title/url boundary and must NOT match.
-        groups = {"a": FocusGroup(keywords=("rust programming",), tags=("t1",))}
+        groups = {
+            "a": FocusGroup(keywords=("rust programming",), tags=("t1",))
+        }
         e = entry(title="the rust", url="programming-guide")
         result = make_tagger(groups).suggest(e)
 
         self.assertEqual(result, [])
 
     def test_multi_word_keyword_matches_within_single_field(self):
-        groups = {"a": FocusGroup(keywords=("rust programming",), tags=("t1",))}
+        groups = {
+            "a": FocusGroup(keywords=("rust programming",), tags=("t1",))
+        }
         e = entry(title="the rust programming guide")
         result = make_tagger(groups).suggest(e)
 
@@ -119,7 +127,9 @@ class PerFieldMatchingTest(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_missing_fields_do_not_crash(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         # No domain_name key, content is None; both keyword and label match
         # within the remaining title field.
         e = {"id": 1, "title": "pomodoro notes", "content": None}
@@ -130,13 +140,17 @@ class PerFieldMatchingTest(unittest.TestCase):
 
 class VocabularyTest(unittest.TestCase):
     def test_vocabulary_suggestion_preserves_original_label(self):
-        result = make_tagger({}, existing_tags=["Pomodoro", "unrelated"]).suggest(
-            entry(title="I use the pomodoro method")
-        )
+        result = make_tagger(
+            {}, existing_tags=["Pomodoro", "unrelated"]
+        ).suggest(entry(title="I use the pomodoro method"))
 
         self.assertEqual(
             result,
-            [TagSuggestion(tag="Pomodoro", source="vocabulary", confidence=1.0)],
+            [
+                TagSuggestion(
+                    tag="Pomodoro", source="vocabulary", confidence=1.0
+                )
+            ],
         )
 
     def test_vocabulary_order_follows_input_order(self):
@@ -171,7 +185,9 @@ class VocabularyTest(unittest.TestCase):
 
 class TagPolicyTest(unittest.TestCase):
     def test_only_existing_drops_non_vocabulary_rule_tags(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = make_tagger(
             groups, tag_policy="only-existing", existing_tags=["Pomodoro"]
         )
@@ -181,7 +197,9 @@ class TagPolicyTest(unittest.TestCase):
         self.assertEqual([s.source for s in result], ["vocabulary"])
 
     def test_prefer_existing_orders_vocabulary_first(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = make_tagger(
             groups, tag_policy="prefer-existing", existing_tags=["Pomodoro"]
         )
@@ -191,7 +209,9 @@ class TagPolicyTest(unittest.TestCase):
         self.assertEqual([s.source for s in result], ["vocabulary", "rules"])
 
     def test_all_keeps_both_in_same_order(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         e = entry(title="pomodoro focus")
         all_result = make_tagger(
             groups, tag_policy="all", existing_tags=["Pomodoro"]
@@ -201,12 +221,16 @@ class TagPolicyTest(unittest.TestCase):
         ).suggest(e)
 
         # "all" keeps rule-derived tags alongside the vocabulary match...
-        self.assertEqual([s.tag for s in all_result], ["Pomodoro", "productivity"])
+        self.assertEqual(
+            [s.tag for s in all_result], ["Pomodoro", "productivity"]
+        )
         # ...and is documented to be identical to "prefer-existing" in the MVP.
         self.assertEqual(all_result, prefer_result)
 
     def test_rule_only_when_no_vocabulary(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = make_tagger(groups, tag_policy="only-existing")
         result = tagger.suggest(entry(title="pomodoro"))
 
@@ -220,7 +244,9 @@ class TagPolicyTest(unittest.TestCase):
                 keywords=("pomodoro",), tags=("Pomodoro", "productivity")
             )
         }
-        tagger = make_tagger(groups, tag_policy="all", existing_tags=["Pomodoro"])
+        tagger = make_tagger(
+            groups, tag_policy="all", existing_tags=["Pomodoro"]
+        )
         result = tagger.suggest(entry(title="pomodoro focus"))
 
         self.assertEqual([s.tag for s in result], ["Pomodoro", "productivity"])
@@ -236,7 +262,9 @@ class OnlyExistingPolicyTest(unittest.TestCase):
         # The group maps keyword "pomodoro" -> tag "productivity", which IS an
         # existing tag, but the label never appears in the article text, so
         # only the rule can surface it. Under only-existing it must survive.
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = make_tagger(
             groups, tag_policy="only-existing", existing_tags=["productivity"]
         )
@@ -244,11 +272,19 @@ class OnlyExistingPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             result,
-            [TagSuggestion(tag="productivity", source="rules", confidence=0.7)],
+            [
+                TagSuggestion(
+                    tag="productivity", source="rules", confidence=0.7
+                )
+            ],
         )
 
     def test_rule_tags_not_in_vocabulary_dropped(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity", "newtag"))}
+        groups = {
+            "a": FocusGroup(
+                keywords=("pomodoro",), tags=("productivity", "newtag")
+            )
+        }
         tagger = make_tagger(
             groups, tag_policy="only-existing", existing_tags=["productivity"]
         )
@@ -258,7 +294,9 @@ class OnlyExistingPolicyTest(unittest.TestCase):
         self.assertEqual([s.source for s in result], ["rules"])
 
     def test_membership_is_case_insensitive(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("Productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("Productivity",))
+        }
         tagger = make_tagger(
             groups, tag_policy="only-existing", existing_tags=["productivity"]
         )
@@ -270,7 +308,9 @@ class OnlyExistingPolicyTest(unittest.TestCase):
         # enable_vocabulary=False disables vocabulary MATCHING only; the
         # policy filter still uses the existing vocabulary, so rules filtered
         # to existing tags keep firing.
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = KeywordTagger(
             groups,
             max_applied_tags=10,
@@ -293,11 +333,18 @@ class OnlyExistingPolicyTest(unittest.TestCase):
         result = tagger.suggest(entry(title="pomodoro focus"))
 
         self.assertEqual(
-            result, [TagSuggestion(tag="Pomodoro", source="vocabulary", confidence=1.0)]
+            result,
+            [
+                TagSuggestion(
+                    tag="Pomodoro", source="vocabulary", confidence=1.0
+                )
+            ],
         )
 
     def test_padded_existing_label_counts_for_membership(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = make_tagger(
             groups,
             tag_policy="only-existing",
@@ -310,10 +357,12 @@ class OnlyExistingPolicyTest(unittest.TestCase):
 
 class MaxAppliedTagsTest(unittest.TestCase):
     def test_max_applied_tags_caps_total(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("t1", "t2", "t3"))}
-        result = make_tagger(groups, max_applied_tags=2, tag_policy="all").suggest(
-            entry(title="pomodoro")
-        )
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("t1", "t2", "t3"))
+        }
+        result = make_tagger(
+            groups, max_applied_tags=2, tag_policy="all"
+        ).suggest(entry(title="pomodoro"))
 
         self.assertEqual([s.tag for s in result], ["t1", "t2"])
 
@@ -332,9 +381,7 @@ class DeterminismTest(unittest.TestCase):
             "a": FocusGroup(keywords=("pomodoro",), tags=("t1",)),
             "b": FocusGroup(keywords=("gtd",), tags=("t2",)),
         }
-        tagger = make_tagger(
-            groups, tag_policy="all", existing_tags=["Ztag"]
-        )
+        tagger = make_tagger(groups, tag_policy="all", existing_tags=["Ztag"])
         e = entry(title="pomodoro gtd ztag")
 
         self.assertEqual(tagger.suggest(e), tagger.suggest(e))
@@ -362,7 +409,9 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
     """enable_vocabulary / enable_rules off-switches gate the two sources."""
 
     def test_enable_vocabulary_false_drops_vocabulary_keeps_rules(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = KeywordTagger(
             groups,
             max_applied_tags=10,
@@ -376,7 +425,9 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         self.assertEqual([s.source for s in result], ["rules"])
 
     def test_enable_rules_false_drops_rules_keeps_vocabulary(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = KeywordTagger(
             groups,
             max_applied_tags=10,
@@ -389,7 +440,9 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         self.assertEqual([s.source for s in result], ["vocabulary"])
 
     def test_both_false_yields_empty(self):
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = KeywordTagger(
             groups,
             max_applied_tags=10,
@@ -404,7 +457,9 @@ class KeywordTaggerEnableSwitchTest(unittest.TestCase):
         # enable_rules=False drops rules even under tag_policy="all"; combined
         # with "only-existing" both gates agree and the result is vocabulary
         # only (rules are dropped by the policy AND the switch).
-        groups = {"a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))}
+        groups = {
+            "a": FocusGroup(keywords=("pomodoro",), tags=("productivity",))
+        }
         tagger = KeywordTagger(
             groups,
             max_applied_tags=10,
@@ -596,7 +651,9 @@ class RegexRuleTest(unittest.TestCase):
     def test_regex_matches_in_content_field(self):
         groups = {
             "a": FocusGroup(
-                keywords=(), tags=("recipe",), keywords_regex=("(tasty|spicy)",)
+                keywords=(),
+                tags=("recipe",),
+                keywords_regex=("(tasty|spicy)",),
             )
         }
         result = make_tagger(groups).suggest(
@@ -607,7 +664,9 @@ class RegexRuleTest(unittest.TestCase):
 
     def test_regex_case_insensitive_by_default(self):
         groups = {
-            "a": FocusGroup(keywords=(), tags=("howto",), keywords_regex=("^howto",))
+            "a": FocusGroup(
+                keywords=(), tags=("howto",), keywords_regex=("^howto",)
+            )
         }
         result = make_tagger(groups).suggest(entry(title="HOWTO Guide"))
 
@@ -618,14 +677,19 @@ class RegexRuleTest(unittest.TestCase):
         # because regex matching reads the RAW field values, not the casefolded
         # needles literal matching uses.
         groups = {
-            "a": FocusGroup(keywords=(), tags=("gtd",), keywords_regex=("(?-i:GTD)",))
+            "a": FocusGroup(
+                keywords=(), tags=("gtd",), keywords_regex=("(?-i:GTD)",)
+            )
         }
         tagger = make_tagger(groups)
-        self.assertEqual([s.tag for s in tagger.suggest(entry(title="GTD intro"))], ["gtd"])
+        self.assertEqual(
+            [s.tag for s in tagger.suggest(entry(title="GTD intro"))], ["gtd"]
+        )
         self.assertEqual(tagger.suggest(entry(title="gtd intro")), [])
         # Raw content values work too.
         self.assertEqual(
-            [s.tag for s in tagger.suggest(entry(title="x", content="GTD"))], ["gtd"]
+            [s.tag for s in tagger.suggest(entry(title="x", content="GTD"))],
+            ["gtd"],
         )
 
     def test_regex_matching_is_per_field(self):
@@ -645,7 +709,9 @@ class RegexRuleTest(unittest.TestCase):
             )
         }
         e = entry(title="the rust programming guide")
-        self.assertEqual([s.tag for s in make_tagger(groups).suggest(e)], ["t1"])
+        self.assertEqual(
+            [s.tag for s in make_tagger(groups).suggest(e)], ["t1"]
+        )
 
     def test_literal_and_regex_coexist_either_fires(self):
         groups = {
@@ -657,7 +723,8 @@ class RegexRuleTest(unittest.TestCase):
         }
         tagger = make_tagger(groups)
         self.assertEqual(
-            [s.tag for s in tagger.suggest(entry(title="How to X"))], ["productivity"]
+            [s.tag for s in tagger.suggest(entry(title="How to X"))],
+            ["productivity"],
         )
         self.assertEqual(
             [s.tag for s in tagger.suggest(entry(title="my gtd setup"))],
@@ -714,9 +781,12 @@ class RegexRuleTest(unittest.TestCase):
         tagger = make_tagger(groups)
         # "pomodoro" only appears in content: the title-only subset must not
         # fire.
-        self.assertEqual(tagger.suggest(entry(title="x", content="pomodoro notes")), [])
         self.assertEqual(
-            [s.tag for s in tagger.suggest(entry(title="pomodoro notes"))], ["method"]
+            tagger.suggest(entry(title="x", content="pomodoro notes")), []
+        )
+        self.assertEqual(
+            [s.tag for s in tagger.suggest(entry(title="pomodoro notes"))],
+            ["method"],
         )
 
     def test_empty_fields_subset_disables_regex_matching(self):
@@ -728,7 +798,9 @@ class RegexRuleTest(unittest.TestCase):
                 keywords_regex=("pomodoro",),
             )
         }
-        self.assertEqual(make_tagger(groups).suggest(entry(title="pomodoro")), [])
+        self.assertEqual(
+            make_tagger(groups).suggest(entry(title="pomodoro")), []
+        )
 
     def test_blank_regex_pattern_raises_at_construction(self):
         # Backstop: config already rejects blank patterns, but a directly
@@ -736,7 +808,11 @@ class RegexRuleTest(unittest.TestCase):
         for bad in ("", "   "):
             with self.assertRaises(ValueError) as ctx:
                 KeywordTagger(
-                    {"a": FocusGroup(keywords=(), tags=("t",), keywords_regex=(bad,))},
+                    {
+                        "a": FocusGroup(
+                            keywords=(), tags=("t",), keywords_regex=(bad,)
+                        )
+                    },
                     max_applied_tags=10,
                     tag_policy="prefer-existing",
                 )
@@ -766,7 +842,9 @@ class RegexRuleTest(unittest.TestCase):
             )
         }
         e = {"id": 1, "title": "pomodoro notes", "content": None}
-        self.assertEqual([s.tag for s in make_tagger(groups).suggest(e)], ["t"])
+        self.assertEqual(
+            [s.tag for s in make_tagger(groups).suggest(e)], ["t"]
+        )
 
 
 class FakeLLMClient:
@@ -830,7 +908,9 @@ class LLMTaggerSuggestTest(unittest.TestCase):
             '[{"tag": "python", "confidence": 0.9}, '
             '{"tag": "rust", "confidence": 0.8}]'
         )
-        result = make_llm_tagger(client).suggest(entry(title="python and rust"))
+        result = make_llm_tagger(client).suggest(
+            entry(title="python and rust")
+        )
 
         self.assertEqual([s.tag for s in result], ["python", "rust"])
         self.assertEqual([s.source for s in result], ["llm", "llm"])
@@ -895,7 +975,9 @@ class LLMTaggerSuggestTest(unittest.TestCase):
             '[{"tag": "python", "confidence": 0.9}, '
             '{"tag": "newone", "confidence": 0.8}]'
         )
-        tagger = make_llm_tagger(client, tag_policy="all", existing_tags=["python"])
+        tagger = make_llm_tagger(
+            client, tag_policy="all", existing_tags=["python"]
+        )
         result = tagger.suggest(entry(title="x"))
 
         self.assertEqual([s.tag for s in result], ["python", "newone"])
@@ -929,7 +1011,9 @@ class LLMTaggerSuggestTest(unittest.TestCase):
             '{"tag": "b", "confidence": 0.9}, '
             '{"tag": "c", "confidence": 0.9}]'
         )
-        result = make_llm_tagger(client, max_applied_tags=2).suggest(entry(title="x"))
+        result = make_llm_tagger(client, max_applied_tags=2).suggest(
+            entry(title="x")
+        )
 
         self.assertEqual([s.tag for s in result], ["a", "b"])
 
@@ -998,7 +1082,9 @@ class LLMTaggerSuggestTest(unittest.TestCase):
             '{"tag": "low2", "confidence": 0.72}, '
             '{"tag": "top2", "confidence": 0.98}]'
         )
-        result = make_llm_tagger(client, max_applied_tags=3).suggest(entry(title="x"))
+        result = make_llm_tagger(client, max_applied_tags=3).suggest(
+            entry(title="x")
+        )
 
         self.assertEqual([s.tag for s in result], ["top1", "top2", "mid1"])
 
@@ -1079,7 +1165,7 @@ class LLMTaggerMalformedResponseTest(unittest.TestCase):
 
     def test_entries_with_missing_fields_skipped(self):
         client = FakeLLMClient(
-            '[{"confidence": 0.9}, '          # missing tag
+            '[{"confidence": 0.9}, '  # missing tag
             '{"tag": 123, "confidence": 0.8},'  # non-string tag
             '{"tag": "ok", "confidence": 0.7},'  # valid
             '{"tag": "badconf", "confidence": "high"},'  # non-numeric confidence
@@ -1208,7 +1294,9 @@ class LLMTaggerIgnoredTagsTest(unittest.TestCase):
         groups = {
             "a": FocusGroup(keywords=("pomodoro",), tags=("fix",)),
         }
-        prompt = self._prompt(groups=groups, title="pomodoro", ignore_tags=["fix"])
+        prompt = self._prompt(
+            groups=groups, title="pomodoro", ignore_tags=["fix"]
+        )
         self.assertIn("Focus areas: fix.", prompt)
         # The vocabulary line itself is unaffected (no existing tags here).
         self.assertIn("Existing tag vocabulary: none", prompt)
@@ -1281,7 +1369,9 @@ class LLMTaggerPromptTest(unittest.TestCase):
         ).suggest(entry(title="x"))
 
         prompt = client.system_prompts[0]
-        self.assertIn("ONLY choose from the provided existing tag vocabulary", prompt)
+        self.assertIn(
+            "ONLY choose from the provided existing tag vocabulary", prompt
+        )
         # Issue 3d24a04: the prefer-existing rule must NOT appear alongside the
         # only-existing policy line (they contradict each other).
         self.assertNotIn("prefer the same tags that already exist", prompt)
@@ -1298,17 +1388,21 @@ class LLMTaggerPromptTest(unittest.TestCase):
             "really don't fit and are an important part of the text",
             prompt,
         )
-        self.assertNotIn("ONLY choose from the provided existing tag vocabulary", prompt)
+        self.assertNotIn(
+            "ONLY choose from the provided existing tag vocabulary", prompt
+        )
 
     def test_system_prompt_all_policy_omits_vocabulary_rule(self):
         client = FakeLLMClient("[]")
-        make_llm_tagger(client, tag_policy="all", existing_tags=["python"]).suggest(
-            entry(title="x")
-        )
+        make_llm_tagger(
+            client, tag_policy="all", existing_tags=["python"]
+        ).suggest(entry(title="x"))
 
         prompt = client.system_prompts[0]
         self.assertNotIn("prefer the same tags that already exist", prompt)
-        self.assertNotIn("ONLY choose from the provided existing tag vocabulary", prompt)
+        self.assertNotIn(
+            "ONLY choose from the provided existing tag vocabulary", prompt
+        )
         self.assertIn("new tags beyond the vocabulary are welcome", prompt)
 
     def test_user_prompt_contains_cleaned_content_and_metadata(self):
@@ -1343,9 +1437,9 @@ class LLMTaggerPromptTest(unittest.TestCase):
         # max_proposals=None (default): the "Return at most N tags." line
         # follows max_applied_tags (backward-compatible default).
         client = FakeLLMClient("[]")
-        make_llm_tagger(client, max_applied_tags=3, max_proposals=None).suggest(
-            entry(title="x")
-        )
+        make_llm_tagger(
+            client, max_applied_tags=3, max_proposals=None
+        ).suggest(entry(title="x"))
 
         self.assertIn("Return at most 3 tags.", client.system_prompts[0])
 
@@ -1396,7 +1490,9 @@ class LLMTaggerFocusAreasTest(unittest.TestCase):
     def test_use_focus_groups_false_omits_focus_areas_line(self):
         # False -> the system prompt has NO "Focus areas" line at all (not
         # even "Focus areas: none").
-        groups = {"langs": FocusGroup(keywords=("python",), tags=("programming",))}
+        groups = {
+            "langs": FocusGroup(keywords=("python",), tags=("programming",))
+        }
         prompt = self._prompt(groups=groups, use_focus_groups=False)
         self.assertNotIn("Focus areas", prompt)
         # The rest of the prompt survives.
@@ -1450,7 +1546,9 @@ class LLMTaggerFocusAreasTest(unittest.TestCase):
     def test_non_matching_entry_yields_focus_areas_none(self):
         # focus areas are per-entry. An article that matches no
         # group sees "Focus areas: none." instead of every group's tags.
-        groups = {"langs": FocusGroup(keywords=("python",), tags=("programming",))}
+        groups = {
+            "langs": FocusGroup(keywords=("python",), tags=("programming",))
+        }
         prompt = self._prompt(groups=groups, title="cooking")
         self.assertIn("Focus areas: none.", prompt)
         self.assertNotIn("programming", prompt)
@@ -1545,7 +1643,10 @@ class LLMTaggerVerboseTest(unittest.TestCase):
         body = '[{"tag": "python", "confidence": 0.9}]'
         client = FakeLLMClient(body)
         stderr, stdout = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+        with (
+            contextlib.redirect_stderr(stderr),
+            contextlib.redirect_stdout(stdout),
+        ):
             make_llm_tagger(client, verbose=True).suggest(
                 entry(title="Python tutorial", content="<p>hello world</p>")
             )
@@ -1567,7 +1668,10 @@ class LLMTaggerVerboseTest(unittest.TestCase):
     def test_default_verbose_false_silent(self):
         client = FakeLLMClient('[{"tag": "python", "confidence": 0.9}]')
         stderr, stdout = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+        with (
+            contextlib.redirect_stderr(stderr),
+            contextlib.redirect_stdout(stdout),
+        ):
             make_llm_tagger(client).suggest(entry(title="x"))
 
         self.assertEqual(stderr.getvalue(), "")
@@ -1645,10 +1749,13 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
     def test_vocabulary_fields_default_is_all_four(self):
         tagger = make_tagger({}, existing_tags=["rust"])
         self.assertEqual(
-            tagger.vocabulary_fields, ("title", "url", "domain_name", "content")
+            tagger.vocabulary_fields,
+            ("title", "url", "domain_name", "content"),
         )
         # A label only in the URL still matches with the default fields.
-        result = tagger.suggest(entry(title="x", url="https://blog.rust-lang.org"))
+        result = tagger.suggest(
+            entry(title="x", url="https://blog.rust-lang.org")
+        )
         self.assertEqual([s.tag for s in result], ["rust"])
 
     def test_group_fields_restrict_rule_matching(self):
@@ -1696,7 +1803,9 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
         # Group A matches title only; group B matches content only. Each
         # keyword fires on its own field subset.
         groups = {
-            "titles": FocusGroup(keywords=("gtd",), tags=("method",), fields=("title",)),
+            "titles": FocusGroup(
+                keywords=("gtd",), tags=("method",), fields=("title",)
+            ),
             "bodies": FocusGroup(
                 keywords=("recipe",), tags=("cooking",), fields=("content",)
             ),
@@ -1720,17 +1829,26 @@ class PerSourceMatchFieldsTest(unittest.TestCase):
         # Case-sensitive: "Title" is invalid too.
         with self.assertRaises(ValueError):
             KeywordTagger(
-                {}, max_applied_tags=1, tag_policy="all", vocabulary_fields=("Title",)
+                {},
+                max_applied_tags=1,
+                tag_policy="all",
+                vocabulary_fields=("Title",),
             )
 
     def test_field_needles_respects_given_fields(self):
         tagger = make_tagger({})
-        e = entry(title="TITLE", url="URL", domain_name="DOMAIN", content="BODY")
+        e = entry(
+            title="TITLE", url="URL", domain_name="DOMAIN", content="BODY"
+        )
         self.assertEqual(tagger._field_needles(e, ("title",)), ("title",))
-        self.assertEqual(tagger._field_needles(e, ("url", "content")), ("url", "body"))
+        self.assertEqual(
+            tagger._field_needles(e, ("url", "content")), ("url", "body")
+        )
         # Non-string/missing values are skipped per field, as before.
         self.assertEqual(
-            tagger._field_needles({"title": "t", "content": None}, ("title", "content")),
+            tagger._field_needles(
+                {"title": "t", "content": None}, ("title", "content")
+            ),
             ("t",),
         )
 

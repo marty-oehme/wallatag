@@ -233,7 +233,9 @@ def _parse_toml(path: Path) -> dict:
         raise ConfigError(f"cannot read config file {path}: {exc}") from exc
 
 
-def _parse_string_list(context: str, key: str, value: object) -> tuple[str, ...]:
+def _parse_string_list(
+    context: str, key: str, value: object
+) -> tuple[str, ...]:
     """Validate one list-of-strings key (list/tuple of str); return a tuple.
 
     ``context`` names the owning section for error messages (e.g. a focus
@@ -250,7 +252,9 @@ def _parse_string_list(context: str, key: str, value: object) -> tuple[str, ...]
     return tuple(value)
 
 
-def _parse_comma_separated(context: str, key: str, value: str) -> tuple[str, ...]:
+def _parse_comma_separated(
+    context: str, key: str, value: str
+) -> tuple[str, ...]:
     """Parse a comma-separated env-var value into a tuple of non-empty items.
 
     Items are stripped of surrounding whitespace and empty items are dropped,
@@ -364,12 +368,16 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
                 "keywords/tags/fields/keywords_regex"
             )
         keywords = (
-            _parse_string_list(f"focus group {name!r}", "keywords", section["keywords"])
+            _parse_string_list(
+                f"focus group {name!r}", "keywords", section["keywords"]
+            )
             if "keywords" in section
             else ()
         )
         tags = (
-            _parse_string_list(f"focus group {name!r}", "tags", section["tags"])
+            _parse_string_list(
+                f"focus group {name!r}", "tags", section["tags"]
+            )
             if "tags" in section
             else ()
         )
@@ -380,7 +388,9 @@ def _parse_focus_groups(raw: dict) -> dict[str, FocusGroup]:
             _validate_match_fields(
                 f"focus group {name!r}",
                 "fields",
-                _parse_string_list(f"focus group {name!r}", "fields", section["fields"]),
+                _parse_string_list(
+                    f"focus group {name!r}", "fields", section["fields"]
+                ),
             )
             if "fields" in section
             else None
@@ -458,7 +468,9 @@ def _parse_ai(raw: dict) -> AiConfig:
         or isinstance(confidence, bool)
         or not 0 < float(confidence) <= 1
     ):
-        raise ConfigError("confidence_threshold must be a number in the range (0, 1]")
+        raise ConfigError(
+            "confidence_threshold must be a number in the range (0, 1]"
+        )
     confidence = float(confidence)
 
     # Optional LLM proposal bound: None follows [tagger] max_applied_tags.
@@ -499,8 +511,14 @@ def _parse_toml_config(raw: dict) -> Config:
     store_raw = raw.get("store", {}) or {}
     tagger_raw = raw.get("tagger", {}) or {}
 
-    if not isinstance(wallabag_raw, dict) or not isinstance(store_raw, dict) or not isinstance(tagger_raw, dict):
-        raise ConfigError("sections [wallabag], [store], [tagger] must be tables")
+    if (
+        not isinstance(wallabag_raw, dict)
+        or not isinstance(store_raw, dict)
+        or not isinstance(tagger_raw, dict)
+    ):
+        raise ConfigError(
+            "sections [wallabag], [store], [tagger] must be tables"
+        )
     # The isinstance check runs on the RAW value BEFORE any `or {}`
     # normalization (mirrors _parse_ai): falsy non-tables (`vocabulary = ""`,
     # `vocabulary = false`, `vocabulary = []`) must raise, not silently parse
@@ -517,7 +535,11 @@ def _parse_toml_config(raw: dict) -> Config:
         )
 
     max_applied_tags = tagger_raw.get("max_applied_tags", 5)
-    if not isinstance(max_applied_tags, int) or isinstance(max_applied_tags, bool) or max_applied_tags < 0:
+    if (
+        not isinstance(max_applied_tags, int)
+        or isinstance(max_applied_tags, bool)
+        or max_applied_tags < 0
+    ):
         raise ConfigError("max_applied_tags must be a non-negative integer")
 
     # Absent key -> () (no-op); empty array -> () too. Any present value goes
@@ -538,7 +560,9 @@ def _parse_toml_config(raw: dict) -> Config:
         _validate_regexes(
             "tagger",
             "ignore_tags_regex",
-            _parse_string_list("tagger", "ignore_tags_regex", ignore_tags_regex_raw),
+            _parse_string_list(
+                "tagger", "ignore_tags_regex", ignore_tags_regex_raw
+            ),
         )
         if ignore_tags_regex_raw is not None
         else ()
@@ -549,7 +573,9 @@ def _parse_toml_config(raw: dict) -> Config:
     # (existing behavior); enable_llm is opt-in and defaults to False.
     enable_vocabulary = tagger_raw.get("enable_vocabulary", True)
     if not isinstance(enable_vocabulary, bool):
-        raise ConfigError("enable_vocabulary must be a boolean (true or false)")
+        raise ConfigError(
+            "enable_vocabulary must be a boolean (true or false)"
+        )
     enable_rules = tagger_raw.get("enable_rules", True)
     if not isinstance(enable_rules, bool):
         raise ConfigError("enable_rules must be a boolean (true or false)")
@@ -580,7 +606,9 @@ def _parse_toml_config(raw: dict) -> Config:
     # to True; strict boolean validation mirrors enable_vocabulary.
     skip_ignored_tags = vocabulary_raw.get("skip_ignored_tags", True)
     if not isinstance(skip_ignored_tags, bool):
-        raise ConfigError("skip_ignored_tags must be a boolean (true or false)")
+        raise ConfigError(
+            "skip_ignored_tags must be a boolean (true or false)"
+        )
 
     return Config(
         wallabag=WallabagConfig(
@@ -806,7 +834,9 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
     if enable_llm_raw is not None:
         tagger = replace(
             tagger,
-            enable_llm=_parse_bool_env("tagger", _ENV_ENABLE_LLM, enable_llm_raw),
+            enable_llm=_parse_bool_env(
+                "tagger", _ENV_ENABLE_LLM, enable_llm_raw
+            ),
         )
 
     # Vocabulary match fields: WALLATAG_VOCABULARY_FIELDS (comma-separated,
@@ -860,7 +890,8 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         if key.endswith(_ENV_FOCUS_KEYWORDS_SUFFIX):
             field = "keywords"
             name = key[
-                len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_KEYWORDS_SUFFIX)
+                len(_ENV_FOCUS_PREFIX) : len(key)
+                - len(_ENV_FOCUS_KEYWORDS_SUFFIX)
             ]
         elif key.endswith(_ENV_FOCUS_KEYWORDS_REGEX_SUFFIX):
             field = "keywords_regex"
@@ -870,10 +901,15 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
             ]
         elif key.endswith(_ENV_FOCUS_TAGS_SUFFIX):
             field = "tags"
-            name = key[len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_TAGS_SUFFIX)]
+            name = key[
+                len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_TAGS_SUFFIX)
+            ]
         elif key.endswith(_ENV_FOCUS_FIELDS_SUFFIX):
             field = "fields"
-            name = key[len(_ENV_FOCUS_PREFIX) : len(key) - len(_ENV_FOCUS_FIELDS_SUFFIX)]
+            name = key[
+                len(_ENV_FOCUS_PREFIX) : len(key)
+                - len(_ENV_FOCUS_FIELDS_SUFFIX)
+            ]
         else:
             # No suffix: WALLATAG_FOCUS_ (bare prefix) and
             # WALLATAG_FOCUS_<NAME> alone are ignored.
@@ -952,7 +988,9 @@ def load_config(
         env = os.environ
 
     path = find_config_file(explicit=config_path, env=env)
-    config = _parse_toml_config(_parse_toml(path)) if path is not None else Config()
+    config = (
+        _parse_toml_config(_parse_toml(path)) if path is not None else Config()
+    )
     config = _apply_env(config, env)
     return config
 
@@ -989,7 +1027,8 @@ def apply_run_overrides(
                 selected = config.tagger.focus_groups.get(name)
                 if selected is None:
                     available = (
-                        ", ".join(config.tagger.focus_groups) or "(none configured)"
+                        ", ".join(config.tagger.focus_groups)
+                        or "(none configured)"
                     )
                     raise ConfigError(
                         f"unknown focus group {name!r}; available focus groups: {available}"

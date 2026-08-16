@@ -93,7 +93,11 @@ class LLMClient:
             raise ValueError("base_url must not be empty")
         if not model:
             raise ValueError("model must not be empty")
-        if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
+        if (
+            not isinstance(retries, int)
+            or isinstance(retries, bool)
+            or retries < 0
+        ):
             raise ValueError("retries must be a non-negative integer")
         if not backoff_base > 0:
             raise ValueError("backoff_base must be positive")
@@ -142,7 +146,7 @@ class LLMClient:
         ``backoff_base * 2``, ... each multiplied by a random 0.5-1.5 jitter so
         synchronized clients do not stampede the provider.
         """
-        return self.backoff_base * (2 ** attempt) * random.uniform(0.5, 1.5)
+        return self.backoff_base * (2**attempt) * random.uniform(0.5, 1.5)
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         """POST a chat completion and return the assistant message content.
@@ -185,7 +189,10 @@ class LLMClient:
                     f"LLM request failed after {self.retries + 1} attempts: "
                     f"{self._redact(str(exc))}"
                 ) from exc
-            if resp.status_code in _TRANSIENT_STATUSES and attempt < self.retries:
+            if (
+                resp.status_code in _TRANSIENT_STATUSES
+                and attempt < self.retries
+            ):
                 time.sleep(self._backoff_delay(attempt))
                 continue
             if not 200 <= resp.status_code < 300:
@@ -216,9 +223,13 @@ class LLMClient:
         return content
 
     def _http_error(self, resp: requests.Response) -> str:
-        snippet = self._redact(resp.text or "").strip().replace("\n", " ")[:200]
+        snippet = (
+            self._redact(resp.text or "").strip().replace("\n", " ")[:200]
+        )
         if snippet:
-            return f"LLM request failed with status {resp.status_code}: {snippet}"
+            return (
+                f"LLM request failed with status {resp.status_code}: {snippet}"
+            )
         return f"LLM request failed with status {resp.status_code}"
 
     def close(self) -> None:

@@ -13,7 +13,6 @@ import logging
 import os
 import re
 import sys
-from typing import TYPE_CHECKING
 
 import requests
 
@@ -31,9 +30,6 @@ from wallatag.cli import _build_tagger
 from wallatag.config import apply_run_overrides, load_config
 from wallatag.store import Store
 from wallatag.wallabag import WallabagClient, WallabagError
-
-if TYPE_CHECKING:
-    from prefect.flows import Flow
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +405,8 @@ def wallatag_batch(
     focus_names = (
         None
         if focus is None
-        else [name.strip() for name in focus.split(",") if name.strip()] or None
+        else [name.strip() for name in focus.split(",") if name.strip()]
+        or None
     )
     config = apply_run_overrides(
         load_config(env=env),
@@ -442,7 +439,9 @@ def wallatag_batch(
             password=config.wallabag.password,
         )
         existing_tags = [tag["label"] for tag in client.get_tags()]
-        tagger, llm_client, fallback_tagger = _build_tagger(config, existing_tags)
+        tagger, llm_client, fallback_tagger = _build_tagger(
+            config, existing_tags
+        )
         store = Store(config.store.path)
         summary = auto.AutoSummary()
         try:

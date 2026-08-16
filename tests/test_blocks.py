@@ -19,7 +19,9 @@ class BlocksModelTest(unittest.TestCase):
         try:
             import prefect  # noqa: F401
         except ImportError:
-            raise unittest.SkipTest("prefect not installed (uv sync --group prefect)")
+            raise unittest.SkipTest(
+                "prefect not installed (uv sync --group prefect)"
+            )
         import blocks
 
         cls.blocks = blocks
@@ -136,7 +138,9 @@ class EnsureBlockTest(unittest.TestCase):
         try:
             import prefect  # noqa: F401
         except ImportError:
-            raise unittest.SkipTest("prefect not installed (uv sync --group prefect)")
+            raise unittest.SkipTest(
+                "prefect not installed (uv sync --group prefect)"
+            )
         import blocks
 
         cls.blocks = blocks
@@ -149,19 +153,27 @@ class EnsureBlockTest(unittest.TestCase):
             saved["name"] = name
 
         messages = []
-        with patch.object(
-            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
-        ), patch.object(self.blocks.LLMCredentials, "save", fake_save), patch.dict(
-            os.environ,
-            {
-                "WALLATAG_AI_PROVIDER": "ollama",
-                "WALLATAG_AI_BASE_URL": "http://localhost:11434",
-                "WALLATAG_AI_MODEL": "qwen2.5:3b",
-                "WALLATAG_AI_API_KEY": "sk-123",
-            },
-            clear=True,
+        with (
+            patch.object(
+                self.blocks.LLMCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(self.blocks.LLMCredentials, "save", fake_save),
+            patch.dict(
+                os.environ,
+                {
+                    "WALLATAG_AI_PROVIDER": "ollama",
+                    "WALLATAG_AI_BASE_URL": "http://localhost:11434",
+                    "WALLATAG_AI_MODEL": "qwen2.5:3b",
+                    "WALLATAG_AI_API_KEY": "sk-123",
+                },
+                clear=True,
+            ),
         ):
-            self.blocks.ensure_wallatag_llm_credentials_block(log=messages.append)
+            self.blocks.ensure_wallatag_llm_credentials_block(
+                log=messages.append
+            )
 
         block = saved["block"]
         self.assertEqual(saved["name"], "wallatag-llm")
@@ -179,12 +191,18 @@ class EnsureBlockTest(unittest.TestCase):
             saved["block"] = self
 
         messages = []
-        with patch.object(
-            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
-        ), patch.object(self.blocks.LLMCredentials, "save", fake_save), patch.dict(
-            os.environ, {}, clear=True
+        with (
+            patch.object(
+                self.blocks.LLMCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(self.blocks.LLMCredentials, "save", fake_save),
+            patch.dict(os.environ, {}, clear=True),
         ):
-            self.blocks.ensure_wallatag_llm_credentials_block(log=messages.append)
+            self.blocks.ensure_wallatag_llm_credentials_block(
+                log=messages.append
+            )
 
         block = saved["block"]
         self.assertEqual(block.provider, "")
@@ -201,10 +219,16 @@ class EnsureBlockTest(unittest.TestCase):
         def fake_save(self, name, overwrite=False, client=None):
             saved["block"] = self
 
-        with patch.object(
-            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
-        ), patch.object(self.blocks.LLMCredentials, "save", fake_save), patch.dict(
-            os.environ, {"WALLATAG_AI_PROVIDER": "ollama"}, clear=True
+        with (
+            patch.object(
+                self.blocks.LLMCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(self.blocks.LLMCredentials, "save", fake_save),
+            patch.dict(
+                os.environ, {"WALLATAG_AI_PROVIDER": "ollama"}, clear=True
+            ),
         ):
             self.blocks.ensure_wallatag_llm_credentials_block()
 
@@ -213,35 +237,46 @@ class EnsureBlockTest(unittest.TestCase):
         self.assertEqual(saved["block"].model, "")
 
     def test_existing_block_not_overwritten(self) -> None:
-        with patch.object(
-            self.blocks.LLMCredentials,
-            "load",
-            return_value=self.blocks.LLMCredentials(provider="ollama"),
-        ), patch.object(self.blocks.LLMCredentials, "save") as mock_save, \
-            redirect_stdout(io.StringIO()) as out:
+        with (
+            patch.object(
+                self.blocks.LLMCredentials,
+                "load",
+                return_value=self.blocks.LLMCredentials(provider="ollama"),
+            ),
+            patch.object(self.blocks.LLMCredentials, "save") as mock_save,
+            redirect_stdout(io.StringIO()) as out,
+        ):
             self.blocks.ensure_wallatag_llm_credentials_block()
         mock_save.assert_not_called()
         self.assertIn("already exists", out.getvalue())
 
     def test_save_failure_logs_warning_and_returns(self) -> None:
         messages = []
-        with patch.object(
-            self.blocks.LLMCredentials, "load", side_effect=Exception("missing")
-        ), patch.object(
-            self.blocks.LLMCredentials,
-            "save",
-            side_effect=RuntimeError("prefect server unreachable"),
-        ), patch.dict(
-            os.environ,
-            {
-                "WALLATAG_AI_PROVIDER": "ollama",
-                "WALLATAG_AI_BASE_URL": "http://localhost:11434",
-                "WALLATAG_AI_MODEL": "qwen2.5:3b",
-            },
-            clear=True,
+        with (
+            patch.object(
+                self.blocks.LLMCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(
+                self.blocks.LLMCredentials,
+                "save",
+                side_effect=RuntimeError("prefect server unreachable"),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "WALLATAG_AI_PROVIDER": "ollama",
+                    "WALLATAG_AI_BASE_URL": "http://localhost:11434",
+                    "WALLATAG_AI_MODEL": "qwen2.5:3b",
+                },
+                clear=True,
+            ),
         ):
             # Must not raise.
-            self.blocks.ensure_wallatag_llm_credentials_block(log=messages.append)
+            self.blocks.ensure_wallatag_llm_credentials_block(
+                log=messages.append
+            )
 
         self.assertTrue(
             any("warning" in m and "could not save" in m for m in messages)
@@ -255,22 +290,24 @@ class EnsureBlockTest(unittest.TestCase):
             saved["name"] = name
 
         messages = []
-        with patch.object(
-            self.blocks.WallabagCredentials,
-            "load",
-            side_effect=Exception("missing"),
-        ), patch.object(
-            self.blocks.WallabagCredentials, "save", fake_save
-        ), patch.dict(
-            os.environ,
-            {
-                "WALLATAG_URL": "https://wallabag.example.com",
-                "WALLATAG_CLIENT_ID": "client-id-123",
-                "WALLATAG_CLIENT_SECRET": "client-secret-456",
-                "WALLATAG_USERNAME": "reader@example.com",
-                "WALLATAG_PASSWORD": "hunter2",
-            },
-            clear=True,
+        with (
+            patch.object(
+                self.blocks.WallabagCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(self.blocks.WallabagCredentials, "save", fake_save),
+            patch.dict(
+                os.environ,
+                {
+                    "WALLATAG_URL": "https://wallabag.example.com",
+                    "WALLATAG_CLIENT_ID": "client-id-123",
+                    "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                    "WALLATAG_USERNAME": "reader@example.com",
+                    "WALLATAG_PASSWORD": "hunter2",
+                },
+                clear=True,
+            ),
         ):
             self.blocks.ensure_wallabag_credentials_block(log=messages.append)
 
@@ -278,7 +315,9 @@ class EnsureBlockTest(unittest.TestCase):
         self.assertEqual(saved["name"], "wallabag")
         self.assertEqual(block.base_url, "https://wallabag.example.com")
         self.assertEqual(block.client_id, "client-id-123")
-        self.assertEqual(block.client_secret.get_secret_value(), "client-secret-456")
+        self.assertEqual(
+            block.client_secret.get_secret_value(), "client-secret-456"
+        )
         self.assertEqual(block.username, "reader@example.com")
         self.assertEqual(block.password.get_secret_value(), "hunter2")
         self.assertTrue(any("seeding" in m for m in messages))
@@ -291,14 +330,14 @@ class EnsureBlockTest(unittest.TestCase):
             saved["block"] = self
 
         messages = []
-        with patch.object(
-            self.blocks.WallabagCredentials,
-            "load",
-            side_effect=Exception("missing"),
-        ), patch.object(
-            self.blocks.WallabagCredentials, "save", fake_save
-        ), patch.dict(
-            os.environ, {}, clear=True
+        with (
+            patch.object(
+                self.blocks.WallabagCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(self.blocks.WallabagCredentials, "save", fake_save),
+            patch.dict(os.environ, {}, clear=True),
         ):
             self.blocks.ensure_wallabag_credentials_block(log=messages.append)
 
@@ -318,15 +357,18 @@ class EnsureBlockTest(unittest.TestCase):
         def fake_save(self, name, overwrite=False, client=None):
             saved["block"] = self
 
-        with patch.object(
-            self.blocks.WallabagCredentials,
-            "load",
-            side_effect=Exception("missing"),
-        ), patch.object(
-            self.blocks.WallabagCredentials, "save", fake_save
-        ), patch.dict(
-            os.environ, {"WALLATAG_URL": "https://wallabag.example.com"},
-            clear=True,
+        with (
+            patch.object(
+                self.blocks.WallabagCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(self.blocks.WallabagCredentials, "save", fake_save),
+            patch.dict(
+                os.environ,
+                {"WALLATAG_URL": "https://wallabag.example.com"},
+                clear=True,
+            ),
         ):
             self.blocks.ensure_wallabag_credentials_block()
 
@@ -337,38 +379,45 @@ class EnsureBlockTest(unittest.TestCase):
         self.assertEqual(saved["block"].password.get_secret_value(), "")
 
     def test_wallabag_existing_block_not_overwritten(self) -> None:
-        with patch.object(
-            self.blocks.WallabagCredentials,
-            "load",
-            return_value=self.blocks.WallabagCredentials(
-                base_url="https://existing.example"
+        with (
+            patch.object(
+                self.blocks.WallabagCredentials,
+                "load",
+                return_value=self.blocks.WallabagCredentials(
+                    base_url="https://existing.example"
+                ),
             ),
-        ), patch.object(self.blocks.WallabagCredentials, "save") as mock_save, \
-            redirect_stdout(io.StringIO()) as out:
+            patch.object(self.blocks.WallabagCredentials, "save") as mock_save,
+            redirect_stdout(io.StringIO()) as out,
+        ):
             self.blocks.ensure_wallabag_credentials_block()
         mock_save.assert_not_called()
         self.assertIn("already exists", out.getvalue())
 
     def test_wallabag_save_failure_logs_warning_and_returns(self) -> None:
         messages = []
-        with patch.object(
-            self.blocks.WallabagCredentials,
-            "load",
-            side_effect=Exception("missing"),
-        ), patch.object(
-            self.blocks.WallabagCredentials,
-            "save",
-            side_effect=RuntimeError("prefect server unreachable"),
-        ), patch.dict(
-            os.environ,
-            {
-                "WALLATAG_URL": "https://wallabag.example.com",
-                "WALLATAG_CLIENT_ID": "client-id-123",
-                "WALLATAG_CLIENT_SECRET": "client-secret-456",
-                "WALLATAG_USERNAME": "reader@example.com",
-                "WALLATAG_PASSWORD": "hunter2",
-            },
-            clear=True,
+        with (
+            patch.object(
+                self.blocks.WallabagCredentials,
+                "load",
+                side_effect=Exception("missing"),
+            ),
+            patch.object(
+                self.blocks.WallabagCredentials,
+                "save",
+                side_effect=RuntimeError("prefect server unreachable"),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "WALLATAG_URL": "https://wallabag.example.com",
+                    "WALLATAG_CLIENT_ID": "client-id-123",
+                    "WALLATAG_CLIENT_SECRET": "client-secret-456",
+                    "WALLATAG_USERNAME": "reader@example.com",
+                    "WALLATAG_PASSWORD": "hunter2",
+                },
+                clear=True,
+            ),
         ):
             # Must not raise.
             self.blocks.ensure_wallabag_credentials_block(log=messages.append)

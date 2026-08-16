@@ -124,7 +124,11 @@ class WallabagClientTestCase(unittest.TestCase):
         self.session._responses.extend(responses)
 
     def token_calls(self):
-        return [c for c in self.session.calls if c["url"].endswith("/oauth/v2/token")]
+        return [
+            c
+            for c in self.session.calls
+            if c["url"].endswith("/oauth/v2/token")
+        ]
 
     def api_calls(self, path):
         return [c for c in self.session.calls if c["url"].endswith(path)]
@@ -176,13 +180,17 @@ class TokenFlowTest(WallabagClientTestCase):
 
     def test_expired_token_refreshed_with_stored_refresh_token(self):
         page_payload = entries_payload([entry(1, [])])
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload)
+        )
         self.client.get_entries()
         self.assertEqual(len(self.token_calls()), 1)
 
         # Simulate expiry by pushing the cached deadline into the past.
         self.client._token_expires_at = time.monotonic() - 10
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload)
+        )
         self.client.get_entries()
 
         calls = self.token_calls()
@@ -197,7 +205,9 @@ class RetryTest(WallabagClientTestCase):
         # A mid-request 401 invalidates the cached token; the retry re-auths
         # with a fresh password grant (not a refresh) exactly once.
         page_payload = entries_payload([entry(1, [])])
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page_payload)
+        )
         self.client.get_entries()  # cache a token first
 
         self.queue(
@@ -230,7 +240,10 @@ class RetryTest(WallabagClientTestCase):
 
 class RefreshTest(WallabagClientTestCase):
     def _prime_token(self):
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD),
+            FakeResponse(200, entries_payload([entry(1, [])])),
+        )
         self.client.get_entries()
         self.client._token_expires_at = time.monotonic() - 10
 
@@ -238,7 +251,7 @@ class RefreshTest(WallabagClientTestCase):
         self._prime_token()
         self.queue(
             FakeResponse(400, text="invalid_grant"),  # refresh is rejected
-            FakeResponse(200, TOKEN_PAYLOAD),          # password-grant fallback
+            FakeResponse(200, TOKEN_PAYLOAD),  # password-grant fallback
             FakeResponse(200, entries_payload([entry(1, [])])),
         )
         page = self.client.get_entries()
@@ -251,13 +264,15 @@ class RefreshTest(WallabagClientTestCase):
             ["password", "refresh_token", "password"],
         )
 
-    def test_refresh_and_password_fallback_both_fail_raises_password_error(self):
+    def test_refresh_and_password_fallback_both_fail_raises_password_error(
+        self,
+    ):
         # Double failure: refresh grant is rejected AND the password-grant
         # fallback is also rejected -> the password error surfaces (status
         # 400), it is not swallowed.
         self._prime_token()
         self.queue(
-            FakeResponse(400, text="invalid_grant"),   # refresh is rejected
+            FakeResponse(400, text="invalid_grant"),  # refresh is rejected
             FakeResponse(400, text="invalid_client"),  # fallback also fails
         )
         with self.assertRaises(WallabagError) as ctx:
@@ -275,45 +290,73 @@ class RefreshTest(WallabagClientTestCase):
     def test_refresh_rotates_stored_refresh_token(self):
         self._prime_token()
         self.assertEqual(self.client._refresh_token, "refresh123")
-        rotated = dict(TOKEN_PAYLOAD, access_token="tok456", refresh_token="refresh456")
-        self.queue(FakeResponse(200, rotated), FakeResponse(200, entries_payload([entry(1, [])])))
+        rotated = dict(
+            TOKEN_PAYLOAD, access_token="tok456", refresh_token="refresh456"
+        )
+        self.queue(
+            FakeResponse(200, rotated),
+            FakeResponse(200, entries_payload([entry(1, [])])),
+        )
         self.client.get_entries()
         self.assertEqual(self.client._refresh_token, "refresh456")
 
     def test_refresh_keeps_existing_refresh_token_when_absent(self):
         self._prime_token()
-        no_refresh = {k: v for k, v in TOKEN_PAYLOAD.items() if k != "refresh_token"}
-        self.queue(FakeResponse(200, no_refresh), FakeResponse(200, entries_payload([entry(1, [])])))
+        no_refresh = {
+            k: v for k, v in TOKEN_PAYLOAD.items() if k != "refresh_token"
+        }
+        self.queue(
+            FakeResponse(200, no_refresh),
+            FakeResponse(200, entries_payload([entry(1, [])])),
+        )
         self.client.get_entries()
         self.assertEqual(self.client._refresh_token, "refresh123")
 
     def test_no_refresh_token_available_falls_back_to_password_fetch(self):
         # Password response without a refresh_token: on expiry, refresh is
         # unavailable, so the client falls back to a fresh password fetch.
-        no_refresh = {k: v for k, v in TOKEN_PAYLOAD.items() if k != "refresh_token"}
-        self.queue(FakeResponse(200, no_refresh), FakeResponse(200, entries_payload([entry(1, [])])))
+        no_refresh = {
+            k: v for k, v in TOKEN_PAYLOAD.items() if k != "refresh_token"
+        }
+        self.queue(
+            FakeResponse(200, no_refresh),
+            FakeResponse(200, entries_payload([entry(1, [])])),
+        )
         self.client.get_entries()
         self.assertIsNone(self.client._refresh_token)
         self.client._token_expires_at = time.monotonic() - 10
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, entries_payload([entry(1, [])])))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD),
+            FakeResponse(200, entries_payload([entry(1, [])])),
+        )
         self.client.get_entries()
         calls = self.token_calls()
         self.assertEqual(len(calls), 2)
-        self.assertEqual([c["data"]["grant_type"] for c in calls], ["password", "password"])
+        self.assertEqual(
+            [c["data"]["grant_type"] for c in calls], ["password", "password"]
+        )
 
 
 class ConstructionValidationTest(unittest.TestCase):
     def test_empty_username_raises(self):
         with self.assertRaises(ValueError):
             WallabagClient(
-                BASE_URL, "cid", "secret", username="", password="wonderland",
+                BASE_URL,
+                "cid",
+                "secret",
+                username="",
+                password="wonderland",
                 session=FakeSession(),
             )
 
     def test_empty_password_raises(self):
         with self.assertRaises(ValueError):
             WallabagClient(
-                BASE_URL, "cid", "secret", username="alice", password="",
+                BASE_URL,
+                "cid",
+                "secret",
+                username="alice",
+                password="",
                 session=FakeSession(),
             )
 
@@ -321,7 +364,9 @@ class ConstructionValidationTest(unittest.TestCase):
 class EntriesTest(WallabagClientTestCase):
     def test_get_entries_url_params_and_page(self):
         payload = entries_payload([entry(1, [])], total=2, page=2, pages=3)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.get_entries(page=2, per_page=10, sort="created")
 
@@ -338,7 +383,9 @@ class EntriesTest(WallabagClientTestCase):
     def test_untagged_entries_filters_client_side(self):
         items = [entry(1, []), entry(2, ["a"]), entry(3, [])]
         payload = entries_payload(items, total=3, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries()
 
@@ -369,14 +416,18 @@ class EntriesTest(WallabagClientTestCase):
         # The user A-E matrix: an article is fetched iff it has no tags OR
         # every one of its tags is in the ignore-any list.
         items = [
-            entry(1, ["fix", "_frigo"]),    # A: all ignored -> fetched
-            entry(2, ["fix"]),              # B: all ignored -> fetched
-            entry(3, ["fix", "something"]),  # C: non-ignored present -> dropped
-            entry(4, ["something"]),        # D: non-ignored present -> dropped
-            entry(5, []),                   # E: untagged -> fetched, as before
+            entry(1, ["fix", "_frigo"]),  # A: all ignored -> fetched
+            entry(2, ["fix"]),  # B: all ignored -> fetched
+            entry(
+                3, ["fix", "something"]
+            ),  # C: non-ignored present -> dropped
+            entry(4, ["something"]),  # D: non-ignored present -> dropped
+            entry(5, []),  # E: untagged -> fetched, as before
         ]
         payload = entries_payload(items, total=5, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(ignored_tags=["fix", "_frigo"])
 
@@ -390,7 +441,8 @@ class EntriesTest(WallabagClientTestCase):
         # yielded (existing behavior unchanged).
         page = entries_payload(
             [entry(1, []), entry(2, ["a"]), entry(3, ["fix"])],
-            total=3, pages=1,
+            total=3,
+            pages=1,
         )
         self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, page))
 
@@ -401,13 +453,17 @@ class EntriesTest(WallabagClientTestCase):
     def test_untagged_entries_dict_shaped_tags_matched(self):
         # Wallabag 2.x may return tag objects; label is used, slug as fallback.
         items = [
-            entry(1, [{"label": "fix", "slug": "fix"}]),   # label ignored -> fetched
-            entry(2, [{"slug": "fix"}]),                   # no label, slug ignored -> fetched
-            entry(3, [{"label": "something"}]),            # non-ignored label -> dropped
-            entry(4, [{"foo": "bar"}]),                    # no label/slug -> untagged -> fetched
+            entry(
+                1, [{"label": "fix", "slug": "fix"}]
+            ),  # label ignored -> fetched
+            entry(2, [{"slug": "fix"}]),  # no label, slug ignored -> fetched
+            entry(3, [{"label": "something"}]),  # non-ignored label -> dropped
+            entry(4, [{"foo": "bar"}]),  # no label/slug -> untagged -> fetched
         ]
         payload = entries_payload(items, total=4, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(ignored_tags=["fix"])
 
@@ -417,11 +473,13 @@ class EntriesTest(WallabagClientTestCase):
     def test_untagged_entries_ignored_tags_case_insensitive(self):
         # Case-insensitive exact match: ignore ["Fix"] also covers tag "fix".
         items = [
-            entry(1, ["fix"]),                # casefold matches "Fix" -> fetched
-            entry(2, ["FIX", "something"]),   # still carries a non-ignored tag
+            entry(1, ["fix"]),  # casefold matches "Fix" -> fetched
+            entry(2, ["FIX", "something"]),  # still carries a non-ignored tag
         ]
         payload = entries_payload(items, total=2, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(ignored_tags=["Fix"])
 
@@ -432,13 +490,15 @@ class EntriesTest(WallabagClientTestCase):
         # The ignore-any matrix with regex patterns: an article is fetched iff
         # it has no tags OR every tag matches at least one pattern.
         items = [
-            entry(1, ["todo"]),          # matches "todo|fix" -> fetched
-            entry(2, ["fix"]),           # matches -> fetched
+            entry(1, ["todo"]),  # matches "todo|fix" -> fetched
+            entry(2, ["fix"]),  # matches -> fetched
             entry(3, ["todo", "other"]),  # non-matching tag present -> dropped
-            entry(4, ["other"]),         # non-matching -> dropped
+            entry(4, ["other"]),  # non-matching -> dropped
         ]
         payload = entries_payload(items, total=4, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(ignored_regex=("todo|fix",))
 
@@ -452,7 +512,9 @@ class EntriesTest(WallabagClientTestCase):
         # raw tag "todo".
         items = [entry(1, ["todo"]), entry(2, ["todo", "other"])]
         payload = entries_payload(items, total=2, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(ignored_regex=("TODO",))
 
@@ -465,7 +527,9 @@ class EntriesTest(WallabagClientTestCase):
         # match the tag "TODO".
         items = [entry(1, ["TODO"]), entry(2, ["todo"])]
         payload = entries_payload(items, total=2, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(ignored_regex=("(?-i:todo)",))
 
@@ -476,11 +540,13 @@ class EntriesTest(WallabagClientTestCase):
         # Literal ignore_tags and ignored_regex compose: a tag counts as
         # ignored iff it equals a literal entry OR matches a pattern.
         items = [
-            entry(1, ["fix", "todo"]),   # fix literal + todo regex -> fetched
+            entry(1, ["fix", "todo"]),  # fix literal + todo regex -> fetched
             entry(2, ["fix", "other"]),  # other matches neither -> dropped
         ]
         payload = entries_payload(items, total=2, pages=1)
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         page = self.client.untagged_entries(
             ignored_tags=["fix"], ignored_regex=("^todo$",)
@@ -523,7 +589,9 @@ class EntriesTest(WallabagClientTestCase):
             "pages": None,
             "limit": 30,
         }
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, payload)
+        )
 
         entries = list(self.client.iter_untagged(per_page=30))
 
@@ -540,13 +608,17 @@ class TagsTest(WallabagClientTestCase):
 
     def test_add_tags_form_encoded(self):
         updated = entry(5, ["a", "b"])
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, updated))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, updated)
+        )
 
         result = self.client.add_tags(5, [" a ", "", "b"])
 
         api_call = self.api_calls("/api/entries/5/tags.json")[0]
         self.assertEqual(api_call["method"], "POST")
-        self.assertEqual(api_call["url"], f"{BASE_URL}/api/entries/5/tags.json")
+        self.assertEqual(
+            api_call["url"], f"{BASE_URL}/api/entries/5/tags.json"
+        )
         # Form-urlencoded body: a plain data dict, not json=.
         self.assertEqual(api_call["data"], {"tags": "a,b"})
         self.assertIsNone(api_call["params"])
@@ -582,16 +654,22 @@ class ErrorHandlingTest(WallabagClientTestCase):
             self.client.get_entries()
 
     def test_non_json_success_body_raises(self):
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, bad_json=True))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), FakeResponse(200, bad_json=True)
+        )
         with self.assertRaises(WallabagError):
             self.client.get_entries()
 
     def test_connection_error_wrapped(self):
-        self.queue(FakeResponse(200, TOKEN_PAYLOAD), requests.ConnectionError("boom"))
+        self.queue(
+            FakeResponse(200, TOKEN_PAYLOAD), requests.ConnectionError("boom")
+        )
         with self.assertRaises(WallabagError) as ctx:
             self.client.get_entries()
         self.assertIsNone(ctx.exception.status)
-        self.assertIsInstance(ctx.exception.__cause__, requests.ConnectionError)
+        self.assertIsInstance(
+            ctx.exception.__cause__, requests.ConnectionError
+        )
 
 
 class LifecycleTest(WallabagClientTestCase):
