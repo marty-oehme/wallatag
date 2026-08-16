@@ -12,10 +12,7 @@ import json
 import logging
 import os
 import re
-import select
-import subprocess
 import sys
-import time
 from typing import TYPE_CHECKING
 
 import requests
@@ -66,50 +63,6 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
 # to the existing WALLATAG_FOCUS_<NAME>_KEYWORDS/_TAGS/_FIELDS/_KEYWORDS_REGEX
 # env convention.
 FOCUS_GROUPS_VARIABLE = "wallatag_focus_groups"
-
-
-# Temporary keep — unused by the flow since the in-process engine cutover (bug
-# 189911f). Removal after production soak tracked in bug 262b48c.
-def build_wallatag_command(
-    max_articles: int,
-    focus: str | None,
-) -> list[str]:
-    """Build the `wallatag run` command line for a batch.
-
-    The tag policy is deliberately NOT a CLI flag here: it comes from the
-    ``wallatag_tag_policy`` Prefect Variable / the ``WALLATAG_TAG_POLICY``
-    container env var / TOML, which the flow merges into the subprocess env.
-    ``focus`` is a comma-separated list
-    of focus-group names (e.g. ``"methods, languages"``); each name is
-    emitted as its own ``--focus`` flag, in order. Segments are stripped;
-    empty/whitespace-only segments are dropped; a value with no usable names
-    (or None) emits no ``--focus`` flags at all. Comma-splitting lives here
-    in the flow layer on purpose: the CLI never splits on commas, because a
-    TOML focus-group NAME may itself contain a comma (such groups can only be
-    selected via the CLI, not via the flow parameter).
-    """
-    cmd = ["wallatag", "run", "--max", str(max_articles)]
-    if focus is not None:
-        for name in focus.split(","):
-            name = name.strip()
-            if name:
-                cmd += ["--focus", name]
-    return cmd
-
-
-def _split_focus(focus: str | None) -> list[str] | None:
-    """Split the flow's comma-separated ``focus`` parameter into names.
-
-    Comma-splitting lives in the flow layer on purpose: a TOML focus-group
-    NAME may itself contain a comma, so the CLI never splits on commas (a
-    comma-named group can only be selected via the CLI, not via the flow
-    parameter). ``None`` returns ``None``; an empty or whitespace-only value
-    also returns ``None`` (no narrowing); empty names are dropped.
-    """
-    if focus is None:
-        return None
-    names = [name.strip() for name in focus.split(",") if name.strip()]
-    return names or None
 
 
 # This task takes the shared, non-serializable runtime objects (client, tagger,
@@ -404,100 +357,6 @@ def focus_groups_env() -> dict[str, str]:
     return env
 
 
-# Temporary keep — unused by the flow since the in-process engine cutover (bug
-# 189911f). Removal after production soak tracked in bug 262b48c.
-def _run_wallatag(
-    cmd: list[str],
-    env: dict[str, str],
-    timeout: int = 1800,
-) -> str:
-    """Run the wallatag CLI, streaming its output to the flow log live.
-
-    stdout and stderr are merged into one pipe (stderr=STDOUT), so the
-    CLI's per-article "tagged ..." lines — written via stdlib logging,
-    one newline-terminated line each — are printed to the flow log as
-    they are produced instead of all at once after the run finishes.
-    With log_prints=True on the flow, each ``print(..., flush=True)``
-    becomes a flow log immediately. The captured merged output is
-    returned (joined lines, newlines preserved), preserving the flow's
-    return-value shape.
-
-    ``timeout`` is an absolute total-run deadline (matching the previous
-    ``subprocess.run(timeout=...)`` semantics). The pipe is read with
-    non-blocking I/O guarded by select, so the deadline bounds the reads
-    themselves: a partial line followed by a hang still times out, and
-    already-produced lines are streamed before it fires. On a timeout
-    the subprocess is killed and a RuntimeError raised. A non-zero exit
-    also raises RuntimeError, carrying the last ~2000 chars of the
-    merged output for context.
-    """
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=env,
-    )
-    fd = process.stdout.fileno()
-    os.set_blocking(fd, False)
-    deadline = time.monotonic() + timeout
-    lines: list[str] = []
-    buffer = b""
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                process.kill()
-                raise RuntimeError(f"wallatag run timed out after {timeout}s")
-            ready, _, _ = select.select([fd], [], [], remaining)
-            if not ready:
-                process.kill()
-                raise RuntimeError(f"wallatag run timed out after {timeout}s")
-            try:
-                chunk = os.read(fd, 65536)
-            except BlockingIOError:
-                # select said readable but the data was gone by the time we
-                # read (another reader/signal race); loop and re-check.
-                continue
-            if not chunk:
-                # EOF: the child closed the pipe.
-                break
-            buffer += chunk
-            while b"\n" in buffer:
-                raw_line, buffer = buffer.split(b"\n", 1)
-                line = raw_line.decode("utf-8", errors="replace")
-                print(line, flush=True)
-                lines.append(line + "\n")
-    finally:
-        # Always reap the child (killed or exited) and free the merged pipe,
-        # whether we return, raise on timeout, or raise on a non-zero exit.
-        # The wait is bounded: if the child closed the pipe but never exits,
-        # a short grace wait + kill still enforces the absolute total-run
-        # deadline instead of blocking forever. Record whether an exception
-        # is already in flight (inside the except handler sys.exc_info() only
-        # sees the caught TimeoutExpired), so the deadline RuntimeError is
-        # raised only when nothing else is being raised.
-        process.stdout.close()
-        in_flight = sys.exc_info()[0] is not None
-        try:
-            returncode = process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-            if not in_flight:
-                raise RuntimeError(f"wallatag run timed out after {timeout}s")
-    if buffer:
-        # EOF with a trailing partial line (no newline): flush it as-is.
-        line = buffer.decode("utf-8", errors="replace")
-        print(line, flush=True)
-        lines.append(line + "\n")
-    if returncode != 0:
-        detail = "".join(lines)[-2000:].strip()
-        raise RuntimeError(
-            f"wallatag run exited with code {returncode}: {detail}"
-        )
-    return "".join(lines)
-
-
 @flow(log_prints=True)
 def wallatag_batch(
     max_articles: int = 50,
@@ -525,8 +384,9 @@ def wallatag_batch(
     merged env / config, with container env / TOML as fallbacks — there is no
     --tag-policy flow parameter. Empty block fields fall back to TOML/env.
     The flow's ``focus`` parameter is a comma-separated list of group names
-    (split by ``_split_focus``); a group whose NAME contains a literal comma
-    is unreachable from the flow — use the CLI for those.
+    (split on commas by the flow itself: segments are stripped and
+    empty/whitespace-only segments dropped); a group whose NAME contains a
+    literal comma is unreachable from the flow — use the CLI for those.
 
     Per-article work runs as sequential ``tag-article`` tasks (the shared
     client/tagger/store are stateful and not parallel-safe), so each article's
@@ -546,10 +406,15 @@ def wallatag_batch(
         **variable_env(),
         **focus_groups_env(),
     }
+    focus_names = (
+        None
+        if focus is None
+        else [name.strip() for name in focus.split(",") if name.strip()] or None
+    )
     config = apply_run_overrides(
         load_config(env=env),
         max_articles=max_articles,
-        focus=_split_focus(focus),
+        focus=focus_names,
     )
     # Mirror cmd_run's logging setup so engine logs (wallatag.auto) land on
     # stdout and become flow log lines via log_prints; harmless when Prefect

@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import sqlite3
-import sys
 import tempfile
 import time
 import unittest
@@ -192,69 +191,6 @@ class PrefectFlowsTest(unittest.TestCase):
                     max_articles=max_articles, focus=focus
                 )
         return result, out.getvalue(), task_mock
-
-    # -- temporary keep: command builder (removal tracked in bug 262b48c) ----
-
-    def test_command_build_defaults(self) -> None:
-        self.assertEqual(
-            self.flows.build_wallatag_command(50, None),
-            ["wallatag", "run", "--max", "50"],
-        )
-
-    def test_command_build_full(self) -> None:
-        self.assertEqual(
-            self.flows.build_wallatag_command(10, "methods"),
-            [
-                "wallatag",
-                "run",
-                "--max",
-                "10",
-                "--focus",
-                "methods",
-            ],
-        )
-
-    def test_command_build_multiple_focus(self) -> None:
-        self.assertEqual(
-            self.flows.build_wallatag_command(10, "methods, languages"),
-            [
-                "wallatag",
-                "run",
-                "--max",
-                "10",
-                "--focus",
-                "methods",
-                "--focus",
-                "languages",
-            ],
-        )
-
-    def test_command_build_focus_empty_string(self) -> None:
-        self.assertEqual(
-            self.flows.build_wallatag_command(50, ""),
-            ["wallatag", "run", "--max", "50"],
-        )
-
-    def test_command_build_focus_whitespace_only(self) -> None:
-        self.assertEqual(
-            self.flows.build_wallatag_command(50, "   "),
-            ["wallatag", "run", "--max", "50"],
-        )
-
-    def test_command_build_focus_ragged(self) -> None:
-        self.assertEqual(
-            self.flows.build_wallatag_command(50, " methods , , languages "),
-            [
-                "wallatag",
-                "run",
-                "--max",
-                "50",
-                "--focus",
-                "methods",
-                "--focus",
-                "languages",
-            ],
-        )
 
     def test_flow_defined(self) -> None:
         self.assertTrue(hasattr(self.flows, "wallatag_batch"))
@@ -579,113 +515,6 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertIn("'^a,b$'", message)
         self.assertIn("comma", message)
 
-    # -- temporary keep: subprocess runner (removal tracked in bug 262b48c) -
-
-    def test_run_wallatag_streams_all_lines_to_flow_log(self) -> None:
-        # The child prints a first line, sleeps, then prints a second line.
-        # Both lines must land in the STREAMED print output (what becomes the
-        # flow log via log_prints=True) AND in the returned captured output.
-        # This asserts the output is captured on both channels; the live
-        # streaming-before-exit guarantee itself is covered by
-        # test_run_wallatag_burst_then_hang_streams_all_lines.
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            output = self.flows._run_wallatag(
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys,time; print('first', flush=True);"
-                    " time.sleep(1); print('second', flush=True)",
-                ],
-                env=dict(os.environ),
-                timeout=30,
-            )
-        self.assertIn("first", out.getvalue())
-        self.assertIn("second", out.getvalue())
-        self.assertIn("first", output)
-        self.assertIn("second", output)
-
-    def test_run_wallatag_merges_stdout_and_stderr(self) -> None:
-        # stderr=STDOUT merges both streams: both lines must be streamed and
-        # captured in the returned string.
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            output = self.flows._run_wallatag(
-                [
-                    sys.executable,
-                    "-c",
-                    "print('a'); import sys; print('b', file=sys.stderr)",
-                ],
-                env=dict(os.environ),
-                timeout=30,
-            )
-        self.assertIn("a", out.getvalue())
-        self.assertIn("b", out.getvalue())
-        self.assertIn("a", output)
-        self.assertIn("b", output)
-
-    def test_run_wallatag_partial_line_then_hang_times_out(self) -> None:
-        # A partial line (no trailing newline) followed by a hang must still
-        # hit the deadline: the timeout bounds the read itself, not just idle
-        # waits between complete lines. elapsed < 5 proves the old readline()
-        # watchdog (which fired at t=10.1s for this scenario) is gone.
-        start = time.monotonic()
-        with self.assertRaises(RuntimeError) as ctx:
-            self.flows._run_wallatag(
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys,time; sys.stdout.write('x');"
-                    " sys.stdout.flush(); time.sleep(10)",
-                ],
-                env=dict(os.environ),
-                timeout=1,
-            )
-        elapsed = time.monotonic() - start
-        self.assertEqual(
-            str(ctx.exception), "wallatag run timed out after 1s"
-        )
-        self.assertLess(elapsed, 5)
-
-    def test_run_wallatag_burst_then_hang_streams_all_lines(self) -> None:
-        # A burst of 50 lines followed by a hang must stream ALL 50 lines
-        # before the timeout fires. Regression test for the buffered
-        # read-ahead bug where only the first line was streamed and the
-        # healthy process was killed at the deadline.
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            with self.assertRaises(RuntimeError) as ctx:
-                self.flows._run_wallatag(
-                    [
-                        sys.executable,
-                        "-c",
-                        "import sys,time; [print(f'line{i}', flush=True)"
-                        " for i in range(50)]; time.sleep(10)",
-                    ],
-                    env=dict(os.environ),
-                    timeout=2,
-                )
-        self.assertEqual(
-            str(ctx.exception), "wallatag run timed out after 2s"
-        )
-        streamed = out.getvalue()
-        for i in range(50):
-            self.assertIn(f"line{i}", streamed)
-
-    def test_run_wallatag_nonzero_exit_raises_with_detail(self) -> None:
-        with contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(RuntimeError) as ctx:
-                self.flows._run_wallatag(
-                    [
-                        sys.executable,
-                        "-c",
-                        "print('boom'); import sys; sys.exit(3)",
-                    ],
-                    env=dict(os.environ),
-                )
-        message = str(ctx.exception)
-        self.assertIn("exited with code 3", message)
-        # The child's own output (the merged capture tail) must be carried in
-        # the error detail, not just the exit code.
-        self.assertIn("boom", message)
-
     # -- flow: env merge ---------------------------------------------------
 
     def test_flow_env_precedence_merge(self) -> None:
@@ -774,44 +603,50 @@ class PrefectFlowsTest(unittest.TestCase):
 
     # -- flow: focus splitting ---------------------------------------------
 
-    def test_split_focus_variants(self) -> None:
-        self.assertIsNone(self.flows._split_focus(None))
-        self.assertIsNone(self.flows._split_focus(""))
-        self.assertIsNone(self.flows._split_focus("   "))
-        self.assertIsNone(self.flows._split_focus(" , , "))
-        self.assertEqual(self.flows._split_focus("methods"), ["methods"])
-        self.assertEqual(
-            self.flows._split_focus("methods, languages"),
-            ["methods", "languages"],
-        )
-        self.assertEqual(
-            self.flows._split_focus(" methods , , languages "),
-            ["methods", "languages"],
-        )
-
     def test_flow_focus_param_split_passed_to_apply_run_overrides(self) -> None:
-        captured = {}
+        # The inlined comma-split must behave exactly like the removed
+        # _split_focus helper: None and empty/whitespace-only values pass
+        # focus=None (no narrowing); segments are stripped and empty ones
+        # dropped.
+        cases = [
+            (None, None),
+            ("", None),
+            ("   ", None),
+            (" , , ", None),
+            ("methods, languages", ["methods", "languages"]),
+            (" methods , , languages ", ["methods", "languages"]),
+        ]
+        for focus, expected in cases:
+            with self.subTest(focus=focus):
+                captured = {}
 
-        def fake_apply(config, **kwargs):
-            captured.update(kwargs)
-            return config
+                def fake_apply(config, **kwargs):
+                    captured.update(kwargs)
+                    return config
 
-        with patch("flows.load_config", return_value=self.make_config()), \
-             patch("flows.apply_run_overrides", side_effect=fake_apply), \
-             patch("flows.llm_env_from_block", return_value={}), \
-             patch("flows.wallabag_env_from_block", return_value={}), \
-             patch.dict(os.environ, {}, clear=True), \
-             patch("flows.Variable.get", return_value=None), \
-             patch(
-                 "flows._build_tagger", return_value=(object(), None, None)
-             ), \
-             patch("flows.WallabagClient", return_value=FakeClient()), \
-             contextlib.redirect_stdout(io.StringIO()):
-            self.flows.wallatag_batch.fn(
-                max_articles=50, focus="methods, languages"
-            )
-        self.assertEqual(captured["focus"], ["methods", "languages"])
-        self.assertEqual(captured["max_articles"], 50)
+                with patch(
+                    "flows.load_config", return_value=self.make_config()
+                ), \
+                     patch(
+                         "flows.apply_run_overrides", side_effect=fake_apply
+                     ), \
+                     patch("flows.llm_env_from_block", return_value={}), \
+                     patch(
+                         "flows.wallabag_env_from_block", return_value={}
+                     ), \
+                     patch.dict(os.environ, {}, clear=True), \
+                     patch("flows.Variable.get", return_value=None), \
+                     patch(
+                         "flows._build_tagger",
+                         return_value=(object(), None, None),
+                     ), \
+                     patch("flows.WallabagClient", return_value=FakeClient()), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.flows.wallatag_batch.fn(
+                        max_articles=50, focus=focus
+                    )
+                self.assertEqual(captured["focus"], expected)
+                self.assertEqual(captured["max_articles"], 50)
 
     def test_flow_unknown_focus_raises(self) -> None:
         # An unknown focus name fails the run loudly (ConfigError propagates
