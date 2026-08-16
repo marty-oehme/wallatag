@@ -132,13 +132,16 @@ def tag_article(
     Thin adapter over ``auto.process_entry`` (dry-run off). The shared
     client/tagger/store are stateful and not parallel-safe, so calls are
     strictly sequential; each task run shows the article's own logs/timing
-    in the dashboard. When the article is tagged, the task also logs one
-    run-attributed line via ``get_run_logger()`` — article id, title and
-    the applied tags — so the UI/DB shows what each task run applied.
-    It must use the run logger, not the plain module logger: the engine's
-    own per-article INFO lines (wallatag.auto) never surface in the flow
-    because the Prefect-installed root handler is at WARNING and
-    ``logging.basicConfig`` is a no-op here (bug edf2338).
+    in the dashboard. When the article is tagged, the task logs one
+    run-attributed INFO line via ``get_run_logger()`` — article id, title and
+    the applied tags — so the UI/DB shows what each task run applied. When
+    the engine's add_tags retries are exhausted, the task logs one
+    run-attributed ERROR line — article id and title — so final tagging
+    failures surface in the dashboard. Both lines must use the run logger,
+    not the plain module logger: the engine's own per-article lines
+    (wallatag.auto) never surface in the flow because the Prefect-installed
+    root handler is at WARNING and ``logging.basicConfig`` is a no-op here
+    (bug edf2338).
     """
     result = auto.process_entry(
         client,
@@ -155,6 +158,12 @@ def tag_article(
             result.entry_id,
             entry.get("title", ""),
             ", ".join(result.tags),
+        )
+    if result.outcome == "tagging failed":
+        get_run_logger().error(
+            "tagging failed article %s (%s)",
+            result.entry_id,
+            entry.get("title", ""),
         )
     return result
 

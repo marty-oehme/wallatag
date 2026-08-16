@@ -12,6 +12,7 @@ import io
 import logging
 import os
 import re
+import requests
 import sqlite3
 import tempfile
 import unittest
@@ -91,6 +92,28 @@ class FakeClient:
         self.closed = True
 
 
+class FlakyAddTagsClient(FakeClient):
+    """add_tags raises a scripted sequence of exceptions before succeeding.
+
+    ``errors`` is a list of exception instances (or None entries) popped per
+    add_tags call; when the list is exhausted the call succeeds. Every attempt
+    is counted in ``add_attempts`` (callers use it to assert retry counts);
+    ``add_calls`` keeps the base FakeClient contract of recording only
+    successful calls.
+    """
+
+    def __init__(self, errors=(), **kwargs):
+        super().__init__(**kwargs)
+        self.errors = list(errors)
+        self.add_attempts = []
+
+    def add_tags(self, entry_id, tags):
+        self.add_attempts.append((entry_id, sorted(tags)))
+        if self.errors:
+            raise self.errors.pop(0)
+        self.add_calls.append((entry_id, sorted(tags)))
+
+
 def make_args(**overrides):
     defaults = {
         "config": None,
@@ -145,14 +168,20 @@ class AutoBase(unittest.TestCase):
             root.removeHandler(handler)
 
     def run_auto(self, client, tagger=None, store=None, cfg=None, dry_run=False,
-                 fallback_tagger=None):
+                 fallback_tagger=None, add_tags_retries=None,
+                 add_tags_retry_delay=None):
         tagger = tagger if tagger is not None else make_tagger()
         store = store if store is not None else Store(None)
         cfg = cfg if cfg is not None else Config()
+        retry_kwargs = {}
+        if add_tags_retries is not None:
+            retry_kwargs["add_tags_retries"] = add_tags_retries
+        if add_tags_retry_delay is not None:
+            retry_kwargs["add_tags_retry_delay"] = add_tags_retry_delay
         with self.assertLogs("wallatag.auto", level="INFO") as cm:
             summary = run_auto(
                 client, tagger, store, cfg, dry_run=dry_run,
-                fallback_tagger=fallback_tagger,
+                fallback_tagger=fallback_tagger, **retry_kwargs,
             )
         return summary, cm.output
 
@@ -367,20 +396,189 @@ class TagPolicyTest(AutoBase):
 
 
 class AddTagsFailureTest(AutoBase):
-    def test_failure_logged_and_run_continues(self):
-        client = FakeClient(
+    def test_transient_failure_retried_and_run_continues(self):
+        # One transient add_tags failure (WallabagError status=None) is
+        # retried by the engine (bug d968e0f): article 1 is tagged on the
+        # retry, and article 2 is still processed — a per-article failure
+        # never aborts the run.
+        client = FlakyAddTagsClient(
             entries=[entry(1, "pomodoro one"), entry(2, "pomodoro two")],
             tags=["Pomodoro"],
-            fail_first=1,  # only the first add_tags fails
+            errors=[WallabagError("boom")],
         )
         summary, messages = self.run_auto(
-            client, tagger=make_tagger(existing_tags=["Pomodoro"])
+            client,
+            tagger=make_tagger(existing_tags=["Pomodoro"]),
+            add_tags_retry_delay=0,
+        )
+        self.assertEqual(summary.tagged, 2)
+        self.assertEqual(
+            client.add_calls, [(1, ["Pomodoro"]), (2, ["Pomodoro"])]
+        )
+        self.assertTrue(any("tagging failed 1" in m for m in messages))
+        self.assertTrue(any("retry 1/2" in m for m in messages))
+        self.assertTrue(any("tagged 1" in m for m in messages))
+        self.assertTrue(any("tagged 2" in m for m in messages))
+
+
+class AddTagsRetryTest(AutoBase):
+    """Engine-owned, classified retries around add_tags (bug d968e0f).
+
+    Transient failures (transport-level WallabagError with status None, or a
+    retryable HTTP status) are re-attempted with exponential backoff, then the
+    article is deferred (unmarked) on final failure; deterministic 4xx
+    failures are never retried and the article stays seen.
+    """
+
+    def test_transient_twice_then_success_tags(self):
+        # (1) Two transient transport failures (status None) then success:
+        # up to 3 attempts total, warning logged per retry, article tagged
+        # and NOT unmarked (it stays seen like any tagged article).
+        client = FlakyAddTagsClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            errors=[WallabagError("boom"), WallabagError("boom again")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, messages = self.run_auto(
+                    client,
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    add_tags_retry_delay=0,
+                )
+                self.assertTrue(store.is_seen(1))
+            finally:
+                store.close()
+
+        self.assertEqual(summary.tagged, 1)
+        self.assertEqual(len(client.add_attempts), 3)
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertTrue(any("retry 1/2" in m for m in messages))
+        self.assertTrue(any("retry 2/2" in m for m in messages))
+        self.assertTrue(any("tagged 1" in m for m in messages))
+
+    def test_503_then_success_tags(self):
+        # (2) A retryable HTTP status (503) is re-attempted once and succeeds.
+        client = FlakyAddTagsClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            errors=[WallabagError("server hiccup", status=503)],
+        )
+        summary, messages = self.run_auto(
+            client,
+            tagger=make_tagger(existing_tags=["Pomodoro"]),
+            add_tags_retry_delay=0,
         )
         self.assertEqual(summary.tagged, 1)
+        self.assertEqual(len(client.add_attempts), 2)
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertTrue(any("retry 1/2" in m for m in messages))
+
+    def test_permanent_400_called_once_stays_seen(self):
+        # (3) A deterministic 400 is NOT retried: exactly one add_tags call,
+        # outcome "tagging failed", and the article stays seen (deliberately
+        # dropped — re-processing would fail identically).
+        client = FlakyAddTagsClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            errors=[WallabagError("bad request", status=400)],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, messages = self.run_auto(
+                    client,
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    add_tags_retry_delay=0,
+                )
+                self.assertTrue(store.is_seen(1))
+            finally:
+                store.close()
+
+        self.assertEqual(len(client.add_attempts), 1)
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped), (1, 0, 0)
+        )
         self.assertTrue(any("tagging failed 1" in m for m in messages))
-        self.assertTrue(any("tagged 2" in m for m in messages))
-        # No decisions for the failed article; only the successful one logged.
-        self.assertEqual(client.add_calls, [(2, ["Pomodoro"])])
+        self.assertFalse(any("retry" in m for m in messages))
+
+    def test_transient_exhausted_unmarks_for_next_run(self):
+        # (4) Three transient failures exhaust the retries: outcome "tagging
+        # failed", and the article is UNMARKED exactly once (deferred to the
+        # next run, mirroring the LLM-failure path).
+        client = FlakyAddTagsClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            errors=[
+                WallabagError("boom"),
+                WallabagError("boom again"),
+                WallabagError("boom thrice"),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                summary, messages = self.run_auto(
+                    client,
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                    add_tags_retry_delay=0,
+                )
+                self.assertFalse(store.is_seen(1))
+            finally:
+                store.close()
+
+        self.assertEqual(len(client.add_attempts), 3)
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(
+            (summary.presented, summary.tagged, summary.skipped), (1, 0, 0)
+        )
+        self.assertTrue(any("tagging failed 1" in m for m in messages))
+
+    def test_raw_request_exception_is_retried(self):
+        # (5) A raw requests.RequestException from a duck-typed client is
+        # transport-level and retried (here retries=1 -> 2 attempts total).
+        client = FlakyAddTagsClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            errors=[requests.ConnectionError("connection refused")],
+        )
+        summary, messages = self.run_auto(
+            client,
+            tagger=make_tagger(existing_tags=["Pomodoro"]),
+            add_tags_retries=1,
+            add_tags_retry_delay=0,
+        )
+        self.assertEqual(summary.tagged, 1)
+        self.assertEqual(len(client.add_attempts), 2)
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertTrue(any("retry 1/1" in m for m in messages))
+
+    def test_run_auto_defaults_flow_through(self):
+        # (7) run_auto's default retry params reach process_entry: a transient
+        # failure is retried (default ADD_TAGS_RETRIES=2 -> 2 attempts) even
+        # though only add_tags_retry_delay=0 is passed at the run_auto level.
+        client = FlakyAddTagsClient(
+            entries=[entry(1, "pomodoro focus")],
+            tags=["Pomodoro"],
+            errors=[WallabagError("boom")],
+        )
+        summary, messages = self.run_auto(
+            client,
+            tagger=make_tagger(existing_tags=["Pomodoro"]),
+            add_tags_retry_delay=0,
+        )
+        self.assertEqual(summary.tagged, 1)
+        self.assertEqual(len(client.add_attempts), 2)
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+        self.assertTrue(any("retry 1/2" in m for m in messages))
 
 
 class FeedErrorTest(AutoBase):
@@ -761,14 +959,14 @@ class LLMFallbackTest(AutoBase):
         self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
 
     def test_fallback_not_counted_when_add_tags_fails(self):
-        # (a) The fallback suggested tags but add_tags raised: the article is
-        # seen-but-untagged (pre-existing apply-path behavior), so it must NOT
-        # be counted "via fallback" — no contradictory "1 via fallback" next
-        # to "tagged 0".
-        client = FakeClient(
+        # (a) The fallback suggested tags but add_tags raised a DETERMINISTIC
+        # 400 (never retried by the engine): the article is seen-but-untagged,
+        # so it must NOT be counted "via fallback" — no contradictory
+        # "1 via fallback" next to "tagged 0".
+        client = FlakyAddTagsClient(
             entries=[entry(1, "pomodoro focus")],
             tags=["Pomodoro"],
-            fail_first=1,  # the only add_tags call fails
+            errors=[WallabagError("boom", status=400)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "s.db")
@@ -779,7 +977,10 @@ class LLMFallbackTest(AutoBase):
                     tagger=RaisingTagger(),
                     store=store,
                     fallback_tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    add_tags_retry_delay=0,
                 )
+                # A deterministic failure stays SEEN (deliberately dropped).
+                self.assertTrue(store.is_seen(1))
             finally:
                 store.close()
 
@@ -789,6 +990,7 @@ class LLMFallbackTest(AutoBase):
             (1, 0, 0, 0, 0),
         )
         self.assertEqual(client.add_calls, [])
+        self.assertEqual(len(client.add_attempts), 1)  # no retry on a 400
         self.assertTrue(any("tagging failed 1" in m for m in messages))
         self.assertNotIn("via fallback", summary_line(summary))
 

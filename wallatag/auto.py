@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import time
 from dataclasses import dataclass
 
 import requests
@@ -24,6 +25,15 @@ from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError
 
 logger = logging.getLogger(__name__)
+
+# Retries around the final add_tags POST: the engine owns failure handling
+# (bug d968e0f), so both the CLI and the Prefect flow get the same bounded,
+# classified retry here — the Prefect task itself stays retries=0.
+ADD_TAGS_RETRIES = 2  # retries AFTER the first attempt -> up to 3 total
+ADD_TAGS_RETRY_DELAY = 2.0  # base seconds; exponential backoff: 2.0, 4.0
+# HTTP statuses worth re-attempting: timeouts/queueing/transient server-side
+# errors. Deterministic 4xx failures (400, 403, 404, ...) are NOT retried.
+RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 @dataclass
@@ -44,12 +54,15 @@ class EntryResult:
 
     The count fields are deltas for ONE article: ``presented`` is 1 when the
     article was presented, and exactly one of ``tagged``/``skipped`` is 1 —
-    except the add_tags-failure quirk where the article is presented but
-    neither tagged nor skipped (it stays SEEN; see ``process_entry``).
-    ``tags`` holds the deduped, sorted tag strings that were applied (or that
-    would be applied in dry-run); ``outcome`` names the branch that ran
-    (``"tagged"``, ``"no suggestions"``, ``"llm_failed"``,
-    ``"tagging failed"``, or the dry-run ``"would tag"``/``"would skip"``).
+    except an add_tags failure that exhausts its engine retries and fails
+    PERMANENTLY (a deterministic 4xx): then the article is presented but
+    neither tagged nor skipped and stays SEEN. A final TRANSIENT failure
+    (transport-level or retryable HTTP) instead unmarks the article, so it is
+    re-presented (and counted again) on the next run. ``tags`` holds the
+    deduped, sorted tag strings that were applied (or that would be applied
+    in dry-run); ``outcome`` names the branch that ran (``"tagged"``,
+    ``"no suggestions"``, ``"llm_failed"``, ``"tagging failed"``, or the
+    dry-run ``"would tag"``/``"would skip"``).
     """
 
     entry_id: int
@@ -106,6 +119,19 @@ def iter_candidates(client, store, cfg: Config):
     )
 
 
+def _is_retryable_add_tags_error(exc: Exception) -> bool:
+    """True for failures worth re-attempting: transport-level (WallabagError
+    without a status code, e.g. connection errors/timeouts; or a raw
+    requests.RequestException from a duck-typed client) and the usual
+    retryable HTTP statuses. Deterministic 4xx failures are not retried.
+    """
+    if isinstance(exc, requests.RequestException):
+        return True
+    if isinstance(exc, WallabagError):
+        return exc.status is None or exc.status in RETRYABLE_STATUSES
+    return False
+
+
 def process_entry(
     client,
     tagger,
@@ -115,6 +141,8 @@ def process_entry(
     *,
     dry_run: bool = False,
     fallback_tagger: KeywordTagger | None = None,
+    add_tags_retries: int = ADD_TAGS_RETRIES,
+    add_tags_retry_delay: float = ADD_TAGS_RETRY_DELAY,
 ) -> EntryResult:
     """Process one candidate article; returns the per-article count deltas.
 
@@ -127,10 +155,23 @@ def process_entry(
     ``client`` only needs add_tags, ``store`` mark_seen/unmark_seen/
     record_decision. An ``LLMError`` from the tagger is an article-level skip,
     NOT a feed error: the caller keeps iterating. ``fallback_tagger``
-    semantics are those documented on ``run_auto``. The add_tags-failure path
-    deliberately does NOT unmark the article (it stays seen) — a pre-existing
-    quirk whose fate a follow-up bug (d968e0f) will decide.
+    semantics are those documented on ``run_auto``.
+
+    The final add_tags POST is retried by the ENGINE (bug d968e0f): up to
+    ``add_tags_retries`` retries after the first attempt (default 2 -> 3
+    attempts total) with exponential backoff from ``add_tags_retry_delay``.
+    Transport-level failures (connection error/timeout, status None) and the
+    retryable HTTP statuses are re-attempted; deterministic 4xx failures are
+    not. When even the final attempt fails TRANSIENTLY the article is
+    unmarked (deferred to the next run, mirroring the LLM-failure path);
+    when it fails DETERMINISTICALLY (4xx) the article stays seen and is
+    dropped deliberately.
     """
+    if add_tags_retries < 0:
+        # range(add_tags_retries + 1) would be empty: the loop never runs,
+        # last_exc stays None, and the article would be reported "tagged"
+        # without add_tags ever being called (silent false success).
+        raise ValueError("add_tags_retries must be >= 0")
     entry_id = entry["id"]
     result = EntryResult(entry_id=entry_id, tags=(), outcome="skipped")
     if not dry_run:
@@ -209,14 +250,32 @@ def process_entry(
         result.outcome = "no suggestions"
         result.skipped = 1
         return result
-    try:
-        client.add_tags(entry_id, tags)
-    except (WallabagError, requests.RequestException) as exc:
-        logger.error("tagging failed %s: %s", entry_id, exc)
+    last_exc: Exception | None = None
+    for attempt in range(add_tags_retries + 1):
+        try:
+            client.add_tags(entry_id, tags)
+        except (WallabagError, requests.RequestException) as exc:
+            last_exc = exc
+            if not _is_retryable_add_tags_error(exc) or attempt == add_tags_retries:
+                break
+            logger.warning(
+                "tagging failed %s: %s (retry %d/%d)",
+                entry_id, exc, attempt + 1, add_tags_retries,
+            )
+            time.sleep(add_tags_retry_delay * (2**attempt))
+        else:
+            last_exc = None
+            break
+    if last_exc is not None:
+        logger.error("tagging failed %s: %s", entry_id, last_exc)
         result.outcome = "tagging failed"
-        # Deliberate quirk kept from the original loop: the article stays
-        # SEEN (no unmark_seen) when add_tags fails, so it is not deferred
-        # to the next run. A follow-up bug (d968e0f) will decide its fate.
+        # Transient failures (transport-level or retryable HTTP) defer the
+        # article to the next run: unmark_seen mirrors the LLM-failure path
+        # and lets the hourly/backfill schedule re-attempt it. Deterministic
+        # failures (4xx) stay seen: re-processing would fail identically and
+        # only burn tagger calls, so the article is dropped deliberately.
+        if not dry_run and _is_retryable_add_tags_error(last_exc):
+            store.unmark_seen(entry_id)  # defer: retry on the next run
         return result
     logger.info("tagged %s: %s", entry_id, ", ".join(tags))
     result.outcome = "tagged"
@@ -239,6 +298,8 @@ def run_auto(
     *,
     dry_run: bool = False,
     fallback_tagger: KeywordTagger | None = None,
+    add_tags_retries: int = ADD_TAGS_RETRIES,
+    add_tags_retry_delay: float = ADD_TAGS_RETRY_DELAY,
 ) -> AutoSummary:
     """Run the headless batch loop; returns an AutoSummary.
 
@@ -249,6 +310,10 @@ def run_auto(
     when the LLM tagger fails for an article ([ai] fallback_on_fail): it
     behaves exactly like a normal keyword-mode run, per-article, and the LLM
     is still tried on subsequent articles.
+
+    ``add_tags_retries``/``add_tags_retry_delay`` (optional, keyword-only) are
+    the engine's add_tags retry policy, passed through to ``process_entry``
+    (see its docstring); CLI and flow may override, but don't by default.
     """
     summary = AutoSummary(dry_run=dry_run)
     # iter_candidates is a plain function whose returned islice eagerly
@@ -265,6 +330,8 @@ def run_auto(
                 entry,
                 dry_run=dry_run,
                 fallback_tagger=fallback_tagger,
+                add_tags_retries=add_tags_retries,
+                add_tags_retry_delay=add_tags_retry_delay,
             )
             summary.presented += result.presented
             summary.tagged += result.tagged

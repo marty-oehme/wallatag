@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import io
+import logging
 import os
 import re
 import sqlite3
@@ -909,6 +910,53 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(client.add_calls, [(42, ["fix", "todo"])])
         self.assertEqual(
             result, "run: tagged 1 articles (2 tags applied), skipped 0"
+        )
+        self.assertIn(result, out)
+        self.assertTrue(client.closed)
+
+    def test_flow_tagging_failure_logged_run_attributed(self) -> None:
+        """A tag-article task run logs its final tagging failure via the run logger.
+
+        The engine's own ERROR line (wallatag.auto) never surfaces in the
+        flow (root handler at WARNING, basicConfig a no-op; bug edf2338), so
+        the adapter logs the exhausted add_tags failure through
+        get_run_logger() on ``prefect.task_runs`` — entry id and title, at
+        ERROR. The transient WallabagError (status None) is retried by the
+        engine and exhausted, so the task logs the ERROR line, the engine
+        defers the article (unmark_seen), and the flow still completes with
+        the summary line. (time.sleep is patched so the engine's backoff
+        doesn't slow the test.)
+        """
+        client = FakeClient(
+            entries=[entry(7, "pomodoro doomed")], tags=["Pomodoro"]
+        )
+
+        def always_fail_add_tags(entry_id, tags):
+            raise WallabagError("boom")
+
+        client.add_tags = always_fail_add_tags
+        # side_effect=time.sleep: the patch only RECORDS engine backoff calls;
+        # it must not freeze the shared stdlib time module, or Prefect's
+        # ephemeral-server readiness loop (which advances its timeout budget
+        # per iteration, not per wall second) busy-spins to a startup timeout
+        # when this test runs in isolation.
+        with patch("wallatag.auto.time.sleep", side_effect=time.sleep), \
+             self.assertLogs("prefect.task_runs", level="INFO") as cm:
+            result, out, _ = self.run_batch(client)
+        joined = "\n".join(cm.output)
+        self.assertIn("tagging failed article 7 (pomodoro doomed)", joined)
+        failed = next(
+            rec
+            for rec in cm.records
+            if "tagging failed article" in rec.getMessage()
+        )
+        self.assertEqual(failed.levelno, logging.ERROR)
+        self.assertIsNotNone(failed.task_run_id)
+        self.assertEqual(failed.task_name, "tag-article")
+        self.assertEqual(failed.task_run_name, "tag-article")
+        self.assertEqual(client.add_calls, [])
+        self.assertEqual(
+            result, "run: tagged 0 articles (0 tags applied), skipped 0"
         )
         self.assertIn(result, out)
         self.assertTrue(client.closed)
