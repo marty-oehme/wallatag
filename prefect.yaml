@@ -92,12 +92,12 @@ deployments:
   # config per cron is wanted later (e.g. max_articles per time of day) — not
   # added yet, the two daily runs share the deployment-level parameters above.
   schedules:
-  - cron: "0 5 * * *"
+  - cron: "5 * * * *"
     slug: hourly
     timezone: UTC
     parameters:
       max_articles: 5
-  - cron: "0 2 * * *"
+  - cron: "0 5 * * *"
     slug: backfill
     timezone: UTC
     parameters:
