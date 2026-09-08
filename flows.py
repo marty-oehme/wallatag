@@ -60,6 +60,10 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
 # env convention.
 FOCUS_GROUPS_VARIABLE = "wallatag_focus_groups"
 
+class TaggingFailedError(RuntimeError):
+    def __init__(self, result: auto.EntryResult):
+        super().__init__(f"tagging failed article {result.entry_id}")
+        self.result = result
 
 # This task takes the shared, non-serializable runtime objects (client, tagger,
 # store holding a sqlite3 connection, cfg, fallback_tagger) by reference, so the
@@ -114,6 +118,7 @@ def tag_article(
             result.entry_id,
             entry.get("title", ""),
         )
+        raise TaggingFailedError(result)
     return result
 
 
@@ -450,14 +455,17 @@ def wallatag_batch(
             # which is inside this guard, exactly like run_auto — so a feed
             # error sets feed_error instead of escaping the flow.
             for entry in auto.iter_candidates(client, store, config):
-                result = tag_article(
-                    entry,
-                    client=client,
-                    tagger=tagger,
-                    store=store,
-                    cfg=config,
-                    fallback_tagger=fallback_tagger,
-                )
+                try:
+                    result = tag_article(
+                        entry,
+                        client=client,
+                        tagger=tagger,
+                        store=store,
+                        cfg=config,
+                        fallback_tagger=fallback_tagger,
+                    )
+                except TaggingFailedError as e:
+                    result = e.result
                 summary.presented += result.presented
                 summary.tagged += result.tagged
                 summary.tags_applied += result.tags_applied
