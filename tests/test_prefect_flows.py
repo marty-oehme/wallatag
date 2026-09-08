@@ -844,6 +844,89 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertIn(result, out)
         self.assertTrue(client.closed)
 
+    def test_tag_article_failed_state_carries_result(self) -> None:
+        """A tagging-failed task run ends in state Failed, carrying the result.
+
+        The engine produced suggestions but the final add_tags POST failed
+        deterministically (403, no engine retries): the task logs the ERROR
+        line and raises TaggingFailedError, so Prefect marks the task run
+        Failed. Called with return_state=True, the returned State carries the
+        TaggingFailedError whose .result still holds the per-article deltas —
+        presented but neither tagged nor skipped (deterministic 4xx keeps the
+        article seen; EntryResult docstring, wallatag/auto.py).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(store_path=os.path.join(tmp, "s.db"))
+            tagger = KeywordTagger(
+                {},
+                max_applied_tags=10,
+                tag_policy="all",
+                existing_tags=["Pomodoro"],
+            )
+            client = FakeClient(tags=["Pomodoro"])
+
+            def forbidden_add_tags(entry_id, tags):
+                raise WallabagError("forbidden", status=403)
+
+            client.add_tags = forbidden_add_tags
+            store = self.flows.Store(config.store.path)
+            try:
+                state = self.flows.tag_article(
+                    entry(7, "pomodoro doomed"),
+                    client=client,
+                    tagger=tagger,
+                    store=store,
+                    cfg=config,
+                    return_state=True,
+                )
+            finally:
+                store.close()
+        self.assertTrue(state.is_failed())
+        exc = state.result(raise_on_failure=False)
+        self.assertIsInstance(exc, self.flows.TaggingFailedError)
+        self.assertEqual(exc.result.outcome, "tagging failed")
+        self.assertEqual(exc.result.entry_id, 7)
+        self.assertEqual(exc.result.presented, 1)
+        self.assertEqual(exc.result.tagged, 0)
+        self.assertEqual(exc.result.skipped, 0)
+
+    def test_flow_tagging_failure_task_failed_batch_continues(self) -> None:
+        """A tagging-failed task run shows Failed; the batch keeps going.
+
+        Entry 1's add_tags fails deterministically (403, no retries, no
+        backoff), so its tag-article task run ends in state Failed (the
+        engine logs ``Finished in state Failed(...)`` through
+        ``prefect.task_runs``, the same channel the dashboard reads). The
+        flow catches TaggingFailedError and CONTINUES: entry 2 is tagged
+        through the same engine, the failed article's carried deltas keep
+        the summary honest (presented but neither tagged nor skipped), and
+        the flow itself still completes with the summary line.
+        """
+        client = FakeClient(
+            entries=[entry(1, "pomodoro doomed"), entry(2, "pomodoro focus")],
+            tags=["Pomodoro"],
+        )
+
+        def forbidden_add_tags(entry_id, tags):
+            if entry_id == 1:
+                raise WallabagError("forbidden", status=403)
+            client.add_calls.append((entry_id, sorted(tags)))
+
+        client.add_tags = forbidden_add_tags
+        with self.assertLogs("prefect.task_runs", level="INFO") as cm:
+            result, out, _ = self.run_batch(client)
+        joined = "\n".join(cm.output)
+        self.assertIn("tagging failed article 1 (pomodoro doomed)", joined)
+        self.assertIn("Finished in state Failed(", joined)
+        # The batch continued past the failed article.
+        self.assertEqual(client.add_calls, [(2, ["Pomodoro"])])
+        # presented=1 but neither tagged nor skipped for the failed article.
+        self.assertEqual(
+            result, "run: tagged 1 articles (1 tags applied), skipped 0"
+        )
+        self.assertIn(result, out)
+        self.assertTrue(client.closed)
+
     def test_tag_article_task_disables_result_caching(self) -> None:
         """Per-article results must never be cache-reused (dedupe is the Store's job).
 

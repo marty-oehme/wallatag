@@ -60,10 +60,12 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
 # env convention.
 FOCUS_GROUPS_VARIABLE = "wallatag_focus_groups"
 
+
 class TaggingFailedError(RuntimeError):
     def __init__(self, result: auto.EntryResult):
         super().__init__(f"tagging failed article {result.entry_id}")
         self.result = result
+
 
 # This task takes the shared, non-serializable runtime objects (client, tagger,
 # store holding a sqlite3 connection, cfg, fallback_tagger) by reference, so the
