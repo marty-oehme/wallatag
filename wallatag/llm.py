@@ -15,6 +15,13 @@ client sends no Authorization header at all (keyless servers such as a local
 ollama instance). The key is never included in any LLMError message, exception
 text or logged data.
 
+Every request also carries two identity headers required by OpenCode Go
+(https://opencode.ai/docs/go/#where-can-i-use-it): a concrete ``User-Agent``
+(``wallatag/<version>``, not a generic HTTP-library name) and a stable
+``x-opencode-session`` UUID generated once per client instance, so a whole
+tagging run reads as one conversation for routing and prompt-cache reuse.
+Both are inert for every other provider.
+
 This is the ONLY module in the tagger stack that performs I/O; everything
 above it (config, tagger, pipelines) talks to the injectable client. It
 imports only from wallatag.config, so there are no import cycles with
@@ -25,15 +32,22 @@ from __future__ import annotations
 
 import random
 import time
+import uuid
 
 import requests
 
+from wallatag import __version__
 from wallatag.config import VALID_AI_PROVIDERS
 
 # HTTP statuses that may succeed on a retry (rate limit, overload, gateway
 # hiccup). Anything else (other 4xx statuses, non-JSON bodies, missing or
 # non-string content) is a config/protocol error that retrying cannot fix.
 _TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
+
+# Identity sent on every request: OpenCode Go rejects/degrades traffic whose
+# User-Agent is a generic SDK or HTTP-library name and wants a stable
+# x-opencode-session per conversation (see the module docstring).
+_USER_AGENT = f"wallatag/{__version__}"
 
 
 class LLMError(Exception):
@@ -111,6 +125,10 @@ class LLMClient:
         )
         self.retries: int = retries
         self.backoff_base: float = backoff_base
+        # Stable conversation ID for OpenCode Go (see the module docstring):
+        # one UUID per client instance, so all articles in a run share a
+        # session for routing and prompt-cache reuse.
+        self.session_id: str = uuid.uuid4().hex
 
     def _endpoint(self) -> str:
         """Chat completions URL for this provider flavor."""
@@ -161,7 +179,10 @@ class LLMClient:
         parsing happens only AFTER the retry loop and is never retried.
         """
         url = self._endpoint()
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {
+            "User-Agent": _USER_AGENT,
+            "x-opencode-session": self.session_id,
+        }
         if self.api_key:
             # Bearer auth for hosted openai-compatible gateways (OpenAI,
             # OpenRouter, ...). Keyless servers (local ollama) get no header.

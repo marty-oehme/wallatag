@@ -240,6 +240,49 @@ class AuthHeaderTest(unittest.TestCase):
         self.assertNotIn("sk-secret-2", str(ctx.exception))
 
 
+class IdentityHeadersTest(unittest.TestCase):
+    """Every request identifies the client (User-Agent) and the conversation
+    (x-opencode-session), as required by OpenCode Go."""
+
+    def test_always_sends_custom_user_agent(self):
+        client, session = client_for(ok_response())
+        client.complete(SYSTEM, USER)
+        headers = session.posts[0]["headers"]
+        self.assertEqual(headers["User-Agent"], "wallatag/0.1.0")
+
+    def test_user_agent_is_not_a_generic_http_library(self):
+        client, session = client_for(ok_response())
+        client.complete(SYSTEM, USER)
+        self.assertNotIn(
+            "python-requests", session.posts[0]["headers"]["User-Agent"]
+        )
+
+    def test_sends_stable_x_opencode_session_across_calls(self):
+        client, session = client_for(ok_response())
+        client.complete(SYSTEM, USER)
+        client.complete(SYSTEM, USER)
+        first = session.posts[0]["headers"]["x-opencode-session"]
+        second = session.posts[1]["headers"]["x-opencode-session"]
+        self.assertEqual(first, second)
+
+    def test_x_opencode_session_is_uuid_hex(self):
+        client, session = client_for(ok_response())
+        client.complete(SYSTEM, USER)
+        session_id = session.posts[0]["headers"]["x-opencode-session"]
+        self.assertEqual(len(session_id), 32)
+        self.assertTrue(all(c in "0123456789abcdef" for c in session_id))
+
+    def test_distinct_clients_get_distinct_sessions(self):
+        client_a, session_a = client_for(ok_response())
+        client_b, session_b = client_for(ok_response())
+        client_a.complete(SYSTEM, USER)
+        client_b.complete(SYSTEM, USER)
+        self.assertNotEqual(
+            session_a.posts[0]["headers"]["x-opencode-session"],
+            session_b.posts[0]["headers"]["x-opencode-session"],
+        )
+
+
 class ErrorTest(unittest.TestCase):
     def test_http_error_raises_llm_error_with_status(self):
         # Keyless client (default api_key=""): the error body must be
