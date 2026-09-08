@@ -61,9 +61,32 @@ WALLATAG_VARIABLES: tuple[str, ...] = (
 FOCUS_GROUPS_VARIABLE = "wallatag_focus_groups"
 
 
+# Per-article outcomes that FAIL the tag-article task run
+# (auto.EntryResult.outcome), mapped to the human-readable reason shown in
+# the run log and the task-run state message. "tagging failed" is add_tags
+# exhaustion; "llm_failed" is the tagger erroring with nothing to apply. All
+# other outcomes (tagged, skipped, no suggestions) are normal Completed
+# outcomes.
+TAGGING_FAILURE_REASONS: dict[str, str] = {
+    "llm_failed": "LLM tagging failed",
+    "tagging failed": "tagging failed",
+}
+
+
 class TaggingFailedError(RuntimeError):
+    """A tag-article task run failed to tag its article.
+
+    Raised when the engine reports a per-article error outcome — the tagger
+    failed (``llm_failed``) or the final add_tags POST exhausted its engine
+    retries (``tagging failed``). Carries the engine's ``EntryResult`` so the
+    flow can keep summary accounting honest while Prefect marks the task run
+    Failed. It is NOT a feed error: the flow catches it and continues the
+    batch.
+    """
+
     def __init__(self, result: auto.EntryResult):
-        super().__init__(f"tagging failed article {result.entry_id}")
+        reason = TAGGING_FAILURE_REASONS.get(result.outcome, "tagging failed")
+        super().__init__(f"{reason} article {result.entry_id}")
         self.result = result
 
 
@@ -90,9 +113,11 @@ def tag_article(
     in the dashboard. When the article is tagged, the task logs one
     run-attributed INFO line via ``get_run_logger()`` — article id, title and
     the applied tags — so the UI/DB shows what each task run applied. When
-    the engine's add_tags retries are exhausted, the task logs one
-    run-attributed ERROR line — article id and title — so final tagging
-    failures surface in the dashboard. Both lines must use the run logger,
+    the engine reports a per-article error outcome — add_tags retries
+    exhausted (``tagging failed``) or the tagger erroring with nothing to
+    apply (``llm_failed``) — the task logs one run-attributed ERROR line and
+    raises ``TaggingFailedError``, so final tagging/LLM failures surface as
+    Failed task runs. Both lines must use the run logger,
     not the plain module logger: the engine's own per-article lines
     (wallatag.auto) never surface in the flow because the Prefect-installed
     root handler is at WARNING and ``logging.basicConfig`` is a no-op here
@@ -114,9 +139,10 @@ def tag_article(
             entry.get("title", ""),
             ", ".join(result.tags),
         )
-    if result.outcome == "tagging failed":
+    elif result.outcome in TAGGING_FAILURE_REASONS:
         get_run_logger().error(
-            "tagging failed article %s (%s)",
+            "%s article %s (%s)",
+            TAGGING_FAILURE_REASONS[result.outcome],
             result.entry_id,
             entry.get("title", ""),
         )
@@ -397,8 +423,10 @@ def wallatag_batch(
     itself has no run timeout (the old subprocess 1800s timeout was for the
     child process; Prefect's own run timeout applies to the flow). Returns the
     summary line (the same one the CLI prints), and raises RuntimeError when
-    the article feed fails entirely (feed error with nothing presented), so
-    Prefect marks the run Failed and can notify on problems.
+    the article feed fails entirely (feed error with nothing presented) or
+    when every presented article failed to be tagged (e.g. the LLM is down),
+    so Prefect marks such a run Failed and can notify on problems; a partial
+    run (some articles tagged or normally skipped) still returns its summary.
     """
     if max_articles == 0:
         return ""
@@ -451,6 +479,7 @@ def wallatag_batch(
         )
         store = Store(config.store.path)
         summary = auto.AutoSummary()
+        failures = 0  # presented articles whose tag-article task run raised
         try:
             # iter_candidates is a plain function whose returned islice
             # eagerly evaluates client.iter_untagged(...) at the call site —
@@ -468,6 +497,7 @@ def wallatag_batch(
                     )
                 except TaggingFailedError as e:
                     result = e.result
+                    failures += 1
                 summary.presented += result.presented
                 summary.tagged += result.tagged
                 summary.tags_applied += result.tags_applied
@@ -492,6 +522,24 @@ def wallatag_batch(
         raise RuntimeError(
             "wallatag run failed: could not fetch the article feed "
             "(feed error, nothing presented)"
+        )
+    # A run where every presented article failed to be tagged (LLM down,
+    # wallabag add_tags down) must fail the flow run too, so the
+    # scheduler/automations can react; its tag-article task runs are already
+    # individually Failed, this lifts the signal to the flow-run level. A
+    # partial run (at least one article tagged or normally skipped) still
+    # returns its summary line.
+    if failures and failures == summary.presented:
+        causes = []
+        if summary.llm_failed:
+            causes.append(f"{summary.llm_failed} llm failures")
+        tagging_failures = failures - summary.llm_failed
+        if tagging_failures:
+            causes.append(f"{tagging_failures} tagging failures")
+        raise RuntimeError(
+            "wallatag run failed: no article was tagged "
+            f"({summary.presented} presented, "
+            f"{', '.join(causes) or 'no reason recorded'})"
         )
     line = auto.summary_line(summary)
     print(line)

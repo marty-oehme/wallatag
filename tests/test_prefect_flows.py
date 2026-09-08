@@ -22,6 +22,7 @@ import unittest
 from unittest.mock import patch
 
 from wallatag.config import Config, ConfigError, StoreConfig, WallabagConfig
+from wallatag.llm import LLMError
 from wallatag.tagger import KeywordTagger
 from wallatag.wallabag import WallabagError, _should_fetch, _tag_labels
 
@@ -106,6 +107,29 @@ def decision_rows(db_path):
         ).fetchall()
 
 
+class LlmFailTagger:
+    """Primary tagger whose suggest() always raises LLMError.
+
+    Drives process_entry's llm_failed path (no fallback) exactly as a real
+    LLM tagger error does.
+    """
+
+    def suggest(self, entry):
+        raise LLMError("model unreachable")
+
+
+class LlmFailFirstKeywordTagger(KeywordTagger):
+    """Keyword tagger that fails like an LLM for entry id 1, then works.
+
+    Lets a batch mix one llm_failed article with a normally tagged one.
+    """
+
+    def suggest(self, entry):
+        if entry["id"] == 1:
+            raise LLMError("model unreachable")
+        return super().suggest(entry)
+
+
 class PrefectFlowsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -165,13 +189,15 @@ class PrefectFlowsTest(unittest.TestCase):
         max_articles=50,
         store_path=None,
         spy_task=False,
+        tagger=None,
     ):
         """Run wallatag_batch with the adapter seams patched to engine fakes.
 
         ``spy_task=True`` replaces the tag-article task with a spy over the
         real engine function (auto.process_entry) so call counts per
         candidate can be asserted; with ``spy_task=False`` the real Prefect
-        task runs end to end.
+        task runs end to end. ``tagger`` overrides the primary tagger (e.g.
+        an LLM-failing stub) instead of the default KeywordTagger.
         """
         config = (
             config
@@ -180,12 +206,13 @@ class PrefectFlowsTest(unittest.TestCase):
                 store_path=store_path, max_articles=max_articles
             )
         )
-        tagger = KeywordTagger(
-            {},
-            max_applied_tags=10,
-            tag_policy="all",
-            existing_tags=list(client.tags),
-        )
+        if tagger is None:
+            tagger = KeywordTagger(
+                {},
+                max_applied_tags=10,
+                tag_policy="all",
+                existing_tags=list(client.tags),
+            )
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(
@@ -803,10 +830,13 @@ class PrefectFlowsTest(unittest.TestCase):
         the adapter logs the exhausted add_tags failure through
         get_run_logger() on ``prefect.task_runs`` — entry id and title, at
         ERROR. The transient WallabagError (status None) is retried by the
-        engine and exhausted, so the task logs the ERROR line, the engine
-        defers the article (unmark_seen), and the flow still completes with
-        the summary line. (time.sleep is patched so the engine's backoff
-        doesn't slow the test.)
+        engine and exhausted, so the task logs the ERROR line, raises
+        TaggingFailedError (task run Failed), and the engine defers the
+        article (unmark_seen). Because this run's ONLY presented article
+        failed, the flow itself also raises RuntimeError (every presented
+        article failed to tag) — mirror of cmd_run, a total failure looks like
+        a failure to the scheduler. (time.sleep is patched so the engine's
+        backoff doesn't slow the test.)
         """
         client = FakeClient(
             entries=[entry(7, "pomodoro doomed")], tags=["Pomodoro"]
@@ -825,7 +855,8 @@ class PrefectFlowsTest(unittest.TestCase):
             patch("wallatag.auto.time.sleep", side_effect=time.sleep),
             self.assertLogs("prefect.task_runs", level="INFO") as cm,
         ):
-            result, out, _ = self.run_batch(client)
+            with self.assertRaises(RuntimeError) as ctx:
+                self.run_batch(client)
         joined = "\n".join(cm.output)
         self.assertIn("tagging failed article 7 (pomodoro doomed)", joined)
         failed = next(
@@ -838,10 +869,9 @@ class PrefectFlowsTest(unittest.TestCase):
         self.assertEqual(failed.task_name, "tag-article")
         self.assertEqual(failed.task_run_name, "tag-article")
         self.assertEqual(client.add_calls, [])
-        self.assertEqual(
-            result, "run: tagged 0 articles (0 tags applied), skipped 0"
-        )
-        self.assertIn(result, out)
+        self.assertIn("no article was tagged", str(ctx.exception))
+        self.assertIn("1 presented", str(ctx.exception))
+        self.assertIn("1 tagging failures", str(ctx.exception))
         self.assertTrue(client.closed)
 
     def test_tag_article_failed_state_carries_result(self) -> None:
@@ -925,6 +955,109 @@ class PrefectFlowsTest(unittest.TestCase):
             result, "run: tagged 1 articles (1 tags applied), skipped 0"
         )
         self.assertIn(result, out)
+        self.assertTrue(client.closed)
+
+    def test_tag_article_llm_failed_state_carries_result(self) -> None:
+        """An LLM-failed task run ends in state Failed, carrying the result.
+
+        The tagger raised LLMError and there is no fallback, so the engine
+        reports outcome ``"llm_failed"``: the article is presented and DEFERRED
+        (skipped=1, llm_failed=1, unmark_seen keeps it in the queue), never
+        tagged. The task logs the ERROR line and raises TaggingFailedError, so
+        Prefect marks the task run Failed. Called with return_state=True, the
+        returned State carries the TaggingFailedError whose .result still holds
+        the per-article deltas.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(store_path=os.path.join(tmp, "s.db"))
+            client = FakeClient(tags=["Pomodoro"])
+            store = self.flows.Store(config.store.path)
+            try:
+                state = self.flows.tag_article(
+                    entry(7, "pomodoro doomed"),
+                    client=client,
+                    tagger=LlmFailTagger(),
+                    store=store,
+                    cfg=config,
+                    return_state=True,
+                )
+            finally:
+                store.close()
+        self.assertTrue(state.is_failed())
+        exc = state.result(raise_on_failure=False)
+        self.assertIsInstance(exc, self.flows.TaggingFailedError)
+        self.assertEqual(exc.result.outcome, "llm_failed")
+        self.assertEqual(exc.result.entry_id, 7)
+        self.assertEqual(exc.result.presented, 1)
+        self.assertEqual(exc.result.tagged, 0)
+        self.assertEqual(exc.result.skipped, 1)
+        self.assertEqual(exc.result.llm_failed, 1)
+
+    def test_flow_llm_failure_task_failed_batch_continues(self) -> None:
+        """An LLM-failed task run shows Failed; the batch keeps going.
+
+        Entry 1's tagger raises LLMError (outcome ``"llm_failed"``, no
+        fallback), so its tag-article task run ends in state Failed and the
+        run logger carries the ERROR line (the engine's wallatag.auto ERROR
+        never surfaces). The flow catches TaggingFailedError and CONTINUES:
+        entry 2 is tagged, the failed article's deltas keep the summary honest
+        (presented and skipped, llm_failed counted), and the flow itself still
+        completes because it is a partial run.
+        """
+        client = FakeClient(
+            entries=[entry(1, "pomodoro doomed"), entry(2, "pomodoro focus")],
+            tags=["Pomodoro"],
+        )
+        tagger = LlmFailFirstKeywordTagger(
+            {},
+            max_applied_tags=10,
+            tag_policy="all",
+            existing_tags=["Pomodoro"],
+        )
+        with self.assertLogs("prefect.task_runs", level="INFO") as cm:
+            result, out, _ = self.run_batch(client, tagger=tagger)
+        joined = "\n".join(cm.output)
+        self.assertIn("LLM tagging failed article 1 (pomodoro doomed)", joined)
+        self.assertIn("Finished in state Failed(", joined)
+        # The batch continued past the failed article.
+        self.assertEqual(client.add_calls, [(2, ["Pomodoro"])])
+        self.assertEqual(
+            result,
+            "run: tagged 1 articles (1 tags applied), skipped 1, "
+            "1 llm failures",
+        )
+        self.assertIn(result, out)
+        self.assertTrue(client.closed)
+
+    def test_flow_all_articles_failed_raises(self) -> None:
+        """A run where every presented article failed to tag fails the flow.
+
+        With the tagger down for every candidate, each tag-article task run is
+        Failed and the flow itself raises RuntimeError (nothing was tagged), so
+        the flow run shows Failed and can notify — unlike before, an all-failed
+        run looked byte-for-byte like a clean one. Partial runs (at least one
+        article tagged or normally skipped) still return their summary.
+        """
+        client = FakeClient(
+            entries=[
+                entry(1, "pomodoro doomed"),
+                entry(2, "pomodoro again"),
+            ],
+            tags=["Pomodoro"],
+        )
+        with (
+            self.assertLogs("prefect.task_runs", level="INFO") as cm,
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            self.run_batch(client, tagger=LlmFailTagger())
+        joined = "\n".join(cm.output)
+        self.assertIn("LLM tagging failed article 1 (pomodoro doomed)", joined)
+        self.assertIn("LLM tagging failed article 2 (pomodoro again)", joined)
+        self.assertEqual(joined.count("Finished in state Failed("), 2)
+        self.assertIn("no article was tagged", str(ctx.exception))
+        self.assertIn("2 presented", str(ctx.exception))
+        self.assertIn("2 llm failures", str(ctx.exception))
+        self.assertEqual(client.add_calls, [])
         self.assertTrue(client.closed)
 
     def test_tag_article_task_disables_result_caching(self) -> None:
