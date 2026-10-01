@@ -6,21 +6,21 @@ when:
 
 steps:
   setup:
-    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv sync --all-groups --locked
 
   lint:
-    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv run ruff check .
 
   format:
-    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv run ruff format --check .
 
   test:
-    image: ghcr.io/astral-sh/uv:0.11.19-python3.13-bookworm
+    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv run python -m unittest discover -s tests
