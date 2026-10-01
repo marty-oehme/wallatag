@@ -5,6 +5,7 @@ must never create a file. Concurrency is exercised with two multiprocessing
 writers racing to mark_seen the same entry through a barrier.
 """
 
+import contextlib
 import multiprocessing
 import os
 import sqlite3
@@ -74,7 +75,9 @@ class MarkSeenTest(unittest.TestCase):
         # None must never be silently auto-assigned a rowid by SQLite.
         with self.assertRaises(ValueError):
             self.store.mark_seen(None)
-        with sqlite3.connect(db_path(self._tmp.name)) as conn:
+        with contextlib.closing(
+            sqlite3.connect(db_path(self._tmp.name))
+        ) as conn:
             count = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
         self.assertEqual(count, 0)
 
@@ -88,7 +91,9 @@ class MarkSeenTest(unittest.TestCase):
         finally:
             first.close()
             second.close()
-        with sqlite3.connect(db_path(self._tmp.name)) as conn:
+        with contextlib.closing(
+            sqlite3.connect(db_path(self._tmp.name))
+        ) as conn:
             count = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
         self.assertEqual(count, 1)
 
@@ -142,7 +147,9 @@ class DecisionsTest(unittest.TestCase):
         self.store.record_decision(1, "python", "accept", "rules")
         self.store.record_decision(1, "cooking", "reject", "vocabulary")
 
-        with sqlite3.connect(db_path(self._tmp.name)) as conn:
+        with contextlib.closing(
+            sqlite3.connect(db_path(self._tmp.name))
+        ) as conn:
             rows = conn.execute(
                 "SELECT entry_id, tag, action, source FROM decisions"
                 " ORDER BY rowid"
@@ -159,7 +166,9 @@ class DecisionsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.record_decision(1, "python", "nonsense", "rules")
         # Nothing was written by the rejected call.
-        with sqlite3.connect(db_path(self._tmp.name)) as conn:
+        with contextlib.closing(
+            sqlite3.connect(db_path(self._tmp.name))
+        ) as conn:
             count = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[
                 0
             ]
@@ -171,7 +180,9 @@ class DecisionsTest(unittest.TestCase):
 
     def test_db_level_check_rejects_invalid_action(self):
         # The schema CHECK constraint enforces the action whitelist too.
-        with sqlite3.connect(db_path(self._tmp.name)) as conn:
+        with contextlib.closing(
+            sqlite3.connect(db_path(self._tmp.name))
+        ) as conn:
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(
                     "INSERT INTO decisions (entry_id, tag, action, source)"
@@ -234,7 +245,7 @@ class ConcurrencyTest(unittest.TestCase):
             outcomes = [results.get(timeout=5) for _ in procs]
             self.assertEqual(sorted(outcomes), [False, True])
 
-            with sqlite3.connect(path) as conn:
+            with contextlib.closing(sqlite3.connect(path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
             self.assertEqual(count, 1)
 
@@ -273,7 +284,7 @@ class ConstructorRaceTest(unittest.TestCase):
                 errors, [], "concurrent Store() raised: %r" % (errors,)
             )
 
-            with sqlite3.connect(path) as conn:
+            with contextlib.closing(sqlite3.connect(path)) as conn:
                 rows = conn.execute(
                     "SELECT entry_id FROM seen ORDER BY entry_id"
                 ).fetchall()

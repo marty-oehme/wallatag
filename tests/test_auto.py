@@ -176,7 +176,7 @@ def make_cfg(
 
 
 def decision_rows(db_path):
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(
             "SELECT entry_id, tag, action, source FROM decisions ORDER BY rowid"
         ).fetchall()
@@ -311,7 +311,7 @@ class DryRunTest(AutoBase):
                 store.close()
 
             self.assertEqual(client.add_calls, [])
-            with sqlite3.connect(db) as conn:
+            with contextlib.closing(sqlite3.connect(db)) as conn:
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
                 decisions = conn.execute(
                     "SELECT COUNT(*) FROM decisions"
@@ -781,7 +781,7 @@ class LLMDeferralTest(AutoBase):
             finally:
                 store.close()
 
-            with sqlite3.connect(db) as conn:
+            with contextlib.closing(sqlite3.connect(db)) as conn:
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
             self.assertEqual(seen, 0)
         self.assertEqual(summary.llm_failed, 1)
@@ -981,7 +981,7 @@ class LLMFallbackTest(AutoBase):
             finally:
                 store.close()
 
-            with sqlite3.connect(db) as conn:
+            with contextlib.closing(sqlite3.connect(db)) as conn:
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
             self.assertEqual(seen, 0)
         self.assertEqual((summary.tagged, summary.llm_fallback), (1, 1))

@@ -170,7 +170,7 @@ def make_cfg(
 
 
 def decision_rows(db_path):
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(
             "SELECT tag, action, source FROM decisions ORDER BY rowid"
         ).fetchall()
@@ -228,7 +228,7 @@ class NextFlowTest(ManualBase):
             self.assertEqual(
                 decision_rows(db), [("Pomodoro", "accept", "vocabulary")]
             )
-            with sqlite3.connect(db) as conn:
+            with contextlib.closing(sqlite3.connect(db)) as conn:
                 seen = conn.execute(
                     "SELECT COUNT(*) FROM seen WHERE entry_id = 1"
                 ).fetchone()[0]
@@ -578,7 +578,7 @@ class DryRunTest(ManualBase):
 
             self.assertEqual(client.add_calls, [])
             self.assertEqual(decision_rows(db), [])
-            with sqlite3.connect(db) as conn:
+            with contextlib.closing(sqlite3.connect(db)) as conn:
                 seen = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
             self.assertEqual(seen, 0)
             self.assertIn("(dry run) would apply: cooking", out)

@@ -7,6 +7,10 @@ when:
 steps:
   setup:
     image: ghcr.io/astral-sh/uv:0.12-alpine3.22
+    # CI cache and workspace live on different filesystems, so uv's hardlink
+    # optimization cannot apply; copy avoids the "Failed to hardlink" warning.
+    environment:
+      UV_LINK_MODE: copy
     commands:
       - uv sync --all-groups --locked
 

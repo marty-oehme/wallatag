@@ -350,8 +350,11 @@ class MaxNegativeTest(unittest.TestCase):
     """--max -1 must fail loudly with a non-zero exit."""
 
     def test_negative_max_exits_2_via_parser(self):
-        with self.assertRaises(SystemExit) as ctx:
-            main(["run", "--max", "-1"])
+        # argparse prints the usage/error banner to stderr itself; capture it
+        # so the expected failure does not pollute the CI log.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                main(["run", "--max", "-1"])
         self.assertEqual(ctx.exception.code, 2)
 
     def test_negative_max_raises_configerror_in_overrides(self):

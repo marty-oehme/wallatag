@@ -101,7 +101,7 @@ class FakeClient:
 
 
 def decision_rows(db_path):
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
         return conn.execute(
             "SELECT entry_id, tag, action, source FROM decisions ORDER BY rowid"
         ).fetchall()
