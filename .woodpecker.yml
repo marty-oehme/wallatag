@@ -1,8 +1,10 @@
 # Official uv image, version-pinned (uv 0.11.19, python 3.13; matches .python-version).
 # Steps share the workspace, so the setup step's .venv persists for the rest.
 when:
-  event: push
-  branch: main
+  - event: push
+    branch: main
+  - event: pull_request
+    branch: main
 
 steps:
   setup:
