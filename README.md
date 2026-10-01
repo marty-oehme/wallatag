@@ -262,6 +262,13 @@ wallatag covers the gaps:
 `--no-history` disables the decision log for a run; `--no-apply` is a dry run
 that changes nothing.
 
+With history enabled, picking up an article claims it for 7 days: it is skipped
+while the claim is fresh, so concurrent `manual` and `run` invocations never
+double-tag. The claim is a cooldown rather than a permanent exclusion, so an
+article that was skipped, rejected wholesale, or interrupted becomes eligible
+again once it expires (7 days) instead of being lost. Articles whose tagging
+fails transiently are requeued immediately. Without history there is no dedupe.
+
 ## Deployment (Dokku)
 
 wallatag is hosted on a Dokku server and runs its own Prefect worker there. The

@@ -1,18 +1,22 @@
 """Optional SQLite decision log.
 
-The decision log provides seen-dedupe (an article is marked when it is PICKED
+The decision log provides seen-dedupe (an article is CLAIMED when it is PICKED
 UP, so concurrent runs: Prefect + manual: never double-process it) and
 records accept/reject tag decisions (for later ranking and phase-2 AI
-training). It is strictly optional: ``path=None`` selects history-less mode in
-which no database is ever opened and every method is a safe no-op.
+training). A claim is a COOLDOWN, not a permanent exclusion: once its
+``picked_at`` timestamp is older than ``SEEN_TTL_DAYS`` the article becomes
+eligible again, so one that was skipped, rejected, or interrupted is retried
+eventually instead of being lost forever (bug 8a7d089). It is strictly
+optional: ``path=None`` selects history-less mode in which no database is ever
+opened and every method is a safe no-op.
 
-Concurrency: dedupe relies on the atomic ``INSERT OR IGNORE`` on the seen
-primary key, which is safe across processes/threads as long as each process or
-thread uses its own ``Store`` instance (one connection per process/thread:
-sharing a single instance across threads raises ``sqlite3.ProgrammingError``
-because of ``check_same_thread``); ``busy_timeout`` serializes write
-contention. The natural fallback dedupe is wallabag itself: tagged articles
-stop matching the untagged filter.
+Concurrency: a claim is an atomic UPSERT on the seen primary key, which is
+safe across processes/threads as long as each process or thread uses its own
+``Store`` instance (one connection per process/thread: sharing a single
+instance across threads raises ``sqlite3.ProgrammingError`` because of
+``check_same_thread``); ``busy_timeout`` serializes write contention. The
+natural fallback dedupe is wallabag itself: tagged articles stop matching the
+untagged filter.
 """
 
 from __future__ import annotations
@@ -21,6 +25,13 @@ import sqlite3
 import time
 
 _VALID_ACTIONS = ("accept", "reject")
+# How long a pick-up claim excludes an article from the untagged feed. This is
+# a COOLDOWN, not a permanent exclusion: a skipped, rejected, or interrupted
+# article reappears after this many days (bug 8a7d089). Successful tagging is
+# normally final anyway because wallabag stops offering a tagged article to the
+# untagged filter; the cooldown only matters for otherwise-stuck articles.
+SEEN_TTL_DAYS = 7
+_SEEN_TTL_MODIFIER = f"-{SEEN_TTL_DAYS} days"
 # The WAL-mode transition needs an exclusive lock; on a fresh, not-yet-existing
 # database two concurrent constructors can collide with "database is locked".
 # Bound the retry so startup can never hang.
@@ -79,11 +90,13 @@ class Store:
     # -- dedupe ----------------------------------------------------------
 
     def mark_seen(self, entry_id: int) -> bool:
-        """Mark an article as picked up.
+        """Unconditionally mark an article picked up (TTL-ignoring).
 
         Returns True if the row was newly inserted, False if it was already
-        seen (or in history-less mode). Atomic across processes/threads via
-        INSERT OR IGNORE on the primary key.
+        present (or in history-less mode). Atomic across processes/threads via
+        INSERT OR IGNORE on the primary key. This is the low-level marker used
+        to pre-seed state (tests, backfills); the tagging drivers use
+        :meth:`claim`, which is TTL-aware so stale claims can be refreshed.
         """
         if entry_id is None:
             raise ValueError("entry_id must be an integer")
@@ -95,12 +108,45 @@ class Store:
         self._conn.commit()
         return cur.rowcount == 1
 
+    def claim(self, entry_id: int) -> bool:
+        """Atomically claim an article for this run; True if it may proceed.
+
+        Returns True when there was no claim, or when the existing claim is
+        STALE (older than ``SEEN_TTL_DAYS``) and is refreshed; False while a
+        FRESH claim exists, i.e. another run is (or recently was) on the same
+        article. This makes the dedupe a 7-day cooldown rather than a permanent
+        exclusion, while still letting concurrent runs race safely for the
+        same article: the UPSERT is one atomic statement on the primary key,
+        so exactly one racer gets True.
+
+        In history-less mode there is no dedupe, so this always returns True
+        (the article may always be processed).
+        """
+        if entry_id is None:
+            raise ValueError("entry_id must be an integer")
+        if self._conn is None:
+            return True
+        cur = self._conn.execute(
+            "INSERT INTO seen (entry_id) VALUES (?) "
+            "ON CONFLICT(entry_id) DO UPDATE SET picked_at = datetime('now') "
+            "WHERE seen.picked_at <= datetime('now', ?)",
+            (entry_id, _SEEN_TTL_MODIFIER),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
     def is_seen(self, entry_id: int) -> bool:
-        """True if the entry_id has been picked up before."""
+        """True if the entry_id has a FRESH pick-up claim (within the TTL).
+
+        A stale claim (``picked_at`` older than ``SEEN_TTL_DAYS``) is treated
+        as not seen, so the article is offered again.
+        """
         if self._conn is None:
             return False
         cur = self._conn.execute(
-            "SELECT 1 FROM seen WHERE entry_id = ?", (entry_id,)
+            "SELECT 1 FROM seen WHERE entry_id = ? "
+            "AND picked_at > datetime('now', ?)",
+            (entry_id, _SEEN_TTL_MODIFIER),
         )
         return cur.fetchone() is not None
 

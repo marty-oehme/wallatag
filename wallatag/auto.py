@@ -2,10 +2,11 @@
 
 Same pipeline as ``manual`` but with no prompts: fetch untagged entries, let
 the tagger suggest tags, apply them per the tag policy, and log decisions to
-the optional SQLite store. Deterministic and idempotent: the store's seen
-dedupe plus wallabag's own state (tagged articles stop matching the untagged
-filter) prevent double-tagging. Deliberately a one-shot run, NOT a loop:
-Prefect is the sole scheduler, so there is no --interval flag.
+the optional SQLite store. Deterministic and idempotent: the store's claim
+(the seen dedupe, a 7-day cooldown so skipped/interrupted articles come back;
+bug 8a7d089) plus wallabag's own state (tagged articles stop matching the
+untagged filter) prevent double-tagging. Deliberately a one-shot run, NOT a
+loop: Prefect is the sole scheduler, so there is no --interval flag.
 
 All output goes through stdlib logging (no print()) so Prefect can capture it.
 """
@@ -58,7 +59,7 @@ class EntryResult:
     article was presented, and exactly one of ``tagged``/``skipped`` is 1 —
     except an add_tags failure that exhausts its engine retries and fails
     PERMANENTLY (a deterministic 4xx): then the article is presented but
-    neither tagged nor skipped and stays SEEN. A final TRANSIENT failure
+    neither tagged nor skipped and stays CLAIMED. A final TRANSIENT failure
     (transport-level or retryable HTTP) instead unmarks the article, so it is
     re-presented (and counted again) on the next run. ``tags`` holds the
     deduped, sorted tag strings that were applied (or that would be applied
@@ -103,9 +104,9 @@ def iter_candidates(client, store, cfg: Config):
     """Yield the candidate entries for a headless run, in run order.
 
     The same iteration ``run_auto`` uses: the untagged feed (per_page=30, the
-    ``[tagger]`` ignore lists from config) filtered by the store's seen-dedupe,
-    capped at ``cfg.max_articles``. Shared by ``run_auto`` and the Prefect
-    flow so both drivers iterate the feed identically.
+    ``[tagger]`` ignore lists from config) filtered by the store's TTL-aware
+    seen cooldown, capped at ``cfg.max_articles``. Shared by ``run_auto`` and
+    the Prefect flow so both drivers iterate the feed identically.
     """
     return itertools.islice(
         (
@@ -150,11 +151,13 @@ def process_entry(
 
     This is the per-article body of the headless batch loop, extracted from
     ``run_auto`` so the CLI driver and the Prefect flow share the exact same
-    engine behavior: mark seen (unless dry-run), ask the tagger, apply tags
-    per the tag policy, and record decisions. Side-effect sequence and count
-    increments are EXACTLY those of the original loop body.
+    engine behavior: claim the article (unless dry-run), ask the tagger, apply
+    tags per the tag policy, and record decisions. A lost claim to a
+    concurrent run returns the zero-valued result without presenting the
+    article (bug 8a7d089). Side-effect sequence and count increments are
+    EXACTLY those of the original loop body otherwise.
 
-    ``client`` only needs add_tags, ``store`` mark_seen/unmark_seen/
+    ``client`` only needs add_tags, ``store`` claim/unmark_seen/
     record_decision. An ``LLMError`` from the tagger is an article-level skip,
     NOT a feed error: the caller keeps iterating. ``fallback_tagger``
     semantics are those documented on ``run_auto``.
@@ -176,8 +179,11 @@ def process_entry(
         raise ValueError("add_tags_retries must be >= 0")
     entry_id = entry["id"]
     result = EntryResult(entry_id=entry_id, tags=(), outcome="skipped")
-    if not dry_run:
-        store.mark_seen(entry_id)  # pick-up: dedupe concurrent runs
+    if not dry_run and not store.claim(entry_id):
+        # Lost the atomic pick-up race to a concurrent run (the article was
+        # claimed between candidate iteration and now): leave it to them and
+        # report nothing presented rather than double-tagging.
+        return result
     result.presented = 1
 
     used_fallback = False
@@ -284,8 +290,9 @@ def process_entry(
         # Transient failures (transport-level or retryable HTTP) defer the
         # article to the next run: unmark_seen mirrors the LLM-failure path
         # and lets the hourly/backfill schedule re-attempt it. Deterministic
-        # failures (4xx) stay seen: re-processing would fail identically and
-        # only burn tagger calls, so the article is dropped deliberately.
+        # failures (4xx) stay claimed: re-processing immediately would fail
+        # identically and only burn tagger calls, so they are left to the
+        # 7-day cooldown (bug 8a7d089) instead of being dropped forever.
         if not dry_run and _is_retryable_add_tags_error(last_exc):
             store.unmark_seen(entry_id)  # defer: retry on the next run
         return result

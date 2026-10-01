@@ -18,7 +18,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from wallatag.auto import AutoSummary, run_auto, summary_line
+from wallatag.auto import (
+    AutoSummary,
+    process_entry,
+    run_auto,
+    summary_line,
+)
 from wallatag.cli import cmd_run
 from wallatag.config import (
     Config,
@@ -267,6 +272,63 @@ class IdempotencyTest(AutoBase):
         )
 
 
+class ClaimCooldownTest(AutoBase):
+    """Bug 8a7d089: a claim is a 7-day cooldown and pick-up is atomic."""
+
+    def test_stale_claim_is_reprocessed(self):
+        # An article claimed >7 days ago (presented but never tagged) is no
+        # longer filtered from candidates and a fresh run tags it.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                store.claim(1)
+                with contextlib.closing(sqlite3.connect(db)) as conn:
+                    conn.execute(
+                        "UPDATE seen SET picked_at = datetime('now',"
+                        " '-8 days') WHERE entry_id = 1"
+                    )
+                    conn.commit()
+                summary, _ = self.run_auto(
+                    client,
+                    tagger=make_tagger(existing_tags=["Pomodoro"]),
+                    store=store,
+                )
+            finally:
+                store.close()
+
+        self.assertEqual((summary.presented, summary.tagged), (1, 1))
+        self.assertEqual(client.add_calls, [(1, ["Pomodoro"])])
+
+    def test_lost_claim_skips_without_presenting(self):
+        # process_entry claims atomically; when a concurrent run already holds
+        # the claim this run reports nothing presented and never calls add_tags.
+        client = FakeClient(
+            entries=[entry(1, "pomodoro focus")], tags=["Pomodoro"]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            store.claim(1)  # concurrent run already picked it up
+            try:
+                result = process_entry(
+                    client,
+                    make_tagger(existing_tags=["Pomodoro"]),
+                    store,
+                    Config(),
+                    entry(1, "pomodoro focus"),
+                )
+            finally:
+                store.close()
+
+        self.assertEqual(result.presented, 0)
+        self.assertEqual(result.outcome, "skipped")
+        self.assertEqual(client.add_calls, [])
+
+
 class NoHistoryTest(AutoBase):
     def test_history_less_works_and_reprocesses(self):
         client = FakeClient(
@@ -287,7 +349,7 @@ class NoHistoryTest(AutoBase):
             self.assertEqual(os.listdir(tmp), [])
 
         self.assertEqual(first.tagged, 1)
-        # Documented trade-off: without history, is_seen is always False, so
+        # Documented trade-off: without history, claim is always granted, so
         # the same article is re-presented (and re-tagged) next run.
         self.assertEqual(second.presented, 1)
 

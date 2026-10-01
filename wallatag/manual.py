@@ -6,7 +6,7 @@ tagger's suggestions. The user edits it freely: add custom tags, drop entries,
 then commits with "next" or leaves the article untouched with "skip". Confirmed
 tags hit the wallabag API immediately; accept/reject decisions are logged to
 the optional SQLite store. In dry-run mode (--no-apply) nothing is written: no
-mark_seen, no record_decision, no add_tags."""
+claim, no record_decision, no add_tags."""
 
 from __future__ import annotations
 
@@ -106,8 +106,10 @@ def run_manual(
             entry_id = entry["id"]
             if cfg.verbose:
                 print(f"[debug] presenting entry {entry_id}", file=sys.stderr)
-            if not dry_run:
-                store.mark_seen(entry_id)  # pick-up: dedupe concurrent runs
+            if not dry_run and not store.claim(entry_id):
+                # Another run claimed this article between iteration and now;
+                # leave it to them and move on.
+                continue
             summary.presented += 1
 
             try:

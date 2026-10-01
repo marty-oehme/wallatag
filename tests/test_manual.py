@@ -2,7 +2,7 @@
 
 The wallabag API is faked with a small FakeClient; input is scripted via
 ``patch("builtins.input", side_effect=[...])``. A real KeywordTagger and a real
-(optional) Store are used so decisions/mark_seen are observable.
+(optional) Store are used so decisions/claims are observable.
 """
 
 import argparse
@@ -670,6 +670,31 @@ class SeenDedupeTest(ManualBase):
         self.assertEqual(summary.presented, 1)
         self.assertNotIn("already done", out)
         self.assertIn("new one", out)
+
+    def test_lost_claim_entry_not_presented(self):
+        # A concurrent run won the atomic pick-up after the candidate list was
+        # built: claim() returns False and the loop skips the article instead
+        # of presenting/tagging it again.
+        client = FakeClient(
+            entries=[entry(1, "raced away")], tags=["Pomodoro"]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "s.db")
+            store = Store(db)
+            try:
+                with patch.object(store, "claim", return_value=False):
+                    summary, out = self.run_manual(
+                        client,
+                        ["q"],
+                        tagger=make_tagger(existing_tags=["Pomodoro"]),
+                        store=store,
+                    )
+            finally:
+                store.close()
+
+        self.assertEqual(summary.presented, 0)
+        self.assertEqual(client.add_calls, [])
+        self.assertNotIn("raced away", out)
 
 
 class MaxLimitTest(ManualBase):

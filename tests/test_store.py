@@ -2,7 +2,7 @@
 
 Normal mode uses a fresh tempfile DB per test; history-less mode (Store(None))
 must never create a file. Concurrency is exercised with two multiprocessing
-writers racing to mark_seen the same entry through a barrier.
+writers racing to mark_seen/claim the same entry through a barrier.
 """
 
 import contextlib
@@ -26,6 +26,30 @@ def _concurrent_writer(db_path, barrier, entry_id, results):
         return
     results.put(store.mark_seen(entry_id))
     store.close()
+
+
+def _concurrent_claimer(db_path, barrier, entry_id, results):
+    """Worker: open a fresh Store connection and race to claim an entry."""
+    store = Store(db_path)
+    try:
+        barrier.wait(timeout=30)
+    except Exception:
+        results.put(None)
+        store.close()
+        return
+    results.put(store.claim(entry_id))
+    store.close()
+
+
+def _expire(db_path, entry_id):
+    """Backdate a claim past the TTL to simulate the cooldown elapsing."""
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "UPDATE seen SET picked_at = datetime('now', '-8 days')"
+            " WHERE entry_id = ?",
+            (entry_id,),
+        )
+        conn.commit()
 
 
 def _concurrent_constructor(db_path, barrier, entry_id, results):
@@ -134,6 +158,56 @@ class UnmarkSeenTest(unittest.TestCase):
         self.assertTrue(self.store.mark_seen(7))
 
 
+class ClaimTtlTest(unittest.TestCase):
+    """claim() is a TTL cooldown, not a permanent exclusion (bug 8a7d089).
+
+    An article that was presented but never tagged (skipped, rejected
+    wholesale, interrupted) must reappear once ``SEEN_TTL_DAYS`` have passed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = db_path(self._tmp.name)
+        self.store = Store(self.path)
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_claim_true_then_false_while_fresh(self):
+        # The first pick-up wins; a concurrent pick-up within the window loses.
+        self.assertTrue(self.store.claim(1))
+        self.assertFalse(self.store.claim(1))
+
+    def test_is_seen_false_once_claim_is_stale(self):
+        self.store.claim(1)
+        self.assertTrue(self.store.is_seen(1))
+        _expire(self.path, 1)
+        self.assertFalse(self.store.is_seen(1))
+
+    def test_claim_refreshes_a_stale_claim(self):
+        # After the cooldown the entry is claimable again and the timestamp is
+        # refreshed, so a second claim within the new window is refused.
+        self.store.claim(1)
+        _expire(self.path, 1)
+        self.assertTrue(self.store.claim(1))
+        self.assertTrue(self.store.is_seen(1))
+        self.assertFalse(self.store.claim(1))
+
+    def test_claim_history_less_always_true(self):
+        # No database -> no dedupe -> every pick-up is granted.
+        store = Store(None)
+        try:
+            self.assertTrue(store.claim(1))
+            self.assertTrue(store.claim(1))
+        finally:
+            store.close()
+
+    def test_claim_none_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            self.store.claim(None)
+
+
 class DecisionsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -240,6 +314,36 @@ class ConcurrencyTest(unittest.TestCase):
             for proc in procs:
                 self.assertFalse(
                     proc.is_alive(), "writer process did not exit"
+                )
+
+            outcomes = [results.get(timeout=5) for _ in procs]
+            self.assertEqual(sorted(outcomes), [False, True])
+
+            with contextlib.closing(sqlite3.connect(path)) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+            self.assertEqual(count, 1)
+
+
+class ClaimConcurrencyTest(unittest.TestCase):
+    def test_two_claimers_one_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = db_path(tmp)
+            barrier = multiprocessing.Barrier(2)
+            results = multiprocessing.Queue()
+            procs = [
+                multiprocessing.Process(
+                    target=_concurrent_claimer,
+                    args=(path, barrier, 42, results),
+                )
+                for _ in range(2)
+            ]
+            for proc in procs:
+                proc.start()
+            for proc in procs:
+                proc.join(timeout=30)
+            for proc in procs:
+                self.assertFalse(
+                    proc.is_alive(), "claimer process did not exit"
                 )
 
             outcomes = [results.get(timeout=5) for _ in procs]
