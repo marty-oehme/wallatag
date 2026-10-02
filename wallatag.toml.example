@@ -1,5 +1,6 @@
 # wallatag configuration. Copy to wallatag.toml (gitignored) and fill in.
-# Every key here can be overridden by environment variables (see README).
+# Every key here can be overridden by environment variables (see the
+# configuration reference in docs/configuration.md).
 
 [wallabag]
 url = "https://wallabag.example.com"
@@ -11,7 +12,7 @@ password = "your_wallabag_password"
 [store]
 # Path to the SQLite decision log. Leave empty/omit for history-less mode
 # (no database at all: untagged articles may be re-presented, no learning data).
-path = "/data/wallatag.db"
+path = "./wallatag.db"
 
 [tagger]
 # Each key below can be overridden by an environment variable (see README):
