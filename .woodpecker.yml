@@ -26,6 +26,13 @@ steps:
     commands:
       - uv run ruff format --check .
 
+  typecheck:
+    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
+    commands:
+      # --all-groups keeps the prefect group installed, which flows.py and
+      # blocks.py need to resolve their imports.
+      - uv run --all-groups mypy
+
   test:
     image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:

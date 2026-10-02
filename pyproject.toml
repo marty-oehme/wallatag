@@ -16,7 +16,7 @@ wallatag = "wallatag.cli:main"
 include = ["wallatag*"]
 
 [dependency-groups]
-dev = ["ruff>=0.9,<1"]
+dev = ["ruff>=0.9,<1", "mypy>=2.4,<3"]
 # tzdata: defensive pin for containers that lack a system tz database
 # (prefect only pulls it for win32/<3.13 otherwise).
 prefect = ["prefect>=3.1", "tzdata"]
@@ -30,3 +30,16 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+# Scope: the runtime package plus the optional Prefect integration entry
+# points. Tests stay out (stdlib unittest suite, no pytest migration).
+files = ["wallatag", "flows.py", "blocks.py", "deploy/release.py"]
+python_version = "3.11"
+# Non-strict, but still checks the bodies of functions with no annotations
+# -- which is where the real bugs hide in a small codebase. Missing
+# annotations are NOT errors yet; see a62e58d.
+check_untyped_defs = true
+# Missing imports are real errors: the wallatag package must stay
+# Prefect-free (no silent ignore of a leaked flows.py import).
+ignore_missing_imports = false
