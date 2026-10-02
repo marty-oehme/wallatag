@@ -1383,6 +1383,136 @@ class FindConfigFileTest(unittest.TestCase):
         self.assertEqual(found, tmp / "wallatag.toml")
 
 
+class XdgDiscoveryTest(unittest.TestCase):
+    """Config discovery under the XDG base directories."""
+
+    @staticmethod
+    def _write_xdg_config(root: Path, text: str = "") -> Path:
+        config_dir = root / "wallatag"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        path = config_dir / "wallatag.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _find_in_empty_cwd(self, env: dict) -> Path | None:
+        with tempfile.TemporaryDirectory() as cwd:
+            old_cwd = os.getcwd()
+            os.chdir(cwd)
+            try:
+                return find_config_file(env=env)
+            finally:
+                os.chdir(old_cwd)
+
+    def test_xdg_config_home_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._write_xdg_config(Path(tmp))
+            found = self._find_in_empty_cwd({"XDG_CONFIG_HOME": tmp})
+        self.assertEqual(found, expected)
+
+    def test_xdg_config_dirs_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._write_xdg_config(Path(tmp))
+            found = self._find_in_empty_cwd({"XDG_CONFIG_DIRS": tmp})
+        self.assertEqual(found, expected)
+
+    def test_xdg_config_home_defaults_to_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._write_xdg_config(Path(tmp) / ".config")
+            found = self._find_in_empty_cwd({"HOME": tmp})
+        self.assertEqual(found, expected)
+
+    def test_relative_xdg_config_home_falls_back_to_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = self._write_xdg_config(Path(tmp) / ".config")
+            found = self._find_in_empty_cwd(
+                {"XDG_CONFIG_HOME": "relative/config", "HOME": tmp}
+            )
+        self.assertEqual(found, expected)
+
+    def test_project_local_beats_xdg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_xdg_config(Path(tmp))
+            with tempfile.TemporaryDirectory() as cwd:
+                local = write_toml(Path(cwd), "")
+                old_cwd = os.getcwd()
+                os.chdir(cwd)
+                try:
+                    found = find_config_file(env={"XDG_CONFIG_HOME": tmp})
+                finally:
+                    os.chdir(old_cwd)
+        self.assertEqual(found, local)
+
+    def test_explicit_beats_xdg(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.TemporaryDirectory() as other,
+        ):
+            self._write_xdg_config(Path(tmp))
+            explicit = write_toml(Path(other), "")
+            found = find_config_file(
+                explicit=str(explicit), env={"XDG_CONFIG_HOME": tmp}
+            )
+        self.assertEqual(found, explicit)
+
+
+class RelativeStorePathTest(unittest.TestCase):
+    """A relative [store] path resolves against the config file's directory."""
+
+    def test_relative_path_resolved_against_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = "data/wallatag.db"\n')
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
+        self.assertEqual(config.store.path, str(tmp / "data" / "wallatag.db"))
+
+    def test_relative_path_via_xdg_stays_beside_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config_path = XdgDiscoveryTest._write_xdg_config(
+                tmp, '[store]\npath = "state.db"\n'
+            )
+            with tempfile.TemporaryDirectory() as cwd:
+                old_cwd = os.getcwd()
+                os.chdir(cwd)
+                try:
+                    config = load_config(env={"XDG_CONFIG_HOME": tmp})
+                finally:
+                    os.chdir(old_cwd)
+        self.assertEqual(
+            config.store.path, str(config_path.parent / "state.db")
+        )
+
+    def test_absolute_path_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = "/data/wallatag.db"\n')
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
+        self.assertEqual(config.store.path, "/data/wallatag.db")
+
+    def test_wallatag_db_env_wins_and_is_not_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = "data/wallatag.db"\n')
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"),
+                env={"WALLATAG_DB": "/x.db"},
+            )
+        self.assertEqual(config.store.path, "/x.db")
+
+    def test_empty_path_stays_history_less(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = ""\n')
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
+        self.assertIsNone(config.store.path)
+
+
 class ValidationTest(unittest.TestCase):
     """(f) invalid tag_policy -> ConfigError; (g) negative max -> ConfigError."""
 

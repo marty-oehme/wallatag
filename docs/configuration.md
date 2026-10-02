@@ -11,7 +11,7 @@ Values are merged from lowest to highest precedence:
 later sources win:
 
 1. Built-in defaults
-2. `wallatag.toml` in the current directory (or `--config PATH`)
+2. A TOML config file (discovery order below)
 3. Environment variables
 4. CLI flags
 
@@ -49,6 +49,28 @@ all).
 whitespace); an empty string clears the TOML value.
 `wallatag.toml` contains secrets and is gitignored; only `wallatag.toml.example`
 is committed.
+
+### Config file discovery
+
+wallatag looks for a TOML config file in this order and uses the first one
+that exists:
+
+1. `--config PATH`
+2. `WALLATAG_CONFIG` environment variable
+3. `./wallatag.toml` in the current working directory (project-local)
+4. `$XDG_CONFIG_HOME/wallatag/wallatag.toml`, defaulting to
+   `~/.config/wallatag/wallatag.toml` when `XDG_CONFIG_HOME` is unset
+5. `wallatag/wallatag.toml` under each `$XDG_CONFIG_DIRS` entry, defaulting
+   to `/etc/xdg`
+
+A project-local file therefore overrides a per-user XDG config. `--config` and
+`WALLATAG_CONFIG` must point at an existing file; the other candidates are
+simply skipped when absent.
+
+A relative `[store] path` is resolved against the directory of the config file
+that declared it, so an XDG-discovered config keeps its database beside itself
+regardless of the working directory. Absolute paths are used as-is, and a
+`WALLATAG_DB` value is never rewritten.
 
 ### Focus groups
 

@@ -1,7 +1,13 @@
 """Configuration loading and layering for wallatag.
 
-Layering order (lowest to highest precedence): defaults < TOML file
-(``wallatag.toml`` or ``--config``) < environment variables < CLI flags.
+Layering order (lowest to highest precedence): defaults < TOML file <
+environment variables < CLI flags. The TOML file is discovered via
+``--config``, ``WALLATAG_CONFIG``, ``./wallatag.toml`` (project-local), or
+the XDG config directories (``$XDG_CONFIG_HOME/wallatag/wallatag.toml``,
+defaulting to ``~/.config``, then each ``$XDG_CONFIG_DIRS`` entry). A
+relative ``[store] path`` is resolved against the directory of the config
+file that declared it, so an XDG-discovered config keeps its database next
+to itself regardless of the working directory.
 """
 
 from __future__ import annotations
@@ -51,6 +57,13 @@ _ENV_VOCABULARY_FIELDS = "WALLATAG_VOCABULARY_FIELDS"
 _ENV_VOCABULARY_SKIP_IGNORED_TAGS = "WALLATAG_VOCABULARY_SKIP_IGNORED_TAGS"
 
 _DEFAULT_CONFIG_NAME = "wallatag.toml"
+# Subdirectory used under each XDG config directory, i.e.
+# $XDG_CONFIG_HOME/wallatag/wallatag.toml.
+_XDG_CONFIG_SUBDIR = "wallatag"
+_DEFAULT_SYSTEM_CONFIG_DIRS = "/etc/xdg"
+_ENV_XDG_CONFIG_HOME = "XDG_CONFIG_HOME"
+_ENV_XDG_CONFIG_DIRS = "XDG_CONFIG_DIRS"
+_ENV_HOME = "HOME"
 
 
 class ConfigError(Exception):
@@ -192,17 +205,55 @@ class Config:
     max_articles: int | None = None
 
 
+def _xdg_config_candidates(env: Mapping[str, str]) -> list[Path]:
+    """Return config-file candidates under the XDG base directories.
+
+    Order follows the XDG Base Directory spec: ``$XDG_CONFIG_HOME`` (falling
+    back to ``$HOME/.config`` when unset, empty or relative) first, then each
+    colon-separated ``$XDG_CONFIG_DIRS`` entry (default ``/etc/xdg``). Each
+    directory is suffixed with ``wallatag/wallatag.toml``. Relative
+    directories are ignored, as the spec requires; a set-but-relative
+    ``XDG_CONFIG_HOME`` therefore falls back to ``$HOME/.config``.
+    """
+    dirs: list[Path] = []
+    xdg_home = env.get(_ENV_XDG_CONFIG_HOME)
+    if xdg_home and Path(xdg_home).is_absolute():
+        dirs.append(Path(xdg_home))
+    else:
+        home = env.get(_ENV_HOME)
+        if home:
+            dirs.append(Path(home) / ".config")
+
+    xdg_dirs = env.get(_ENV_XDG_CONFIG_DIRS)
+    raw_dirs = (
+        xdg_dirs.split(":") if xdg_dirs else [_DEFAULT_SYSTEM_CONFIG_DIRS]
+    )
+    for entry in raw_dirs:
+        if entry and Path(entry).is_absolute():
+            dirs.append(Path(entry))
+
+    return [d / _XDG_CONFIG_SUBDIR / _DEFAULT_CONFIG_NAME for d in dirs]
+
+
 def find_config_file(
     explicit: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Path | None:
     """Locate the configuration file, or ``None`` for defaults-only.
 
-    Candidate order: ``explicit`` (--config) > env ``WALLATAG_CONFIG`` >
-    ``./wallatag.toml`` in the current working directory.
+    Candidate order:
 
-    An explicitly-given path (flag or env) that is not a file raises
-    ``ConfigError``; a missing default file simply returns ``None``.
+    1. ``explicit`` (``--config``)
+    2. env ``WALLATAG_CONFIG``
+    3. ``./wallatag.toml`` in the current working directory (project-local)
+    4. ``$XDG_CONFIG_HOME/wallatag/wallatag.toml`` (default
+       ``~/.config/wallatag/wallatag.toml``)
+    5. ``wallatag/wallatag.toml`` under each ``$XDG_CONFIG_DIRS`` entry
+       (default ``/etc/xdg``)
+
+    The first existing candidate wins, so a project-local file overrides a
+    per-user XDG config. An explicitly-given path (flag or env) that is not a
+    file raises ``ConfigError``; a missing candidate simply falls through.
     """
     if env is None:
         env = os.environ
@@ -214,7 +265,7 @@ def find_config_file(
         candidate = env[_ENV_CONFIG]
 
     if candidate is not None:
-        path = Path(candidate)
+        path = Path(candidate).expanduser()
         if not path.is_file():
             raise ConfigError(f"config file not found: {candidate}")
         return path
@@ -222,7 +273,32 @@ def find_config_file(
     default = Path.cwd() / _DEFAULT_CONFIG_NAME
     if default.is_file():
         return default
+
+    for xdg_candidate in _xdg_config_candidates(env):
+        if xdg_candidate.is_file():
+            return xdg_candidate
     return None
+
+
+def _resolve_store_path(config: Config, config_path: Path) -> Config:
+    """Resolve a relative ``[store] path`` against the config file's directory.
+
+    A store path declared in TOML is interpreted relative to the config file
+    that declared it, so an XDG-discovered config keeps its database beside
+    itself no matter which directory the process started in. Absolute paths
+    are returned unchanged, as is a ``None``/empty path (history-less mode);
+    ``~`` is expanded. Paths supplied through ``WALLATAG_DB`` are left alone
+    (see ``_apply_env``): they are not tied to a config file.
+    """
+    path = config.store.path
+    if path is None:
+        return config
+    store_path = Path(path).expanduser()
+    if store_path.is_absolute():
+        resolved = store_path
+    else:
+        resolved = (config_path.parent / store_path).resolve()
+    return replace(config, store=replace(config.store, path=str(resolved)))
 
 
 def _parse_toml(path: Path) -> dict:
@@ -988,9 +1064,11 @@ def load_config(
         env = os.environ
 
     path = find_config_file(explicit=config_path, env=env)
-    config = (
-        _parse_toml_config(_parse_toml(path)) if path is not None else Config()
-    )
+    if path is not None:
+        config = _parse_toml_config(_parse_toml(path))
+        config = _resolve_store_path(config, path)
+    else:
+        config = Config()
     config = _apply_env(config, env)
     return config
 

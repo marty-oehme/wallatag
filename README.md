@@ -41,10 +41,14 @@ path = "./wallatag.db"
 ```
 
 You can also supply settings through environment variables instead of TOML.
-Configuration precedence is built-in defaults, `wallatag.toml`, environment
+Configuration precedence is built-in defaults, a TOML config file, environment
 variables, then command-line flags.
-Use `--config PATH` or `WALLATAG_CONFIG` to select another config file.
-The [configuration reference](docs/configuration.md) and
+wallatag looks for `./wallatag.toml` first, then
+`$XDG_CONFIG_HOME/wallatag/wallatag.toml` (`~/.config/...` by default) and the
+`$XDG_CONFIG_DIRS` entries (`/etc/xdg`). Use `--config PATH` or
+`WALLATAG_CONFIG` to point at a specific file.
+A relative `[store] path` is resolved against the config file's directory.
+The [configuration reference](docs/configuration.md) and
 [`wallatag.toml.example`](wallatag.toml.example) cover all settings.
 
 Check the effective (non-secret) configuration before connecting:
