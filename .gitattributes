@@ -1,0 +1,25 @@
+# Store LF in the repository and normalise on checkout. Every tracked file is
+# already LF (verified with `git ls-files --eol`), so this only keeps it that
+# way for contributors on other platforms.
+* text=auto
+
+# Shell scripts and lockfiles are read directly by tools: pin LF everywhere.
+*.sh text eol=lf
+uv.lock text eol=lf
+
+# Binary payloads: no EOL conversion, no textual diff.
+*.db binary
+*.sqlite binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.whl binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

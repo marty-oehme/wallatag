@@ -1,7 +1,24 @@
+# Python bytecode / caches
 __pycache__/
 *.pyc
-*.db
-wallatag.toml
+
+# Local tooling caches
 .venv/
-/data/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Build artifacts
+build/
+dist/
 *.egg-info/
+
+# Local runtime state
+/data/
+*.db
+
+# Secrets
+wallatag.toml
+
+# Jujutsu working state (development may use jj; git users see only .git/)
+.jj/
