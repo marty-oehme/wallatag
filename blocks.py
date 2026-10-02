@@ -136,7 +136,7 @@ def ensure_wallatag_llm_credentials_block(
                 provider=provider,
                 base_url=base_url,
                 model=model,
-                api_key=SecretStr(api_key) if api_key else "",
+                api_key=SecretStr(api_key or ""),
             )
             log(f"seeding {block_name!r} block from WALLATAG_AI_* env")
         else:

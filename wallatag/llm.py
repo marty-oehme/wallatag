@@ -188,7 +188,11 @@ class LLMClient:
             # OpenRouter, ...). Keyless servers (local ollama) get no header.
             # SECURITY: headers are never included in LLMError messages.
             headers["Authorization"] = f"Bearer {self.api_key}"
-        payload = {
+        # Typed as the JSON body we actually build (str | int | bool |
+        # list-of-dicts) rather than left to inference, which would join the
+        # value types to `object` and no longer satisfy requests' JsonType.
+        # NOTE: If we reuse this elsewhere, turn it into TypedDict instead.
+        payload: dict[str, str | int | bool | list[dict[str, str]]] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},

@@ -154,7 +154,9 @@ def _build_tagger(
             config.ai.model,
             api_key=config.ai.api_key,
         )
-        tagger = LLMTagger(
+        # Explicit union: the non-LLM branch below assigns a KeywordTagger to
+        # the same name, so mypy must not narrow it to LLMTagger here.
+        tagger: KeywordTagger | LLMTagger = LLMTagger(
             llm_client,
             focus_groups=config.tagger.focus_groups,
             max_applied_tags=config.tagger.max_applied_tags,

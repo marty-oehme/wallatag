@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+from typing import cast
 
 import requests
 
@@ -159,7 +160,11 @@ def llm_env_from_block() -> dict[str, str]:
     scheduled runs fall back to the container env / wallatag.toml.
     """
     try:
-        return LLMCredentials.load(BLOCK_NAME).llm_env()
+        # Block.load is async_dispatch-typed: Self | Coroutine[...]. Prefect
+        # only picks the coroutine implementation from an async context, and
+        # these helpers are synchronous, so the cast is a no-op at runtime.
+        block = cast(LLMCredentials, LLMCredentials.load(BLOCK_NAME))
+        return block.llm_env()
     except Exception:
         print(
             f"LLM credentials block {BLOCK_NAME!r} not available, "
@@ -178,7 +183,12 @@ def wallabag_env_from_block() -> dict[str, str]:
     scheduled runs fall back to the container env / wallatag.toml.
     """
     try:
-        return WallabagCredentials.load(WALLABAG_BLOCK_NAME).wallabag_env()
+        # async_dispatch-typed like llm_env_from_block; always the sync branch.
+        block = cast(
+            WallabagCredentials,
+            WallabagCredentials.load(WALLABAG_BLOCK_NAME),
+        )
+        return block.wallabag_env()
     except Exception:
         print(
             f"wallabag credentials block {WALLABAG_BLOCK_NAME!r} not "
