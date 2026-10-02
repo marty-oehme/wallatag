@@ -1,13 +1,41 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "wallatag"
 version = "0.1.0"
 description = "AI-assisted auto-tagger for wallabag"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Marty Oehme", email = "contact@martyoeh.me" }]
+keywords = ["wallabag", "tagging", "tags", "cli", "llm", "automation"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet",
+    "Topic :: Utilities",
+]
 dependencies = ["requests>=2.31,<3"]
+
+[project.optional-dependencies]
+# End-user install of the optional Prefect integration:
+#   pip install "wallatag[prefect]"
+# Prefect is never a base dependency.
+prefect = ["prefect>=3.1", "tzdata"]
+
+[project.urls]
+Homepage = "https://github.com/marty-oehme/wallatag"
+Repository = "https://github.com/marty-oehme/wallatag"
+Issues = "https://github.com/marty-oehme/wallatag/issues"
+Documentation = "https://github.com/marty-oehme/wallatag/tree/main/docs"
 
 [project.scripts]
 wallatag = "wallatag.cli:main"
@@ -36,9 +64,8 @@ select = ["E4", "E7", "E9", "F"]
 # points. Tests stay out (stdlib unittest suite, no pytest migration).
 files = ["wallatag", "flows.py", "blocks.py", "deploy/release.py"]
 python_version = "3.11"
-# Non-strict, but still checks the bodies of functions with no annotations
-# -- which is where the real bugs hide in a small codebase. Missing
-# annotations are NOT errors yet; see a62e58d.
+# Non-strict, but still checks the bodies of functions with no annotations.
+# Missing annotations are NOT errors (yet).
 check_untyped_defs = true
 # Missing imports are real errors: the wallatag package must stay
 # Prefect-free (no silent ignore of a leaked flows.py import).

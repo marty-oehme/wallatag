@@ -2438,6 +2438,12 @@ dependencies = [
     { name = "requests" },
 ]
 
+[package.optional-dependencies]
+prefect = [
+    { name = "prefect" },
+    { name = "tzdata" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -2449,7 +2455,12 @@ prefect = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "requests", specifier = ">=2.31,<3" }]
+requires-dist = [
+    { name = "prefect", marker = "extra == 'prefect'", specifier = ">=3.1" },
+    { name = "requests", specifier = ">=2.31,<3" },
+    { name = "tzdata", marker = "extra == 'prefect'" },
+]
+provides-extras = ["prefect"]
 
 [package.metadata.requires-dev]
 dev = [
