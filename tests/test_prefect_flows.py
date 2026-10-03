@@ -4,7 +4,9 @@ The wallatag_batch flow-run tests exercise the Prefect adapter at the
 auto.py port level (style of tests/test_auto.py): the wallabag API is faked
 with a FakeClient, the tagger is a real KeywordTagger, and only the flow's
 own seams are patched (flows._build_tagger, flows.WallabagClient,
-flows.load_config, the env-merge helpers). No subprocess is ever spawned.
+flows.load_config, the env-merge helpers). Prefect itself still spawns an
+ephemeral API server subprocess for the task runs, so the class pins a
+throwaway PREFECT_HOME (see setUpClass) instead of sharing the runner's.
 """
 
 from __future__ import annotations
@@ -147,25 +149,54 @@ class PrefectFlowsTest(IntegrationTest):
         cls.flows = flows
         cls.NO_CACHE = NO_CACHE
 
-    def setUp(self) -> None:
-        # APILogHandler warns (UserWarning) when a run logger emits outside a
-        # FlowRunContext. The flow tests call wallatag_batch.fn directly (no
-        # flow run context), so every tagged outcome in this module would
-        # warn. Silence it for the whole class. (Prefect 3.8.2's Setting has
-        # no writable .value attribute, and os.environ is ineffective because
-        # settings are cached, so temporary_settings is the correct API.)
+        # Tasks run outside a flow context make Prefect start an ephemeral
+        # API server in a subprocess. That server keeps its state in
+        # ``$PREFECT_HOME/prefect.db``. On a CI runner the home persists
+        # between runs, so a server killed mid-migration (or a leaked
+        # subprocess) leaves a stale, partially-migrated or locked database
+        # behind; the next server then re-runs already-applied migrations
+        # ("No such constraint: 'fk_artifact__flow_run_id__flow_run'") or
+        # blocks on the lock, never binds, and every test that needs task-run
+        # logging fails as a knock-on. Give the whole class a private home so
+        # each run migrates a clean database, and disable telemetry so the
+        # background heartbeat stops poking the same file.
         from prefect.settings import (
+            PREFECT_HOME,
             PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW,
+            PREFECT_SERVER_ANALYTICS_ENABLED,
+            PREFECT_SERVER_EPHEMERAL_STARTUP_TIMEOUT_SECONDS,
             temporary_settings,
         )
 
-        self._missing_flow_ctx = temporary_settings(
-            {PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW: "ignore"}
+        cls._prefect_home = tempfile.TemporaryDirectory(
+            prefix="wallatag-prefect-"
         )
-        self._missing_flow_ctx.__enter__()
+        cls._prefect_settings = temporary_settings(
+            {
+                PREFECT_HOME: cls._prefect_home.name,
+                PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW: "ignore",
+                PREFECT_SERVER_ANALYTICS_ENABLED: False,
+                # Cold CI runners (fresh venv, musl, shared IO) can take
+                # well over Prefect's 20 s default to boot the server;
+                # a premature give-up leaks the half-started subprocess
+                # and wedges the later tests behind its port and DB.
+                PREFECT_SERVER_EPHEMERAL_STARTUP_TIMEOUT_SECONDS: 90,
+            }
+        )
+        cls._prefect_settings.__enter__()
 
-    def tearDown(self) -> None:
-        self._missing_flow_ctx.__exit__(None, None, None)
+    @classmethod
+    def tearDownClass(cls) -> None:
+        # Stop the ephemeral server (if one started) before removing its home.
+        try:
+            from prefect.server.api.server import SubprocessASGIServer
+
+            for server in list(SubprocessASGIServer._instances.values()):
+                server.stop()
+        except Exception:  # pragma: no cover - best-effort teardown
+            pass
+        cls._prefect_settings.__exit__(None, None, None)
+        cls._prefect_home.cleanup()
 
     def make_config(self, store_path=None, max_articles=50):
         """A Config the flow can drive (WallabagClient is patched anyway)."""
