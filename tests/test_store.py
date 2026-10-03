@@ -12,6 +12,8 @@ import sqlite3
 import tempfile
 import unittest
 
+from tests._tags import IntegrationTest
+
 from wallatag.store import Store
 
 
@@ -294,7 +296,7 @@ class ContextManagerTest(unittest.TestCase):
             self.assertFalse(store.is_seen(1))
 
 
-class ConcurrencyTest(unittest.TestCase):
+class ConcurrencyTest(IntegrationTest):
     def test_two_writers_leave_single_seen_row(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = db_path(tmp)
@@ -324,8 +326,8 @@ class ConcurrencyTest(unittest.TestCase):
             self.assertEqual(count, 1)
 
 
-class ClaimConcurrencyTest(unittest.TestCase):
-    def test_two_claimers_one_wins(self):
+class ClaimConcurrencyTest(IntegrationTest):
+    def _assert_one_claimer_wins(self, reconsider_after_days):
         with tempfile.TemporaryDirectory() as tmp:
             path = db_path(tmp)
             barrier = multiprocessing.Barrier(2)
@@ -354,7 +356,7 @@ class ClaimConcurrencyTest(unittest.TestCase):
             self.assertEqual(count, 1)
 
 
-class ConstructorRaceTest(unittest.TestCase):
+class ConstructorRaceTest(IntegrationTest):
     def test_concurrent_constructors_on_fresh_path(self):
         # Two processes each construct Store() on the SAME fresh (non-existent)
         # path, synchronized BEFORE the constructor so the WAL-mode transition

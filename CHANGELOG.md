@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Tests are split into `unit`, `integration`, and `e2e` tiers, selectable with
+  `WALLATAG_TEST_TIERS` (default `unit`). Integration tests (Prefect's
+  ephemeral server, concurrent SQLite writers) now pin their own throwaway
+  `PREFECT_HOME`, so a stale shared database can no longer break a run. Run all
+  tiers with `WALLATAG_TEST_TIERS=all`.
+
 ## [0.1.0] - 2026-10-03
 
 First public release. `wallatag` reads articles from your

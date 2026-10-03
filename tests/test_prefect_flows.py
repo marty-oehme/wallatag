@@ -21,6 +21,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+from tests._tags import IntegrationTest
+
 from wallatag.config import Config, ConfigError, StoreConfig, WallabagConfig
 from wallatag.llm import LLMError
 from wallatag.tagger import KeywordTagger
@@ -130,7 +132,7 @@ class LlmFailFirstKeywordTagger(KeywordTagger):
         return super().suggest(entry)
 
 
-class PrefectFlowsTest(unittest.TestCase):
+class PrefectFlowsTest(IntegrationTest):
     @classmethod
     def setUpClass(cls) -> None:
         try:

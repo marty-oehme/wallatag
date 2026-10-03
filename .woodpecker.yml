@@ -58,8 +58,14 @@ steps:
     image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
     environment:
       UV_LINK_MODE: copy
+      # Run every tier in CI (unit + integration; there are no e2e tests yet).
+      # Locally the tiers default to unit only, so a quick run stays quick.
+      WALLATAG_TEST_TIERS: all
     commands:
-      - uv run python -m unittest discover -s tests
+      # `-t .` makes `tests/` import as a package, which is what lets its
+      # load_tests hook filter by tier. Without it unittest globs the files
+      # directly and the tier selection is ignored.
+      - uv run python -m unittest discover -s tests -t .
 
   # --- release -------------------------------------------------------------
   # Runs only on v* tags. Before the first release:

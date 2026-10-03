@@ -195,11 +195,20 @@ Install development and optional integration dependencies, then run the checks:
 uv sync --all-groups --locked
 uv run ruff check .
 uv run ruff format --check .
-uv run python -m unittest discover -s tests
+uv run python -m unittest discover -s tests -t .
 ```
 
-Woodpecker CI runs linting, formatting, and tests on pushes to `main` and pull
-requests targeting `main`.
+Tests are grouped into tiers (`unit`, `integration`, `e2e`) selected with the
+`WALLATAG_TEST_TIERS` environment variable; the default is `unit` only, so the
+command above is the fast loop. Use `WALLATAG_TEST_TIERS=all` to run
+everything, or e.g. `WALLATAG_TEST_TIERS=unit,integration` to skip `e2e`.
+Integration tests need the optional `prefect` group and exercise real child
+processes (Prefect's ephemeral API server, concurrent SQLite writers) over
+fakes for the network; there are no `e2e` tests yet. The `-t .` flag is
+required for the selection to take effect (it imports `tests/` as a package).
+
+Woodpecker CI runs linting, formatting, and all test tiers on pushes to `main`
+and pull requests targeting `main`.
 
 ## License
 
