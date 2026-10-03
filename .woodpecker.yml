@@ -4,44 +4,60 @@
 #
 # Checks run on pushes to main and on pull requests targeting main. The release
 # steps run only on version tags (e.g. v0.1.0) and publish to PyPI.
+#
+# `image` and `environment` are step-level properties in the Woodpecker 3.x
+# schema, so each step names its own image. The tag filter uses `ref`; a `tag:`
+# key does not exist and is rejected by the linter.
 
-# Official uv image, version-pinned (uv 0.12, python 3.13; matches .python-version).
-image: ghcr.io/astral-sh/uv:0.12-alpine3.22
-
+# Official uv image with CPython 3.13 baked in (matches .python-version), so no
+# interpreter is downloaded at runtime. Version-pinned to the current uv release.
 # CI cache and workspace live on different filesystems, so uv's hardlink
-# optimization cannot apply; copy avoids the "Failed to hardlink" warning.
-environment:
-  UV_LINK_MODE: copy
-
+# optimization cannot apply; UV_LINK_MODE=copy avoids the "Failed to hardlink"
+# warning.
 when:
   - event: push
     branch: main
   - event: pull_request
     branch: main
   - event: tag
-    tag: v*
+    ref: refs/tags/v*
 
 steps:
   setup:
     # Steps share the workspace, so the setup step's .venv persists for the rest.
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
+    environment:
+      UV_LINK_MODE: copy
     commands:
       - uv sync --all-groups --locked
 
   lint:
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
+    environment:
+      UV_LINK_MODE: copy
     commands:
       - uv run ruff check .
 
   format:
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
+    environment:
+      UV_LINK_MODE: copy
     commands:
       - uv run ruff format --check .
 
   typecheck:
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
+    environment:
+      UV_LINK_MODE: copy
     commands:
       # --all-groups keeps the prefect group installed, which flows.py and
       # blocks.py need to resolve their imports.
       - uv run --all-groups mypy
 
   test:
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
+    environment:
+      UV_LINK_MODE: copy
     commands:
       - uv run python -m unittest discover -s tests
 
@@ -58,9 +74,12 @@ steps:
   # See issue bf1b8ea for the investigation.
 
   release-build:
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
+    environment:
+      UV_LINK_MODE: copy
     when:
       - event: tag
-        tag: v*
+        ref: refs/tags/v*
     # A tag is a normal commit: gate the release on the same checks that a
     # push would run, so a broken tag cannot publish.
     depends_on: [lint, format, typecheck, test]
@@ -79,13 +98,15 @@ steps:
       - uv build
 
   release-publish:
-    when:
-      - event: tag
-        tag: v*
-    depends_on: [release-build]
+    image: ghcr.io/astral-sh/uv:0.12.23-python3.13-alpine3.23
     environment:
+      UV_LINK_MODE: copy
       UV_PUBLISH_TOKEN:
         from_secret: pypi_token
+    when:
+      - event: tag
+        ref: refs/tags/v*
+    depends_on: [release-build]
     commands:
       # --check-url makes a re-run of an already-published version a no-op
       # instead of a hard "file already exists" failure.
