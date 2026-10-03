@@ -87,12 +87,14 @@ A missing parent directory is created on first use (mode `0700`), so a store
 path under a freshly configured location works without a manual `mkdir`.
 
 `[store] reconsider_after_days` (default `7`, env
-`WALLATAG_STORE_RECONSIDER_AFTER_DAYS`) is the pick-up cooldown: an article
-that is claimed but not tagged — skipped, rejected wholesale, or interrupted —
-stays out of the untagged feed for this many days, then becomes eligible
-again instead of being lost. `0` disables the cooldown, so such an article is
-offered again on the very next run; a negative or non-integer value is a
-configuration error.
+`WALLATAG_STORE_RECONSIDER_AFTER_DAYS`) is the post-attempt cooldown: a
+completed but still-untagged article — skipped, rejected wholesale, no
+suggestions, or deterministically failed — becomes eligible again after this
+many days. `0` disables only this cooldown; an active processing lease still
+prevents concurrent runs from claiming the same article. Active leases renew
+every minute and expire after five minutes if a process disappears, so an
+interrupted article does not wait out the full reconsider cooldown. A negative
+or non-integer cooldown is a configuration error.
 
 ### Focus groups
 

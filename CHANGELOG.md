@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes the pick-up cooldown configurable instead of hard-coded at seven days.
   `0` disables the cooldown so a skipped or rejected article is offered again
   on the next run.
+- Active article claims now use renewable five-minute leases, separate from the
+  reconsider cooldown, so concurrent runs stay deduplicated even when the
+  cooldown is disabled and interrupted work can be retried after lease expiry.
 
 ### Changed
 

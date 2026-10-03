@@ -198,7 +198,9 @@ class PrefectFlowsTest(IntegrationTest):
         cls._prefect_settings.__exit__(None, None, None)
         cls._prefect_home.cleanup()
 
-    def make_config(self, store_path=None, max_articles=50):
+    def make_config(
+        self, store_path=None, max_articles=50, reconsider_after_days=7
+    ):
         """A Config the flow can drive (WallabagClient is patched anyway)."""
         return dataclasses.replace(
             Config(),
@@ -209,7 +211,10 @@ class PrefectFlowsTest(IntegrationTest):
                 username="alice",
                 password="wonderland",
             ),
-            store=StoreConfig(path=store_path),
+            store=StoreConfig(
+                path=store_path,
+                reconsider_after_days=reconsider_after_days,
+            ),
             max_articles=max_articles,
         )
 
@@ -221,6 +226,7 @@ class PrefectFlowsTest(IntegrationTest):
         focus=None,
         max_articles=50,
         store_path=None,
+        reconsider_after_days=7,
         spy_task=False,
         tagger=None,
     ):
@@ -236,7 +242,9 @@ class PrefectFlowsTest(IntegrationTest):
             config
             if config is not None
             else self.make_config(
-                store_path=store_path, max_articles=max_articles
+                store_path=store_path,
+                max_articles=max_articles,
+                reconsider_after_days=reconsider_after_days,
             )
         )
         if tagger is None:
@@ -286,6 +294,19 @@ class PrefectFlowsTest(IntegrationTest):
     def test_flow_defined(self) -> None:
         self.assertTrue(hasattr(self.flows, "wallatag_batch"))
         self.assertEqual(self.flows.wallatag_batch.name, "wallatag-batch")
+
+    def test_zero_cooldown_flows_through_prefect_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(
+                store_path=os.path.join(tmp, "s.db"),
+                reconsider_after_days=0,
+            )
+            client = FakeClient(entries=[entry(1, "no matching rules")])
+            first, _, _ = self.run_batch(client, config=config)
+            second, _, _ = self.run_batch(client, config=config)
+
+        self.assertIn("skipped 1", first)
+        self.assertIn("skipped 1", second)
 
     # -- env-merge helpers -------------------------------------------------
 
@@ -932,7 +953,10 @@ class PrefectFlowsTest(IntegrationTest):
                 raise WallabagError("forbidden", status=403)
 
             client.add_tags = forbidden_add_tags
-            store = self.flows.Store(config.store.path)
+            store = self.flows.Store(
+                config.store.path,
+                reconsider_after_days=config.store.reconsider_after_days,
+            )
             try:
                 state = self.flows.tag_article(
                     entry(7, "pomodoro doomed"),
@@ -1004,7 +1028,10 @@ class PrefectFlowsTest(IntegrationTest):
         with tempfile.TemporaryDirectory() as tmp:
             config = self.make_config(store_path=os.path.join(tmp, "s.db"))
             client = FakeClient(tags=["Pomodoro"])
-            store = self.flows.Store(config.store.path)
+            store = self.flows.Store(
+                config.store.path,
+                reconsider_after_days=config.store.reconsider_after_days,
+            )
             try:
                 state = self.flows.tag_article(
                     entry(7, "pomodoro doomed"),

@@ -487,7 +487,10 @@ def wallatag_batch(
         tagger, llm_client, fallback_tagger = _build_tagger(
             config, existing_tags
         )
-        store = Store(config.store.path)
+        store = Store(
+            config.store.path,
+            reconsider_after_days=config.store.reconsider_after_days,
+        )
         summary = auto.AutoSummary()
         failures = 0  # presented articles whose tag-article task run raised
         try:

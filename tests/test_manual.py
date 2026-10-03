@@ -484,6 +484,7 @@ class SkipTest(ManualBase):
             store = Store(db)
             try:
                 summary, out = self.run_manual(client, ["s", "q"], store=store)
+                self.assertTrue(store.is_seen(1))
             finally:
                 store.close()
 
@@ -651,6 +652,18 @@ class QuitTest(ManualBase):
         self.assertTrue(client.closed)
         # Only the first article was presented; the second never appears.
         self.assertNotIn("second", out.getvalue())
+
+    def test_quitting_releases_the_in_flight_claim(self):
+        client = FakeClient(entries=[entry(1, "first")])
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "s.db"))
+            try:
+                with patch("builtins.input", side_effect=["q"]):
+                    run_manual(client, make_tagger(), store, Config())
+                self.assertFalse(store.is_seen(1))
+                self.assertTrue(store.claim(1))
+            finally:
+                store.close()
 
 
 class SeenDedupeTest(ManualBase):

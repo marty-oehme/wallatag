@@ -2,11 +2,11 @@
 
 Same pipeline as ``manual`` but with no prompts: fetch untagged entries, let
 the tagger suggest tags, apply them per the tag policy, and log decisions to
-the optional SQLite store. Deterministic and idempotent: the store's claim
-(the seen dedupe, a 7-day cooldown so skipped/interrupted articles come back;
-bug 8a7d089) plus wallabag's own state (tagged articles stop matching the
-untagged filter) prevent double-tagging. Deliberately a one-shot run, NOT a
-loop: Prefect is the sole scheduler, so there is no --interval flag.
+the optional SQLite store. The store's atomic in-progress lease prevents
+simultaneous work, while a separate reconsider cooldown makes skipped articles
+eligible later (bug 8a7d089). Wallabag's own state also helps: tagged articles
+stop matching the untagged filter. Deliberately a one-shot run, NOT a loop:
+Prefect is the sole scheduler, so there is no --interval flag.
 
 All output goes through stdlib logging (no print()) so Prefect can capture it.
 """
@@ -147,18 +147,74 @@ def process_entry(
     add_tags_retries: int = ADD_TAGS_RETRIES,
     add_tags_retry_delay: float = ADD_TAGS_RETRY_DELAY,
 ) -> EntryResult:
+    """Claim, process, and settle one candidate article.
+
+    The active lease is renewed during tagger/API work. Completed attempts
+    enter the configured reconsider cooldown; retryable failures release the
+    lease without a cooldown so the next run can retry immediately.
+    """
+    if add_tags_retries < 0:
+        raise ValueError("add_tags_retries must be >= 0")
+    entry_id = entry["id"]
+    if dry_run:
+        return _process_claimed_entry(
+            client,
+            tagger,
+            store,
+            cfg,
+            entry,
+            dry_run=True,
+            fallback_tagger=fallback_tagger,
+            add_tags_retries=add_tags_retries,
+            add_tags_retry_delay=add_tags_retry_delay,
+        )
+    if not store.claim(entry_id):
+        # Lost the atomic pick-up race to a concurrent run.
+        return EntryResult(entry_id=entry_id, tags=(), outcome="skipped")
+    try:
+        with store.keep_claim_alive(entry_id):
+            result = _process_claimed_entry(
+                client,
+                tagger,
+                store,
+                cfg,
+                entry,
+                dry_run=False,
+                fallback_tagger=fallback_tagger,
+                add_tags_retries=add_tags_retries,
+                add_tags_retry_delay=add_tags_retry_delay,
+            )
+    except BaseException:
+        # Graceful failures release immediately; hard process exits rely on
+        # the lease expiry to make the article eligible again.
+        store.release_claim(entry_id)
+        raise
+    store.complete_claim(entry_id)
+    return result
+
+
+def _process_claimed_entry(
+    client,
+    tagger,
+    store,
+    cfg: Config,
+    entry: dict,
+    *,
+    dry_run: bool = False,
+    fallback_tagger: KeywordTagger | None = None,
+    add_tags_retries: int = ADD_TAGS_RETRIES,
+    add_tags_retry_delay: float = ADD_TAGS_RETRY_DELAY,
+) -> EntryResult:
     """Process one candidate article; returns the per-article count deltas.
 
     This is the per-article body of the headless batch loop, extracted from
     ``run_auto`` so the CLI driver and the Prefect flow share the exact same
-    engine behavior: claim the article (unless dry-run), ask the tagger, apply
-    tags per the tag policy, and record decisions. A lost claim to a
-    concurrent run returns the zero-valued result without presenting the
-    article (bug 8a7d089). Side-effect sequence and count increments are
-    EXACTLY those of the original loop body otherwise.
+    engine behavior: ask the tagger, apply tags per the tag policy, and record
+    decisions. The public :func:`process_entry` wrapper owns the lease and
+    settles the claim after this helper returns.
 
-    ``client`` only needs add_tags, ``store`` claim/unmark_seen/
-    record_decision. An ``LLMError`` from the tagger is an article-level skip,
+    ``client`` only needs add_tags, ``store`` unmark_seen/record_decision.
+    An ``LLMError`` from the tagger is an article-level skip,
     NOT a feed error: the caller keeps iterating. ``fallback_tagger``
     semantics are those documented on ``run_auto``.
 
@@ -179,11 +235,6 @@ def process_entry(
         raise ValueError("add_tags_retries must be >= 0")
     entry_id = entry["id"]
     result = EntryResult(entry_id=entry_id, tags=(), outcome="skipped")
-    if not dry_run and not store.claim(entry_id):
-        # Lost the atomic pick-up race to a concurrent run (the article was
-        # claimed between candidate iteration and now): leave it to them and
-        # report nothing presented rather than double-tagging.
-        return result
     result.presented = 1
 
     used_fallback = False

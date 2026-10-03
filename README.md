@@ -93,8 +93,8 @@ uv run wallatag manual --max 5
 
 At each article, press `Enter` to apply the current suggestions, `a` to add
 tags, `d` to drop suggestions, `s` to skip, or `q` to quit.
-A skipped article is eligible again after the seven-day cooldown when history is
-enabled.
+A skipped article is eligible again after the configured post-attempt cooldown
+(seven days by default) when history is enabled.
 
 For unattended batch tagging, omit `--no-apply`:
 
@@ -141,16 +141,18 @@ max_applied_tags` (default:
 
 ### History and reconsideration
 
-With history enabled, wallatag atomically claims an article when processing
-starts.
-When CLI and Prefect runs share the same SQLite store, this prevents them from
-double-processing an article.
-The claim expires after a reconsider cooldown (seven days by default; set
+With history enabled, wallatag atomically leases an article while it is being
+processed. When CLI and Prefect runs share the same SQLite store, this prevents
+them from working on the same article at the same time. The lease is renewed
+every minute and expires after five minutes if a process disappears. Completed
+attempts use a separate reconsider cooldown (seven days by default; set
 `[store] reconsider_after_days` or `WALLATAG_STORE_RECONSIDER_AFTER_DAYS` to
-change it, or `0` to disable the cooldown):
-skipped, rejected-wholesale, no-suggestion, interrupted, or deterministically
-failed articles can return to the queue instead of being excluded forever.
-Transient and LLM failures are requeued immediately.
+change it, or `0` to disable the post-attempt cooldown): skipped,
+rejected-wholesale, no-suggestion, or deterministically failed articles can
+return to the queue instead of being excluded forever. Transient and LLM
+failures release their lease immediately for retry on the next run. A normal
+manual quit also releases the current article immediately; a hard process
+termination relies on the five-minute lease expiry.
 Without history (`--no-history` or an empty `WALLATAG_DB`), there is no
 persistent cooldown or cross-run deduplication.
 

@@ -11,7 +11,9 @@ import os
 import sqlite3
 import stat
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 from tests._tags import IntegrationTest
 
@@ -31,9 +33,11 @@ def _concurrent_writer(db_path, barrier, entry_id, results):
     store.close()
 
 
-def _concurrent_claimer(db_path, barrier, entry_id, results):
+def _concurrent_claimer(
+    db_path, barrier, entry_id, results, reconsider_after_days=7
+):
     """Worker: open a fresh Store connection and race to claim an entry."""
-    store = Store(db_path)
+    store = Store(db_path, reconsider_after_days=reconsider_after_days)
     try:
         barrier.wait(timeout=30)
     except Exception:
@@ -45,12 +49,24 @@ def _concurrent_claimer(db_path, barrier, entry_id, results):
 
 
 def _expire(db_path, entry_id, days=8):
-    """Backdate a claim past the TTL to simulate the cooldown elapsing."""
+    """Backdate a completed claim past its cooldown."""
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
-            "UPDATE seen SET picked_at = datetime('now', ?)"
+            "UPDATE seen SET picked_at = datetime('now', ?), "
+            "status = 'cooldown', lease_until = NULL, claim_token = NULL"
             " WHERE entry_id = ?",
             (f"-{days} days", entry_id),
+        )
+        conn.commit()
+
+
+def _expire_lease(db_path, entry_id, seconds=600):
+    """Expire an in-progress lease without changing its cooldown timestamp."""
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "UPDATE seen SET lease_until = datetime('now', ?) "
+            "WHERE entry_id = ?",
+            (f"-{seconds} seconds", entry_id),
         )
         conn.commit()
 
@@ -162,10 +178,11 @@ class UnmarkSeenTest(unittest.TestCase):
 
 
 class ClaimTtlTest(unittest.TestCase):
-    """claim() is a TTL cooldown, not a permanent exclusion (bug 8a7d089).
+    """Completed claims are a TTL cooldown, not a permanent exclusion.
 
-    An article that was presented but never tagged (skipped, rejected
-    wholesale, interrupted) must reappear once ``SEEN_TTL_DAYS`` have passed.
+    An article that was completed but never tagged (skipped or rejected
+    wholesale) must reappear once ``SEEN_TTL_DAYS`` have passed. Active claims
+    have separate lease-expiry tests below.
     """
 
     def setUp(self):
@@ -251,13 +268,98 @@ class ReconsiderAfterDaysTest(unittest.TestCase):
         finally:
             store.close()
 
-    def test_zero_cooldown_always_reclaims(self):
-        # 0 disables the cooldown: every claim succeeds immediately.
+    def test_zero_cooldown_keeps_active_lock_but_reclaims_on_completion(self):
+        # 0 disables only the post-attempt cooldown, not the active lease.
         store = Store(self.path, reconsider_after_days=0)
         try:
             self.assertTrue(store.claim(1))
-            self.assertTrue(store.claim(1))
+            self.assertFalse(store.claim(1))
+            self.assertTrue(store.complete_claim(1))
             self.assertFalse(store.is_seen(1))
+            self.assertTrue(store.claim(1))
+        finally:
+            store.close()
+
+    def test_expired_lease_is_reclaimable_before_long_cooldown(self):
+        store = Store(self.path, reconsider_after_days=30)
+        second = Store(self.path, reconsider_after_days=30)
+        try:
+            self.assertTrue(store.claim(1))
+            _expire_lease(self.path, 1)
+            self.assertFalse(store.is_seen(1))
+            self.assertTrue(second.claim(1))
+            # A stale owner cannot release or complete the replacement claim.
+            self.assertFalse(store.release_claim(1))
+            self.assertFalse(store.complete_claim(1))
+            self.assertTrue(second.is_seen(1))
+            self.assertTrue(second.complete_claim(1))
+            self.assertTrue(second.is_seen(1))
+        finally:
+            store.close()
+            second.close()
+
+    def test_release_makes_an_unfinished_claim_immediately_available(self):
+        store = Store(self.path)
+        second = Store(self.path)
+        try:
+            self.assertTrue(store.claim(1))
+            self.assertTrue(store.release_claim(1))
+            self.assertFalse(store.is_seen(1))
+            self.assertTrue(second.claim(1))
+        finally:
+            store.close()
+            second.close()
+
+    def test_heartbeat_renews_an_active_lease(self):
+        store = Store(self.path)
+        try:
+            self.assertTrue(store.claim(1))
+            with contextlib.closing(sqlite3.connect(self.path)) as conn:
+                conn.execute(
+                    "UPDATE seen SET lease_until = datetime('now', '+10 seconds') "
+                    "WHERE entry_id = 1"
+                )
+                conn.commit()
+            self.assertTrue(store.heartbeat_claim(1))
+            with contextlib.closing(sqlite3.connect(self.path)) as conn:
+                future = conn.execute(
+                    "SELECT lease_until > datetime('now', '+240 seconds') "
+                    "FROM seen WHERE entry_id = 1"
+                ).fetchone()[0]
+            self.assertEqual(future, 1)
+        finally:
+            store.close()
+
+    def test_background_heartbeat_keeps_a_claim_active(self):
+        store = Store(self.path)
+        try:
+            self.assertTrue(store.claim(1))
+            with (
+                patch("wallatag.store.CLAIM_HEARTBEAT_SECONDS", 0.01),
+                patch("wallatag.store.CLAIM_LEASE_SECONDS", 2),
+                store.keep_claim_alive(1),
+            ):
+                time.sleep(0.05)
+                second = Store(self.path)
+                try:
+                    self.assertFalse(second.claim(1))
+                finally:
+                    second.close()
+        finally:
+            store.close()
+
+    def test_legacy_seen_table_migrates_as_cooldown(self):
+        with contextlib.closing(sqlite3.connect(self.path)) as conn:
+            conn.execute(
+                "CREATE TABLE seen (entry_id INTEGER PRIMARY KEY, "
+                "picked_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            )
+            conn.execute("INSERT INTO seen (entry_id) VALUES (1)")
+            conn.commit()
+        store = Store(self.path)
+        try:
+            self.assertTrue(store.is_seen(1))
+            self.assertFalse(store.claim(1))
         finally:
             store.close()
 
@@ -432,7 +534,7 @@ class ClaimConcurrencyTest(IntegrationTest):
             procs = [
                 multiprocessing.Process(
                     target=_concurrent_claimer,
-                    args=(path, barrier, 42, results),
+                    args=(path, barrier, 42, results, reconsider_after_days),
                 )
                 for _ in range(2)
             ]
@@ -451,6 +553,12 @@ class ClaimConcurrencyTest(IntegrationTest):
             with contextlib.closing(sqlite3.connect(path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
             self.assertEqual(count, 1)
+
+    def test_two_claimers_one_wins(self):
+        self._assert_one_claimer_wins(reconsider_after_days=7)
+
+    def test_two_claimers_one_wins_with_zero_cooldown(self):
+        self._assert_one_claimer_wins(reconsider_after_days=0)
 
 
 class ConstructorRaceTest(IntegrationTest):
@@ -492,6 +600,52 @@ class ConstructorRaceTest(IntegrationTest):
                     "SELECT entry_id FROM seen ORDER BY entry_id"
                 ).fetchall()
             self.assertEqual(rows, [(1,), (2,)])
+
+    def test_concurrent_migration_of_legacy_seen_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = db_path(tmp)
+            with contextlib.closing(sqlite3.connect(path)) as conn:
+                conn.execute(
+                    "CREATE TABLE seen (entry_id INTEGER PRIMARY KEY, "
+                    "picked_at TEXT NOT NULL DEFAULT (datetime('now')))"
+                )
+                conn.execute("INSERT INTO seen (entry_id) VALUES (1)")
+                conn.commit()
+
+            barrier = multiprocessing.Barrier(2)
+            results = multiprocessing.Queue()
+            procs = [
+                multiprocessing.Process(
+                    target=_concurrent_constructor,
+                    args=(path, barrier, entry_id, results),
+                )
+                for entry_id in (2, 3)
+            ]
+            for proc in procs:
+                proc.start()
+            for proc in procs:
+                proc.join(timeout=60)
+            for proc in procs:
+                self.assertFalse(
+                    proc.is_alive(), "migration process did not exit"
+                )
+
+            errors = [results.get(timeout=5) for _ in procs]
+            self.assertEqual(errors, [None, None])
+            with contextlib.closing(sqlite3.connect(path)) as conn:
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(seen)")
+                }
+                rows = conn.execute(
+                    "SELECT entry_id, status FROM seen ORDER BY entry_id"
+                ).fetchall()
+            self.assertTrue(
+                {"status", "lease_until", "claim_token"}.issubset(columns)
+            )
+            self.assertEqual(
+                rows,
+                [(1, "cooldown"), (2, "cooldown"), (3, "cooldown")],
+            )
 
 
 if __name__ == "__main__":

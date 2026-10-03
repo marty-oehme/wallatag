@@ -19,10 +19,11 @@ password = "your_wallabag_password"
 # A user-wide config should keep its data out of the config directory, e.g.:
 # path = "~/.local/share/wallatag/wallatag.db"
 path = "./wallatag.db"
-# How many days a picked-up-but-untagged article is held back before it can be
-# reconsidered (reappears in the untagged feed). Covers skipped / wholesale-
-# rejected / interrupted articles so they are retried instead of lost. 0
-# disables the cooldown (always reconsidered). Env override:
+# How many days a completed-but-untagged article is held back before it can be
+# reconsidered (reappears in the untagged feed). Covers skips, wholesale
+# rejections, and no suggestions. 0 disables only this cooldown; active
+# processing leases still dedupe concurrent runs. Abandoned leases expire after
+# five minutes. Env override:
 # WALLATAG_STORE_RECONSIDER_AFTER_DAYS.
 reconsider_after_days = 7
 

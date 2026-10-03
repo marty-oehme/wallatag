@@ -113,49 +113,53 @@ def run_manual(
             summary.presented += 1
 
             try:
-                suggestions = tagger.suggest(entry)
-            except LLMError as exc:
-                # A model failure skips the article unless a keyword fallback
-                # is configured ([ai] fallback_on_fail); the session keeps
-                # going either way.
-                deferred = (
-                    True  # dropped unless the keyword fallback rescues it
-                )
-                if fallback_tagger is not None:
-                    # Per-article fallback: the keyword tagger takes over for
-                    # THIS article only — the LLM is still tried on subsequent
-                    # articles. Its suggestions carry the usual "vocabulary"/
-                    # "rules" sources and enter the normal review flow below.
+                with store.keep_claim_alive(entry_id):
                     try:
-                        suggestions = fallback_tagger.suggest(entry)
-                    except Exception:
-                        suggestions = []
-                    deferred = not suggestions
-                if deferred:
-                    print(
-                        f"LLM tagging failed {entry_id}: {exc}",
-                        file=sys.stderr,
-                    )
+                        suggestions = tagger.suggest(entry)
+                    except LLMError as exc:
+                        # A model failure skips the article unless a keyword
+                        # fallback is configured; the session keeps going.
+                        deferred = True
+                        if fallback_tagger is not None:
+                            try:
+                                suggestions = fallback_tagger.suggest(entry)
+                            except Exception:
+                                suggestions = []
+                            deferred = not suggestions
+                        if deferred:
+                            print(
+                                f"LLM tagging failed {entry_id}: {exc}",
+                                file=sys.stderr,
+                            )
+                            if not dry_run:
+                                store.release_claim(entry_id)
+                            continue
+                    try:
+                        action, working = _edit_working_list(
+                            entry, suggestions
+                        )
+                    except _Quit:
+                        if not dry_run:
+                            store.release_claim(entry_id)
+                        break
+                    if action == "next":
+                        _apply(
+                            client,
+                            store,
+                            entry_id,
+                            suggestions,
+                            working,
+                            dry_run,
+                            summary,
+                        )
+                    # A committed article or an intentional skip begins its
+                    # normal reconsider cooldown.
                     if not dry_run:
-                        store.unmark_seen(
-                            entry_id
-                        )  # defer: keep the article in the queue
-                    continue
-            try:
-                action, working = _edit_working_list(entry, suggestions)
-            except _Quit:
-                break
-            if action == "next":
-                _apply(
-                    client,
-                    store,
-                    entry_id,
-                    suggestions,
-                    working,
-                    dry_run,
-                    summary,
-                )
-            # "skip" applies and records nothing.
+                        store.complete_claim(entry_id)
+            except BaseException:
+                if not dry_run:
+                    store.release_claim(entry_id)
+                raise
     except (WallabagError, requests.RequestException) as exc:
         # The feed fetch died (e.g. network failure while paginating): report
         # and finish with what we have instead of dumping a traceback. The

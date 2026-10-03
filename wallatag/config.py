@@ -103,10 +103,10 @@ class WallabagConfig:
 @dataclass(frozen=True)
 class StoreConfig:
     path: str | None = None  # None = history-less (no DB at all)
-    # Pick-up cooldown in days: an article claimed but not tagged (skipped,
-    # wholesale-rejected, interrupted) becomes eligible again after this many
-    # days. 0 disables the cooldown (always reclaimable). Defaults to the
-    # store module's SEEN_TTL_DAYS.
+    # Post-attempt cooldown in days for skipped, wholesale-rejected, or
+    # otherwise-untagged articles. Active leases have a separate expiry.
+    # 0 disables only the cooldown; an active claim still dedupes concurrent
+    # runs. Defaults to the store module's SEEN_TTL_DAYS.
     reconsider_after_days: int = SEEN_TTL_DAYS
 
 

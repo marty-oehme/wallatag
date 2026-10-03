@@ -289,7 +289,8 @@ class ClaimCooldownTest(AutoBase):
                 with contextlib.closing(sqlite3.connect(db)) as conn:
                     conn.execute(
                         "UPDATE seen SET picked_at = datetime('now',"
-                        " '-8 days') WHERE entry_id = 1"
+                        " '-8 days'), status = 'cooldown', lease_until = NULL,"
+                        " claim_token = NULL WHERE entry_id = 1"
                     )
                     conn.commit()
                 summary, _ = self.run_auto(
@@ -327,6 +328,26 @@ class ClaimCooldownTest(AutoBase):
         self.assertEqual(result.presented, 0)
         self.assertEqual(result.outcome, "skipped")
         self.assertEqual(client.add_calls, [])
+
+    def test_unexpected_processing_error_releases_claim(self):
+        class BrokenTagger:
+            def suggest(self, _entry):
+                raise RuntimeError("unexpected failure")
+
+        client = FakeClient(entries=[entry(1, "pomodoro focus")])
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "s.db"))
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError, "unexpected failure"
+                ):
+                    process_entry(
+                        client, BrokenTagger(), store, Config(), entry(1, "x")
+                    )
+                self.assertFalse(store.is_seen(1))
+                self.assertTrue(store.claim(1))
+            finally:
+                store.close()
 
 
 class NoHistoryTest(AutoBase):
