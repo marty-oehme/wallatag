@@ -21,6 +21,7 @@ untagged filter.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 
@@ -51,6 +52,21 @@ class Store:
         if path is None:
             self._conn = None
             return
+        # Create the store's parent directory on first use so a fresh
+        # `[store] path` under a not-yet-existing directory works instead of
+        # failing with "unable to open database file". Mode 0700 because the
+        # decision log may sit beside credential files; an existing directory
+        # is left untouched. A failure here (e.g. the parent path is a file)
+        # is surfaced as an OperationalError so callers handle it exactly like
+        # any other unopenable store.
+        parent = os.path.dirname(path)
+        if parent:
+            try:
+                os.makedirs(parent, mode=0o700, exist_ok=True)
+            except OSError as exc:
+                raise sqlite3.OperationalError(
+                    f"cannot create store directory {parent!r}: {exc}"
+                ) from exc
         self._conn = sqlite3.connect(path, timeout=30.0)
         # busy_timeout must be set EARLY so concurrent writers serialize on
         # the WAL-transition exclusive lock instead of failing immediately.

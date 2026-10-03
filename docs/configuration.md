@@ -82,6 +82,9 @@ that declared it, so an XDG-discovered config keeps its database beside itself
 regardless of the working directory. Absolute paths are used as-is, and a
 `WALLATAG_DB` value is never rewritten.
 
+A missing parent directory is created on first use (mode `0700`), so a store
+path under a freshly configured location works without a manual `mkdir`.
+
 ### Focus groups
 
 `[focus.<name>]` tables define named keyword/tag rule groups.

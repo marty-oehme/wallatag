@@ -9,6 +9,7 @@ import contextlib
 import multiprocessing
 import os
 import sqlite3
+import stat
 import tempfile
 import unittest
 
@@ -294,6 +295,51 @@ class ContextManagerTest(unittest.TestCase):
             # safe no-op path (returns False) rather than raising.
             self.assertFalse(store.mark_seen(2))
             self.assertFalse(store.is_seen(1))
+
+
+class ParentDirCreationTest(unittest.TestCase):
+    """A fresh store path under a missing directory is created on first use."""
+
+    def test_creates_missing_parent_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "nested", "data", "wallatag.db")
+            with Store(path) as store:
+                self.assertTrue(store.mark_seen(1))
+                self.assertTrue(store.is_seen(1))
+            self.assertTrue(os.path.exists(path))
+
+    def test_created_directory_is_private(self):
+        # The decision log may sit beside credential files; mode 0700.
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = os.path.join(tmp, "data")
+            path = os.path.join(parent, "wallatag.db")
+            with Store(path):
+                pass
+            mode = stat.S_IMODE(os.stat(parent).st_mode)
+            self.assertEqual(mode, 0o700)
+
+    def test_existing_directory_is_left_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = os.path.join(tmp, "existing")
+            os.makedirs(parent)
+            marker = os.path.join(parent, "keep.txt")
+            with open(marker, "w", encoding="utf-8") as handle:
+                handle.write("keep")
+            with Store(os.path.join(parent, "wallatag.db")):
+                pass
+            self.assertTrue(os.path.exists(marker))
+
+    def test_bare_filename_has_no_parent(self):
+        # A path with no directory component must not attempt makedirs("").
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                with Store("wallatag.db") as store:
+                    self.assertTrue(store.mark_seen(1))
+            finally:
+                os.chdir(cwd)
+            self.assertTrue(os.path.exists(os.path.join(tmp, "wallatag.db")))
 
 
 class ConcurrencyTest(IntegrationTest):

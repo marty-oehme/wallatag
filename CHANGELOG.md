@@ -42,7 +42,8 @@ optional LLM.
   environment variables, then CLI flags. Config files are discovered from the
   current directory, `$XDG_CONFIG_HOME/wallatag/wallatag.toml`,
   `$HOME/.config/wallatag/wallatag.toml`, or `$XDG_CONFIG_DIRS`. A relative
-  `[store] path` is resolved against the config file's directory.
+  `[store] path` is resolved against the config file's directory, and a missing
+  parent directory is created on first use.
 - Prefect integration (optional extra): flows, blocks, and a Dokku deployment
   recipe for running wallatag on a schedule. Install with
   `pip install "wallatag[prefect]"`; Prefect is never a base dependency. See

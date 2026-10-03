@@ -1295,8 +1295,13 @@ class CmdRunExitCodesTest(AutoBase):
         self.assertTrue(client.closed)
 
     def test_store_open_failure_exit_2(self):
+        # A parent path that is a FILE (not a directory) cannot be created, so
+        # sqlite fails to open the store; the run reports it and exits 2.
         with tempfile.TemporaryDirectory() as tmp:
-            bad_path = os.path.join(tmp, "no_such_dir", "store.db")
+            blocker = os.path.join(tmp, "blocker")
+            with open(blocker, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            bad_path = os.path.join(blocker, "store.db")
             client = FakeClient(entries=[entry(1, "x")])
             code, _, err = self.cmd_run(
                 client=client, cfg=make_cfg(store_path=bad_path)

@@ -1145,7 +1145,12 @@ class StoreOpenErrorTest(ManualBase):
     def test_store_open_failure_message_and_exit_2(self):
         client = FakeClient(entries=[entry(1, "x")])
         with tempfile.TemporaryDirectory() as tmp:
-            bad_path = os.path.join(tmp, "no_such_dir", "store.db")
+            # A parent path that is a FILE cannot be created as a directory, so
+            # sqlite genuinely cannot open the store here.
+            blocker = os.path.join(tmp, "blocker")
+            with open(blocker, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            bad_path = os.path.join(blocker, "store.db")
             err = io.StringIO()
             with (
                 patch("wallatag.cli.WallabagClient", return_value=client),

@@ -53,7 +53,8 @@ path = "./wallatag.db"
 ```
 
 A user-wide config should keep its database out of the config directory, e.g.
-`path = "~/.local/share/wallatag/wallatag.db"`.
+`path = "~/.local/share/wallatag/wallatag.db"`. A missing parent directory is
+created on first use, so no manual `mkdir` is needed.
 
 You can also supply settings through environment variables instead of TOML.
 Configuration precedence is built-in defaults, a TOML config file, environment
