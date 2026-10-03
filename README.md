@@ -156,6 +156,18 @@ termination relies on the five-minute lease expiry.
 Without history (`--no-history` or an empty `WALLATAG_DB`), there is no
 persistent cooldown or cross-run deduplication.
 
+To requeue cooled-down articles right away instead of waiting out the cooldown,
+pass `--reset-seen` to `manual` or `run`:
+
+```sh
+uv run wallatag run --reset-seen
+```
+
+This clears every article currently in its post-attempt cooldown; articles
+actively being processed, and the recorded decision history, are left
+untouched. In dry-run mode (`--no-apply`) it reports how many entries would be
+requeued without changing anything.
+
 ## Versus Wallabag's built-in rules
 
 Wallabag has native regex tagging rules, but they apply only to new entries and

@@ -96,6 +96,12 @@ every minute and expire after five minutes if a process disappears, so an
 interrupted article does not wait out the full reconsider cooldown. A negative
 or non-integer cooldown is a configuration error.
 
+To requeue cooled-down articles without waiting, pass `--reset-seen` to
+`wallatag manual` or `wallatag run`. It clears every post-attempt cooldown
+before the run; live (in-progress) leases and the `decisions` history are never
+touched. Under `--no-apply` it only reports how many entries would be
+requeued.
+
 ### Focus groups
 
 `[focus.<name>]` tables define named keyword/tag rule groups.

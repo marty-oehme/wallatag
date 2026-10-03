@@ -87,16 +87,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser(
+    manual_parser = subparsers.add_parser(
         "manual",
         parents=[common],
         help="interactive review loop",
     )
-    subparsers.add_parser(
+    run_parser = subparsers.add_parser(
         "run",
         parents=[common],
         help="headless batch tagging",
     )
+    # Only the tagging commands can reset cooldowns, so the flag lives on
+    # them rather than on the shared parser (`config`/`status` cannot use it).
+    for tagging_parser in (manual_parser, run_parser):
+        tagging_parser.add_argument(
+            "--reset-seen",
+            action="store_true",
+            help=(
+                "clear all article cooldowns before running (requeue them now)"
+            ),
+        )
     config_parser = subparsers.add_parser(
         "config",
         parents=[common],
@@ -233,6 +243,21 @@ def _build_tagger(
     return tagger, None, None
 
 
+def _reset_seen(store: Store, *, dry_run: bool) -> None:
+    """Handle ``--reset-seen``: clear cooldowns, or report the count in dry run.
+
+    Dry run must change nothing, so it only counts: the contract is that no
+    write ever happens under ``--no-apply``. A real reset leaves in-progress
+    leases (live runs) and the decisions history untouched.
+    """
+    if dry_run:
+        print(
+            f"dry run: would reset {store.count_cooldowns()} cooldown entries"
+        )
+        return
+    print(f"reset {store.reset_cooldowns()} cooldown entries")
+
+
 def cmd_manual(config: Config, args: argparse.Namespace) -> int:
     """Interactive review loop."""
     if config.max_articles == 0:
@@ -280,6 +305,8 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
             llm_client.close()
         return 2
     try:
+        if getattr(args, "reset_seen", False):
+            _reset_seen(store, dry_run=args.no_apply)
         summary = run_manual(
             client,
             tagger,
@@ -361,6 +388,8 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
             llm_client.close()
         return 2
     try:
+        if getattr(args, "reset_seen", False):
+            _reset_seen(store, dry_run=args.no_apply)
         summary = run_auto(
             client,
             tagger,

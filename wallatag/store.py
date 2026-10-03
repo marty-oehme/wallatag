@@ -321,6 +321,37 @@ class Store:
         self._conn.commit()
         return cur.rowcount == 1
 
+    # -- bulk reset ------------------------------------------------------
+
+    def count_cooldowns(self) -> int:
+        """Number of entries currently in their post-attempt cooldown.
+
+        Used by ``--reset-seen`` in dry-run mode: it reports how many articles
+        the reset WOULD requeue without changing anything. In-progress leases
+        are not counted (they are never reset); history-less mode returns 0.
+        """
+        if self._conn is None:
+            return 0
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM seen WHERE status = 'cooldown'"
+        )
+        return cur.fetchone()[0]
+
+    def reset_cooldowns(self) -> int:
+        """Clear every post-attempt cooldown so the articles requeue now.
+
+        Only rows in the ``cooldown`` state are deleted: an ``in_progress``
+        lease belongs to a live run (possibly another process) and is left
+        untouched, so a reset is safe while other runs are active. The
+        ``decisions`` history is never modified. Returns the number of entries
+        requeued; 0 in history-less mode.
+        """
+        if self._conn is None:
+            return 0
+        cur = self._conn.execute("DELETE FROM seen WHERE status = 'cooldown'")
+        self._conn.commit()
+        return cur.rowcount
+
     # -- decisions -------------------------------------------------------
 
     def record_decision(

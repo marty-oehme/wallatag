@@ -364,6 +364,68 @@ class ReconsiderAfterDaysTest(unittest.TestCase):
             store.close()
 
 
+class ResetCooldownsTest(unittest.TestCase):
+    """The all-claims reset behind `--reset-seen` (bug bffbc29 part 3)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = db_path(self._tmp.name)
+
+    def test_reset_clears_cooldowns_but_not_leases(self):
+        store = Store(self.path)
+        second = Store(self.path)
+        try:
+            store.mark_seen(1)  # completed cooldown
+            store.claim(2)  # live, this instance
+            second.mark_seen(3)  # completed cooldown
+            second.claim(4)  # live, another instance
+            self.assertEqual(store.count_cooldowns(), 2)
+            self.assertEqual(store.reset_cooldowns(), 2)
+            self.assertEqual(store.count_cooldowns(), 0)
+            # The live leases survive and keep their dedupe.
+            self.assertTrue(store.is_seen(2))
+            self.assertFalse(store.claim(2))
+            self.assertTrue(second.is_seen(4))
+            self.assertFalse(second.claim(4))
+            # Requeued entries are immediately claimable again.
+            self.assertTrue(store.claim(1))
+            self.assertFalse(store.is_seen(3))
+        finally:
+            store.close()
+            second.close()
+
+    def test_reset_is_a_noop_when_nothing_is_in_cooldown(self):
+        store = Store(self.path)
+        try:
+            self.assertEqual(store.count_cooldowns(), 0)
+            self.assertEqual(store.reset_cooldowns(), 0)
+        finally:
+            store.close()
+
+    def test_reset_preserves_decisions(self):
+        store = Store(self.path)
+        try:
+            store.mark_seen(1)
+            store.record_decision(1, "python", "accept", "rules")
+            store.reset_cooldowns()
+            with contextlib.closing(sqlite3.connect(self.path)) as conn:
+                rows = conn.execute(
+                    "SELECT entry_id, tag, action FROM decisions"
+                ).fetchall()
+            self.assertEqual(rows, [(1, "python", "accept")])
+        finally:
+            store.close()
+
+    def test_reset_history_less_is_a_noop(self):
+        store = Store(None)
+        try:
+            self.assertEqual(store.count_cooldowns(), 0)
+            self.assertEqual(store.reset_cooldowns(), 0)
+        finally:
+            store.close()
+
+
 class DecisionsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

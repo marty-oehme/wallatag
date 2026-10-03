@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from wallatag.cli import (
     _build_tagger,
+    _reset_seen,
     apply_flag_overrides,
     build_parser,
     cmd_config_show,
@@ -41,6 +42,7 @@ def _args(**overrides) -> argparse.Namespace:
         "tag_policy": None,
         "no_history": False,
         "no_apply": False,
+        "reset_seen": False,
         "verbose": False,
     }
     defaults.update(overrides)
@@ -1171,6 +1173,55 @@ class StatusAiLineTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("ai: provider=openai-compatible", text)
         self.assertNotIn("sk-direct-secret", text)
+
+
+class ResetSeenTest(unittest.TestCase):
+    """`--reset-seen` clears cooldowns; dry run only reports the count."""
+
+    def test_dry_run_reports_without_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from wallatag.store import Store
+
+            store = Store(Path(tmp) / "s.db")
+            self.addCleanup(store.close)
+            store.mark_seen(1)
+            store.mark_seen(2)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                _reset_seen(store, dry_run=True)
+            self.assertIn("would reset 2 cooldown entries", out.getvalue())
+            # Nothing changed: both rows are still in cooldown.
+            self.assertEqual(store.count_cooldowns(), 2)
+
+    def test_reset_clears_cooldowns_and_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from wallatag.store import Store
+
+            store = Store(Path(tmp) / "s.db")
+            self.addCleanup(store.close)
+            store.mark_seen(1)
+            store.claim(2)
+            store.record_decision(1, "python", "accept", "rules")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                _reset_seen(store, dry_run=False)
+            self.assertIn("reset 1 cooldown entries", out.getvalue())
+            self.assertEqual(store.count_cooldowns(), 0)
+            # The in-progress lease and the decision history survive.
+            self.assertTrue(store.is_seen(2))
+            with contextlib.closing(
+                __import__("sqlite3").connect(store.path)
+            ) as conn:
+                decisions = conn.execute(
+                    "SELECT COUNT(*) FROM decisions"
+                ).fetchone()[0]
+            self.assertEqual(decisions, 1)
+
+    def test_flag_is_parsed_for_manual_and_run(self):
+        parser = build_parser()
+        for command in ("manual", "run"):
+            args = parser.parse_args([command, "--reset-seen"])
+            self.assertTrue(args.reset_seen)
 
 
 if __name__ == "__main__":

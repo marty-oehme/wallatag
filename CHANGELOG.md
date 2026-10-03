@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Active article claims now use renewable five-minute leases, separate from the
   reconsider cooldown, so concurrent runs stay deduplicated even when the
   cooldown is disabled and interrupted work can be retried after lease expiry.
+- `wallatag run --reset-seen` (also available on `manual`) clears all
+  post-attempt cooldowns to requeue articles immediately, leaving live leases
+  and the decision history untouched. In dry-run mode it only reports the count.
 
 ### Changed
 
