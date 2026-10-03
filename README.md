@@ -26,13 +26,12 @@ Install through pip, pipx or uv:
 
 ```sh
 uv tool install git+https://github.com/marty-oehme/wallatag.git
-cp wallatag.toml.example wallatag.toml
 ```
 
 Edit `wallatag.toml` with your Wallabag URL, API client ID and secret, username,
 and password.
 Create an API client in Wallabag under **Developer** ->  **Create your own client**.
-The copied config file is gitignored so your credentials stay local.
+A project-local `wallatag.toml` is gitignored so your credentials stay local.
 
 For a local SQLite history file, set:
 
@@ -40,6 +39,7 @@ For a local SQLite history file, set:
 [store]
 path = "./wallatag.db"
 ```
+
 
 You can also supply settings through environment variables instead of TOML.
 Configuration precedence is built-in defaults, a TOML config file, environment
@@ -55,10 +55,11 @@ The [configuration reference](docs/configuration.md) and
 Check the effective (non-secret) configuration before connecting:
 
 ```sh
-uv run wallatag status
+wallatag config
 ```
 
-## Use the CLI
+`wallatag config show` is the explicit form, and `wallatag status` remains as an
+alias.
 
 Start with a dry run.
 It fetches eligible articles and reports what it would tag without applying

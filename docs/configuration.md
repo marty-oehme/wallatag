@@ -50,6 +50,9 @@ whitespace); an empty string clears the TOML value.
 `wallatag.toml` contains secrets and is gitignored; only `wallatag.toml.example`
 is committed.
 
+Inspect the effective configuration with `wallatag config` (alias: `wallatag
+config show`; the old `wallatag status` name still works).
+
 ### Config file discovery
 
 wallatag looks for a TOML config file in this order and uses the first one

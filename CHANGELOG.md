@@ -16,9 +16,10 @@ optional LLM.
 
 ### Added
 
-- CLI with two commands: `wallatag run` for automatic batch tagging and
+- CLI with three commands: `wallatag run` for automatic batch tagging,
   `wallatag manual` for reviewing and tagging one article at a time in the
-  terminal, plus `wallatag status` to show the resolved configuration.
+  terminal, and `wallatag config` (`wallatag config show`, or the `wallatag
+  status` alias) to inspect the resolved configuration.
 - Keyword tagger using focus groups (`[focus.<name>]` config sections) with
   match modes and per-rule controls.
 - Optional LLM tagger backed by any OpenAI-compatible chat completions API.

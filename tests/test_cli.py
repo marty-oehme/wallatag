@@ -15,8 +15,8 @@ from wallatag.cli import (
     _build_tagger,
     apply_flag_overrides,
     build_parser,
+    cmd_config_show,
     cmd_run,
-    cmd_status,
     main,
 )
 from wallatag.config import (
@@ -60,7 +60,7 @@ class HelpTest(unittest.TestCase):
             parser.parse_args(["--help"])
         self.assertEqual(ctx.exception.code, 0)
         text = out.getvalue()
-        for sub in ("manual", "run", "status"):
+        for sub in ("manual", "run", "config", "status"):
             self.assertIn(sub, text)
 
 
@@ -392,7 +392,7 @@ class StatusOutputTest(unittest.TestCase):
             )
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                code = cmd_status(config, args)
+                code = cmd_config_show(config, args)
             text = out.getvalue()
 
         self.assertEqual(code, 0)
@@ -434,6 +434,67 @@ class StatusOutputTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("wallabag: https://wallabag.example.com", text)
         self.assertIn("store: history-less", text)
+
+
+class ConfigCommandTest(unittest.TestCase):
+    """`wallatag config`/`config show` print the config; `status` aliases it."""
+
+    def test_config_bare_shows_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                '[wallabag]\nurl = "https://wallabag.example.com"\n',
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["config", "--config", str(path)])
+            text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("wallabag: https://wallabag.example.com", text)
+        self.assertIn("store: history-less", text)
+
+    def test_config_show_matches_bare_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                '[wallabag]\nurl = "https://wallabag.example.com"\n',
+                encoding="utf-8",
+            )
+            out_bare = io.StringIO()
+            out_show = io.StringIO()
+            with contextlib.redirect_stdout(out_bare):
+                code_bare = main(["config", "--config", str(path)])
+            with contextlib.redirect_stdout(out_show):
+                code_show = main(["config", "show", "--config", str(path)])
+        self.assertEqual(code_bare, 0)
+        self.assertEqual(code_show, 0)
+        self.assertEqual(out_bare.getvalue(), out_show.getvalue())
+
+    def test_status_alias_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wallatag.toml"
+            path.write_text(
+                '[wallabag]\nurl = "https://wallabag.example.com"\n',
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = main(["status", "--config", str(path)])
+        self.assertEqual(code, 0)
+        self.assertIn("wallabag: https://wallabag.example.com", out.getvalue())
+
+    def test_config_help_lists_subcommands(self):
+        parser = build_parser()
+        out = io.StringIO()
+        with (
+            self.assertRaises(SystemExit) as ctx,
+            contextlib.redirect_stdout(out),
+        ):
+            parser.parse_args(["config", "--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        text = out.getvalue()
+        self.assertIn("show", text)
 
 
 class FakeClient:
@@ -1092,8 +1153,8 @@ class StatusAiLineTest(unittest.TestCase):
         self.assertIn("ai: provider=openai-compatible", text)
         self.assertNotIn("sk-super-secret-api-key", text)
 
-    def test_status_never_leaks_api_key_via_cmd_status(self):
-        # Direct cmd_status with an AiConfig that has api_key set.
+    def test_never_leaks_api_key_via_cmd_config_show(self):
+        # Direct cmd_config_show with an AiConfig that has api_key set.
         config = dataclasses.replace(
             Config(),
             ai=AiConfig(
@@ -1105,7 +1166,7 @@ class StatusAiLineTest(unittest.TestCase):
         )
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = cmd_status(config, _args())
+            code = cmd_config_show(config, _args())
         text = out.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("ai: provider=openai-compatible", text)

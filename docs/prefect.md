@@ -73,7 +73,7 @@ The one exception is `WALLATAG_AI_API_KEY=""`, which intentionally clears the
 api key (unset or empty means no auth header) instead of failing.
 Empty block fields fall back to the TOML config / container env.
 Block values apply to Prefect-scheduled runs only:
-`dokku run wallatag ...` (manual/status) reads config/env only and never sees
+`dokku run wallatag ...` (manual/config) reads config/env only and never sees
 the block, so keep the `WALLATAG_AI_*` vars in the `config:set` above if you
 also run the LLM tagger manually.
 No secrets end up in git either way.
@@ -107,7 +107,7 @@ a present-but-empty `WALLATAG_*` var overrides the block with `""` and fails
 wallatag's config validation (ConfigError) on every scheduled run.
 Empty block fields fall back to the TOML config / container env.
 Block values apply to Prefect-scheduled runs only:
-`dokku run wallatag ...` (manual/status) reads config/env only and never sees
+`dokku run wallatag ...` (manual/config) reads config/env only and never sees
 the block, so keep the `WALLATAG_*` vars in the `config:set` above if you also
 run wallatag manually.
 No secrets end up in git either way.
@@ -263,7 +263,7 @@ Verify:
   the worker heartbeats, and `prefect worker ls` lists the worker.
 - In the Prefect UI, the `wallatag-batch` deployment shows scheduled runs, and
   each run's state (Completed/Failed) appears as it executes.
-- `dokku run wallatag wallatag status` prints the config summary (proves the
+- `dokku run wallatag wallatag config` prints the config summary (proves the
   package and env vars work in-container).
   Note it exits 0 even with everything unset, so only treat env vars as working
   if the output shows the URL/username populated.

@@ -95,10 +95,23 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="headless batch tagging",
     )
+    config_parser = subparsers.add_parser(
+        "config",
+        parents=[common],
+        help="inspect or generate the configuration",
+    )
+    config_subparsers = config_parser.add_subparsers(dest="config_command")
+    config_subparsers.add_parser(
+        "show",
+        parents=[common],
+        help="show the effective configuration (default)",
+    )
+    # `wallatag status` is kept as an alias for backwards compatibility;
+    # `wallatag config`/`wallatag config show` is the documented name.
     subparsers.add_parser(
         "status",
         parents=[common],
-        help="show configuration summary",
+        help="show configuration summary (alias for `config show`)",
     )
     return parser
 
@@ -351,8 +364,8 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(config: Config, args: argparse.Namespace) -> int:
-    """Print a non-secret summary of the effective configuration."""
+def cmd_config_show(config: Config, args: argparse.Namespace) -> int:
+    """`wallatag config` (bare) and `wallatag config show`; read-only summary."""
     url = config.wallabag.url or "(not configured)"
     store = config.store.path or "history-less"
     tagger = config.tagger
@@ -417,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     dispatch = {
         "manual": cmd_manual,
         "run": cmd_run,
-        "status": cmd_status,
+        "config": cmd_config_show,
+        "status": cmd_config_show,
     }
     return dispatch[args.command](config, args)
