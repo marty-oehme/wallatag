@@ -9,6 +9,7 @@ from wallatag.config import (
     Config,
     ConfigError,
     FocusGroup,
+    default_config_path,
     find_config_file,
     load_config,
 )
@@ -1455,6 +1456,41 @@ class XdgDiscoveryTest(unittest.TestCase):
         self.assertEqual(found, explicit)
 
 
+class DefaultConfigPathTest(unittest.TestCase):
+    """default_config_path is the user XDG config location (init destination)."""
+
+    def test_uses_xdg_config_home_when_absolute(self):
+        path = default_config_path({"XDG_CONFIG_HOME": "/etc/x/custom"})
+        self.assertEqual(path, Path("/etc/x/custom/wallatag/wallatag.toml"))
+
+    def test_falls_back_to_home_dot_config(self):
+        path = default_config_path({"HOME": "/home/alice"})
+        self.assertEqual(
+            path, Path("/home/alice/.config/wallatag/wallatag.toml")
+        )
+
+    def test_relative_xdg_config_home_falls_back_to_home(self):
+        path = default_config_path(
+            {"XDG_CONFIG_HOME": "relative", "HOME": "/home/alice"}
+        )
+        self.assertEqual(
+            path, Path("/home/alice/.config/wallatag/wallatag.toml")
+        )
+
+    def test_ignores_system_xdg_config_dirs(self):
+        # The generator target is always the user location, never /etc/xdg.
+        path = default_config_path(
+            {"XDG_CONFIG_DIRS": "/etc/xdg", "HOME": "/home/alice"}
+        )
+        self.assertEqual(
+            path, Path("/home/alice/.config/wallatag/wallatag.toml")
+        )
+
+    def test_no_home_raises_configerror(self):
+        with self.assertRaises(ConfigError):
+            default_config_path({})
+
+
 class RelativeStorePathTest(unittest.TestCase):
     """A relative [store] path resolves against the config file's directory."""
 
@@ -1502,6 +1538,20 @@ class RelativeStorePathTest(unittest.TestCase):
                 env={"WALLATAG_DB": "/x.db"},
             )
         self.assertEqual(config.store.path, "/x.db")
+
+    def test_wallatag_db_env_expands_tilde_against_env_home(self):
+        # "~" must expand using the supplied env's HOME, not os.environ.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_config(
+                env={"WALLATAG_DB": "~/wallatag.db", "HOME": tmp}
+            )
+        self.assertEqual(config.store.path, str(Path(tmp) / "wallatag.db"))
+
+    def test_wallatag_db_env_absolute_path_unchanged(self):
+        config = load_config(
+            env={"WALLATAG_DB": "~/x.db", "HOME": "/home/alice"}
+        )
+        self.assertEqual(config.store.path, "/home/alice/x.db")
 
     def test_empty_path_stays_history_less(self):
         with tempfile.TemporaryDirectory() as tmp:

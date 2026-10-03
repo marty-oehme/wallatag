@@ -205,14 +205,13 @@ class Config:
     max_articles: int | None = None
 
 
-def _xdg_config_candidates(env: Mapping[str, str]) -> list[Path]:
-    """Return config-file candidates under the XDG base directories.
+def _xdg_config_dirs(env: Mapping[str, str]) -> list[Path]:
+    """Return the XDG config base directories, most specific first.
 
     Order follows the XDG Base Directory spec: ``$XDG_CONFIG_HOME`` (falling
     back to ``$HOME/.config`` when unset, empty or relative) first, then each
-    colon-separated ``$XDG_CONFIG_DIRS`` entry (default ``/etc/xdg``). Each
-    directory is suffixed with ``wallatag/wallatag.toml``. Relative
-    directories are ignored, as the spec requires; a set-but-relative
+    colon-separated ``$XDG_CONFIG_DIRS`` entry (default ``/etc/xdg``).
+    Relative directories are ignored, as the spec requires; a set-but-relative
     ``XDG_CONFIG_HOME`` therefore falls back to ``$HOME/.config``.
     """
     dirs: list[Path] = []
@@ -232,7 +231,39 @@ def _xdg_config_candidates(env: Mapping[str, str]) -> list[Path]:
         if entry and Path(entry).is_absolute():
             dirs.append(Path(entry))
 
-    return [d / _XDG_CONFIG_SUBDIR / _DEFAULT_CONFIG_NAME for d in dirs]
+    return dirs
+
+
+def _xdg_config_candidates(env: Mapping[str, str]) -> list[Path]:
+    """Return config-file candidates under the XDG base directories."""
+    return [
+        d / _XDG_CONFIG_SUBDIR / _DEFAULT_CONFIG_NAME
+        for d in _xdg_config_dirs(env)
+    ]
+
+
+def default_config_path(env: Mapping[str, str] | None = None) -> Path:
+    """Return the path ``wallatag config init`` writes to by default.
+
+    This is the *user* config location,
+    ``$XDG_CONFIG_HOME/wallatag/wallatag.toml`` (defaulting to
+    ``~/.config/wallatag/wallatag.toml``). A user-wide config is deliberately
+    preferred over ``./wallatag.toml`` because the file holds Wallabag
+    credentials and a project-local default would invite committing them.
+    System-wide ``$XDG_CONFIG_DIRS`` entries are never used as a destination.
+    """
+    if env is None:
+        env = os.environ
+    home = env.get(_ENV_XDG_CONFIG_HOME)
+    if not (home and Path(home).is_absolute()):
+        base = env.get(_ENV_HOME)
+        home = str(Path(base) / ".config") if base else None
+    if home is None:
+        raise ConfigError(
+            "cannot determine config directory: neither XDG_CONFIG_HOME nor "
+            "HOME is set; pass --config PATH"
+        )
+    return Path(home) / _XDG_CONFIG_SUBDIR / _DEFAULT_CONFIG_NAME
 
 
 def find_config_file(
@@ -280,6 +311,23 @@ def find_config_file(
     return None
 
 
+def _expand_user(path: str, env: Mapping[str, str]) -> str:
+    """Expand a leading ``~``/``~user`` against the supplied env's HOME.
+
+    ``Path.expanduser`` reads ``os.environ`` directly, so passing an explicit
+    ``env`` mapping (as ``load_config`` and ``find_config_file`` do) would
+    silently mix in the process environment. Prefer this helper wherever a
+    caller-supplied ``env`` is authoritative: a leading ``~`` expands to
+    ``$HOME`` from that mapping, while ``~user`` and paths without ``~`` are
+    returned unchanged.
+    """
+    if path == "~" or path.startswith("~/"):
+        home = env.get(_ENV_HOME)
+        if home:
+            return str(Path(home) / path[1:].lstrip("/"))
+    return path
+
+
 def _resolve_store_path(config: Config, config_path: Path) -> Config:
     """Resolve a relative ``[store] path`` against the config file's directory.
 
@@ -293,7 +341,7 @@ def _resolve_store_path(config: Config, config_path: Path) -> Config:
     path = config.store.path
     if path is None:
         return config
-    store_path = Path(path).expanduser()
+    store_path = Path(_expand_user(path, os.environ)).expanduser()
     if store_path.is_absolute():
         resolved = store_path
     else:
@@ -735,7 +783,10 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
     store = config.store
     db = env.get(_ENV_DB)
     if db is not None:
-        store = replace(store, path=db or None)  # empty string -> history-less
+        # expanduser against the supplied env so "~" does not silently read
+        # os.environ["HOME"] (which may differ from env, e.g. under tests or
+        # a wrapper that scrubs HOME). Mirrors find_config_file.
+        store = replace(store, path=_expand_user(db, env) or None)
 
     ai = config.ai
     provider = env.get(_ENV_AI_PROVIDER)

@@ -7,6 +7,7 @@ import dataclasses
 import logging
 import sqlite3
 import sys
+from pathlib import Path
 
 from wallatag import __version__
 from wallatag.auto import run_auto, summary_line as auto_summary_line
@@ -16,6 +17,7 @@ from wallatag.config import (
     ConfigError,
     StoreConfig,
     apply_run_overrides,
+    default_config_path,
     load_config,
 )
 from wallatag.manual import run_manual, summary_line
@@ -105,6 +107,20 @@ def build_parser() -> argparse.ArgumentParser:
         "show",
         parents=[common],
         help="show the effective configuration (default)",
+    )
+    config_init = config_subparsers.add_parser(
+        "init",
+        help="write a starter configuration file",
+    )
+    config_init.add_argument(
+        "--config",
+        metavar="PATH",
+        help="destination path (default: the user config directory)",
+    )
+    config_init.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing configuration file",
     )
     # `wallatag status` is kept as an alias for backwards compatibility;
     # `wallatag config`/`wallatag config show` is the documented name.
@@ -366,6 +382,12 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
 
 def cmd_config_show(config: Config, args: argparse.Namespace) -> int:
     """`wallatag config` (bare) and `wallatag config show`; read-only summary."""
+    if getattr(args, "config_command", None) not in (None, "show"):
+        print(
+            "wallatag: error: unknown config command",
+            file=sys.stderr,
+        )
+        return 2
     url = config.wallabag.url or "(not configured)"
     store = config.store.path or "history-less"
     tagger = config.tagger
@@ -416,9 +438,61 @@ def cmd_config_show(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_config_init(args: argparse.Namespace) -> int:
+    """Write a starter configuration file, refusing to clobber by default.
+
+    The annotated example shipped with the package is written to ``--config``
+    when given, else to ``$XDG_CONFIG_HOME/wallatag/wallatag.toml`` (default
+    ``~/.config/...``); the parent directory is created with mode 0700 because
+    the file holds Wallabag credentials. An existing destination is only
+    overwritten with ``--force``. Does not require a valid configuration.
+    """
+    import importlib.resources
+
+    destination = Path(args.config) if args.config else default_config_path()
+    if destination.exists() and not args.force:
+        print(
+            f"wallatag: error: {destination} already exists "
+            f"(use --force to overwrite)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        template = (
+            importlib.resources.files("wallatag")
+            .joinpath("wallatag.toml.example")
+            .read_text(encoding="utf-8")
+        )
+    except (OSError, FileNotFoundError) as exc:
+        print(
+            f"wallatag: error: cannot read example config: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination.write_text(template, encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"wallatag: error: cannot write {destination}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"wrote {destination}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # `config init` writes a fresh file and must work before any config
+    # exists, so it bypasses config loading entirely.
+    if (
+        args.command == "config"
+        and getattr(args, "config_command", None) == "init"
+    ):
+        return cmd_config_init(args)
 
     try:
         config = load_config(config_path=args.config)

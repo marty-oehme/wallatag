@@ -47,11 +47,12 @@ later sources win:
 all).
 `WALLATAG_IGNORE_TAGS` is a comma-separated list (items are stripped of
 whitespace); an empty string clears the TOML value.
-`wallatag.toml` contains secrets and is gitignored; only `wallatag.toml.example`
-is committed.
+`wallatag.toml` contains secrets and is gitignored; only
+`wallatag/wallatag.toml.example` is committed.
 
-Inspect the effective configuration with `wallatag config` (alias: `wallatag
-config show`; the old `wallatag status` name still works).
+Generate a starter configuration file with `wallatag config init`, or inspect
+the effective configuration with `wallatag config` (alias: `wallatag config
+show`; the old `wallatag status` name still works).
 
 ### Config file discovery
 
@@ -69,6 +70,12 @@ that exists:
 A project-local file therefore overrides a per-user XDG config. `--config` and
 `WALLATAG_CONFIG` must point at an existing file; the other candidates are
 simply skipped when absent.
+
+`wallatag config init` writes a starter file to the user config location,
+`$XDG_CONFIG_HOME/wallatag/wallatag.toml` (default
+`~/.config/wallatag/wallatag.toml`), creating the directory with mode `0700`
+because the file holds credentials. Pass `--config PATH` to write elsewhere
+(for example `./wallatag.toml`) and `--force` to overwrite an existing file.
 
 A relative `[store] path` is resolved against the directory of the config file
 that declared it, so an XDG-discovered config keeps its database beside itself

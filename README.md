@@ -28,7 +28,19 @@ Install through pip, pipx or uv:
 uv tool install git+https://github.com/marty-oehme/wallatag.git
 ```
 
-Edit `wallatag.toml` with your Wallabag URL, API client ID and secret, username,
+Then generate a starter configuration file:
+
+```sh
+wallatag config init
+```
+
+This writes an annotated `wallatag.toml` to
+`$XDG_CONFIG_HOME/wallatag/wallatag.toml` (`~/.config/wallatag/wallatag.toml`
+by default), creating the directory if needed. Pass `--config PATH` to write it
+elsewhere (for a project-local `./wallatag.toml`) and `--force` to overwrite an
+existing file.
+
+Edit that file with your Wallabag URL, API client ID and secret, username,
 and password.
 Create an API client in Wallabag under **Developer** ->  **Create your own client**.
 A project-local `wallatag.toml` is gitignored so your credentials stay local.
@@ -40,6 +52,8 @@ For a local SQLite history file, set:
 path = "./wallatag.db"
 ```
 
+A user-wide config should keep its database out of the config directory, e.g.
+`path = "~/.local/share/wallatag/wallatag.db"`.
 
 You can also supply settings through environment variables instead of TOML.
 Configuration precedence is built-in defaults, a TOML config file, environment
@@ -49,8 +63,9 @@ wallatag looks for `./wallatag.toml` first, then
 `$XDG_CONFIG_DIRS` entries (`/etc/xdg`). Use `--config PATH` or
 `WALLATAG_CONFIG` to point at a specific file.
 A relative `[store] path` is resolved against the config file's directory.
-The [configuration reference](docs/configuration.md) and
-[`wallatag.toml.example`](wallatag.toml.example) cover all settings.
+The [configuration reference](docs/configuration.md) covers all settings; the
+annotated example config is also available in the repository as
+[`wallatag/wallatag.toml.example`](wallatag/wallatag.toml.example).
 
 Check the effective (non-secret) configuration before connecting:
 
@@ -162,7 +177,7 @@ Clone the project and install its locked dependencies:
 git clone https://github.com/marty-oehme/wallatag.git
 cd wallatag
 uv sync --locked
-cp wallatag.toml.example wallatag.toml
+uv run wallatag config init --config ./wallatag.toml
 ```
 
 ### Version control

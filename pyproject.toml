@@ -45,6 +45,11 @@ wallatag = "wallatag.cli:main"
 [tool.setuptools.packages.find]
 include = ["wallatag*"]
 
+[tool.setuptools.package-data]
+# The annotated starter config is read at runtime via importlib.resources
+# (wallatag config init), so it must ship inside the installed package.
+wallatag = ["wallatag.toml.example"]
+
 [tool.setuptools.dynamic]
 # `${attr}` is parsed from the AST, not imported: no runtime dependency is
 # needed at build time, and there is exactly one place to bump the version.
