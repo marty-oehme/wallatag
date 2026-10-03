@@ -26,13 +26,14 @@ import sqlite3
 import time
 
 _VALID_ACTIONS = ("accept", "reject")
-# How long a pick-up claim excludes an article from the untagged feed. This is
-# a COOLDOWN, not a permanent exclusion: a skipped, rejected, or interrupted
-# article reappears after this many days (bug 8a7d089). Successful tagging is
-# normally final anyway because wallabag stops offering a tagged article to the
-# untagged filter; the cooldown only matters for otherwise-stuck articles.
+# Default reconsider cooldown, in days, for a pick-up claim: how long it
+# excludes an article from the untagged feed. This is a COOLDOWN, not a
+# permanent exclusion: a skipped, rejected, or interrupted article reappears
+# after this many days (bug 8a7d089). Successful tagging is normally final
+# anyway because wallabag stops offering a tagged article to the untagged
+# filter; the cooldown only matters for otherwise-stuck articles. Overridable
+# per store via `[store] reconsider_after_days`.
 SEEN_TTL_DAYS = 7
-_SEEN_TTL_MODIFIER = f"-{SEEN_TTL_DAYS} days"
 # The WAL-mode transition needs an exclusive lock; on a fresh, not-yet-existing
 # database two concurrent constructors can collide with "database is locked".
 # Bound the retry so startup can never hang.
@@ -45,10 +46,22 @@ class Store:
 
     ``path=None`` selects history-less mode: a valid no-op store that does not
     touch the filesystem.
+
+    ``reconsider_after_days`` is the pick-up cooldown in days (see
+    ``SEEN_TTL_DAYS``): a claim younger than this excludes the article, an
+    older one is refreshable. ``0`` disables the cooldown, so every claim
+    succeeds (the article is always reconsidered).
     """
 
-    def __init__(self, path: str | None) -> None:
+    def __init__(
+        self,
+        path: str | None,
+        reconsider_after_days: int = SEEN_TTL_DAYS,
+    ) -> None:
         self.path = path
+        self.reconsider_after_days = reconsider_after_days
+        # Precomputed SQLite datetime modifier, e.g. "-7 days".
+        self._ttl_modifier = f"-{reconsider_after_days} days"
         if path is None:
             self._conn = None
             return
@@ -128,12 +141,12 @@ class Store:
         """Atomically claim an article for this run; True if it may proceed.
 
         Returns True when there was no claim, or when the existing claim is
-        STALE (older than ``SEEN_TTL_DAYS``) and is refreshed; False while a
-        FRESH claim exists, i.e. another run is (or recently was) on the same
-        article. This makes the dedupe a 7-day cooldown rather than a permanent
-        exclusion, while still letting concurrent runs race safely for the
-        same article: the UPSERT is one atomic statement on the primary key,
-        so exactly one racer gets True.
+        STALE (older than ``reconsider_after_days``) and is refreshed; False
+        while a FRESH claim exists, i.e. another run is (or recently was) on
+        the same article. This makes the dedupe a cooldown rather than a
+        permanent exclusion, while still letting concurrent runs race safely
+        for the same article: the UPSERT is one atomic statement on the
+        primary key, so exactly one racer gets True.
 
         In history-less mode there is no dedupe, so this always returns True
         (the article may always be processed).
@@ -146,7 +159,7 @@ class Store:
             "INSERT INTO seen (entry_id) VALUES (?) "
             "ON CONFLICT(entry_id) DO UPDATE SET picked_at = datetime('now') "
             "WHERE seen.picked_at <= datetime('now', ?)",
-            (entry_id, _SEEN_TTL_MODIFIER),
+            (entry_id, self._ttl_modifier),
         )
         self._conn.commit()
         return cur.rowcount == 1
@@ -154,15 +167,15 @@ class Store:
     def is_seen(self, entry_id: int) -> bool:
         """True if the entry_id has a FRESH pick-up claim (within the TTL).
 
-        A stale claim (``picked_at`` older than ``SEEN_TTL_DAYS``) is treated
-        as not seen, so the article is offered again.
+        A stale claim (``picked_at`` older than ``reconsider_after_days``) is
+        treated as not seen, so the article is offered again.
         """
         if self._conn is None:
             return False
         cur = self._conn.execute(
             "SELECT 1 FROM seen WHERE entry_id = ? "
             "AND picked_at > datetime('now', ?)",
-            (entry_id, _SEEN_TTL_MODIFIER),
+            (entry_id, self._ttl_modifier),
         )
         return cur.fetchone() is not None
 

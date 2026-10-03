@@ -269,7 +269,10 @@ def cmd_manual(config: Config, args: argparse.Namespace) -> int:
     # reports cleanly and never leaks the client connection.
     store = None
     try:
-        store = Store(config.store.path)
+        store = Store(
+            config.store.path,
+            reconsider_after_days=config.store.reconsider_after_days,
+        )
     except sqlite3.Error as exc:
         print(f"wallatag: error: could not open store: {exc}", file=sys.stderr)
         client.close()
@@ -347,7 +350,10 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
     # reports cleanly and never leaks the client connection.
     store = None
     try:
-        store = Store(config.store.path)
+        store = Store(
+            config.store.path,
+            reconsider_after_days=config.store.reconsider_after_days,
+        )
     except sqlite3.Error as exc:
         print(f"wallatag: error: could not open store: {exc}", file=sys.stderr)
         client.close()

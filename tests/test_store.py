@@ -44,13 +44,13 @@ def _concurrent_claimer(db_path, barrier, entry_id, results):
     store.close()
 
 
-def _expire(db_path, entry_id):
+def _expire(db_path, entry_id, days=8):
     """Backdate a claim past the TTL to simulate the cooldown elapsing."""
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
-            "UPDATE seen SET picked_at = datetime('now', '-8 days')"
+            "UPDATE seen SET picked_at = datetime('now', ?)"
             " WHERE entry_id = ?",
-            (entry_id,),
+            (f"-{days} days", entry_id),
         )
         conn.commit()
 
@@ -209,6 +209,57 @@ class ClaimTtlTest(unittest.TestCase):
     def test_claim_none_raises_valueerror(self):
         with self.assertRaises(ValueError):
             self.store.claim(None)
+
+
+class ReconsiderAfterDaysTest(unittest.TestCase):
+    """The pick-up cooldown is configurable per store (bug bffbc29)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = db_path(self._tmp.name)
+
+    def test_default_cooldown_is_seven_days(self):
+        store = Store(self.path)
+        try:
+            self.assertEqual(store.reconsider_after_days, 7)
+        finally:
+            store.close()
+
+    def test_short_cooldown_expires_sooner(self):
+        # With a 1-day cooldown, a claim backdated 2 days is already stale,
+        # while the default 7-day cooldown would still hold it.
+        store = Store(self.path, reconsider_after_days=1)
+        try:
+            self.assertTrue(store.claim(1))
+            self.assertFalse(store.claim(1))
+            _expire(self.path, 1, days=2)
+            self.assertFalse(store.is_seen(1))
+            self.assertTrue(store.claim(1))
+        finally:
+            store.close()
+
+    def test_long_cooldown_holds_a_claim_the_default_would_release(self):
+        # A 30-day cooldown keeps a claim backdated 8 days (past the default)
+        # fresh, so the article stays excluded.
+        store = Store(self.path, reconsider_after_days=30)
+        try:
+            self.assertTrue(store.claim(1))
+            _expire(self.path, 1, days=8)
+            self.assertTrue(store.is_seen(1))
+            self.assertFalse(store.claim(1))
+        finally:
+            store.close()
+
+    def test_zero_cooldown_always_reclaims(self):
+        # 0 disables the cooldown: every claim succeeds immediately.
+        store = Store(self.path, reconsider_after_days=0)
+        try:
+            self.assertTrue(store.claim(1))
+            self.assertTrue(store.claim(1))
+            self.assertFalse(store.is_seen(1))
+        finally:
+            store.close()
 
 
 class DecisionsTest(unittest.TestCase):

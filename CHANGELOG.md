@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[store] reconsider_after_days` (env `WALLATAG_STORE_RECONSIDER_AFTER_DAYS`)
+  makes the pick-up cooldown configurable instead of hard-coded at seven days.
+  `0` disables the cooldown so a skipped or rejected article is offered again
+  on the next run.
+
 ### Changed
 
 - Tests are split into `unit`, `integration`, and `e2e` tiers, selectable with

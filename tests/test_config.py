@@ -1349,6 +1349,96 @@ path = "/data/from-toml.db"
         self.assertIsNone(config.store.path)
 
 
+class StoreReconsiderAfterDaysTest(unittest.TestCase):
+    """`[store] reconsider_after_days` / WALLATAG_STORE_RECONSIDER_AFTER_DAYS."""
+
+    def test_default_is_seven(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = "/data/db"\n')
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
+        self.assertEqual(config.store.reconsider_after_days, 7)
+
+    def test_toml_sets_the_cooldown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                '[store]\npath = "/data/db"\nreconsider_after_days = 3\n',
+            )
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
+        self.assertEqual(config.store.reconsider_after_days, 3)
+
+    def test_toml_zero_disables_the_cooldown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                '[store]\npath = "/data/db"\nreconsider_after_days = 0\n',
+            )
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"), env={}
+            )
+        self.assertEqual(config.store.reconsider_after_days, 0)
+
+    def test_toml_negative_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                '[store]\npath = "/data/db"\nreconsider_after_days = -1\n',
+            )
+            with self.assertRaises(ConfigError):
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_toml_non_integer_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                '[store]\npath = "/data/db"\nreconsider_after_days = "7"\n',
+            )
+            with self.assertRaises(ConfigError):
+                load_config(config_path=str(tmp / "wallatag.toml"), env={})
+
+    def test_env_overrides_toml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(
+                tmp,
+                '[store]\npath = "/data/db"\nreconsider_after_days = 3\n',
+            )
+            config = load_config(
+                config_path=str(tmp / "wallatag.toml"),
+                env={"WALLATAG_STORE_RECONSIDER_AFTER_DAYS": "14"},
+            )
+        self.assertEqual(config.store.reconsider_after_days, 14)
+
+    def test_env_non_integer_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = "/data/db"\n')
+            with self.assertRaises(ConfigError):
+                load_config(
+                    config_path=str(tmp / "wallatag.toml"),
+                    env={"WALLATAG_STORE_RECONSIDER_AFTER_DAYS": "soon"},
+                )
+
+    def test_env_negative_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            write_toml(tmp, '[store]\npath = "/data/db"\n')
+            with self.assertRaises(ConfigError):
+                load_config(
+                    config_path=str(tmp / "wallatag.toml"),
+                    env={"WALLATAG_STORE_RECONSIDER_AFTER_DAYS": "-1"},
+                )
+
+
 class FindConfigFileTest(unittest.TestCase):
     """(e) explicit config path that doesn't exist -> ConfigError."""
 

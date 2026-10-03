@@ -23,6 +23,7 @@ later sources win:
 | wallabag username                                    | `[wallabag] username`                                | `WALLATAG_USERNAME`                                                                                                                    |
 | wallabag password                                    | `[wallabag] password`                                | `WALLATAG_PASSWORD`                                                                                                                    |
 | SQLite decision log path                             | `[store] path`                                       | `WALLATAG_DB`                                                                                                                          |
+| Reconsider cooldown (days)                           | `[store] reconsider_after_days`                      | `WALLATAG_STORE_RECONSIDER_AFTER_DAYS`                                                                                                 |
 | AI provider                                          | `[ai] provider`                                      | `WALLATAG_AI_PROVIDER`                                                                                                                 |
 | AI base URL                                          | `[ai] base_url`                                      | `WALLATAG_AI_BASE_URL`                                                                                                                 |
 | AI model                                             | `[ai] model`                                         | `WALLATAG_AI_MODEL`                                                                                                                    |
@@ -84,6 +85,14 @@ regardless of the working directory. Absolute paths are used as-is, and a
 
 A missing parent directory is created on first use (mode `0700`), so a store
 path under a freshly configured location works without a manual `mkdir`.
+
+`[store] reconsider_after_days` (default `7`, env
+`WALLATAG_STORE_RECONSIDER_AFTER_DAYS`) is the pick-up cooldown: an article
+that is claimed but not tagged — skipped, rejected wholesale, or interrupted —
+stays out of the untagged feed for this many days, then becomes eligible
+again instead of being lost. `0` disables the cooldown, so such an article is
+offered again on the very next run; a negative or non-integer value is a
+configuration error.
 
 ### Focus groups
 

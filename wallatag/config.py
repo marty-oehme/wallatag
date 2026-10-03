@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
+from wallatag.store import SEEN_TTL_DAYS
+
 VALID_TAG_POLICIES = ("only-existing", "prefer-existing", "all")
 VALID_AI_PROVIDERS = ("ollama", "openai-compatible")
 # The article dict keys the keyword tagger can match against (also the keys
@@ -32,6 +34,7 @@ _ENV_CLIENT_SECRET = "WALLATAG_CLIENT_SECRET"
 _ENV_USERNAME = "WALLATAG_USERNAME"
 _ENV_PASSWORD = "WALLATAG_PASSWORD"
 _ENV_DB = "WALLATAG_DB"
+_ENV_STORE_RECONSIDER_AFTER_DAYS = "WALLATAG_STORE_RECONSIDER_AFTER_DAYS"
 _ENV_CONFIG = "WALLATAG_CONFIG"
 _ENV_AI_PROVIDER = "WALLATAG_AI_PROVIDER"
 _ENV_AI_BASE_URL = "WALLATAG_AI_BASE_URL"
@@ -100,6 +103,11 @@ class WallabagConfig:
 @dataclass(frozen=True)
 class StoreConfig:
     path: str | None = None  # None = history-less (no DB at all)
+    # Pick-up cooldown in days: an article claimed but not tagged (skipped,
+    # wholesale-rejected, interrupted) becomes eligible again after this many
+    # days. 0 disables the cooldown (always reclaimable). Defaults to the
+    # store module's SEEN_TTL_DAYS.
+    reconsider_after_days: int = SEEN_TTL_DAYS
 
 
 @dataclass(frozen=True)
@@ -652,6 +660,18 @@ def _parse_toml_config(raw: dict) -> Config:
         raise ConfigError("section [vocabulary] must be a table")
     vocabulary_raw = vocabulary_value or {}
 
+    reconsider_after_days = store_raw.get(
+        "reconsider_after_days", SEEN_TTL_DAYS
+    )
+    if (
+        not isinstance(reconsider_after_days, int)
+        or isinstance(reconsider_after_days, bool)
+        or reconsider_after_days < 0
+    ):
+        raise ConfigError(
+            "reconsider_after_days must be a non-negative integer"
+        )
+
     tag_policy = tagger_raw.get("tag_policy", "prefer-existing")
     if tag_policy not in VALID_TAG_POLICIES:
         raise ConfigError(
@@ -742,7 +762,10 @@ def _parse_toml_config(raw: dict) -> Config:
             username=str(wallabag_raw.get("username", "") or ""),
             password=str(wallabag_raw.get("password", "") or ""),
         ),
-        store=StoreConfig(path=str(store_raw.get("path") or "") or None),
+        store=StoreConfig(
+            path=str(store_raw.get("path") or "") or None,
+            reconsider_after_days=reconsider_after_days,
+        ),
         tagger=TaggerConfig(
             max_applied_tags=max_applied_tags,
             tag_policy=tag_policy,
@@ -787,6 +810,22 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> Config:
         # os.environ["HOME"] (which may differ from env, e.g. under tests or
         # a wrapper that scrubs HOME). Mirrors find_config_file.
         store = replace(store, path=_expand_user(db, env) or None)
+
+    reconsider_raw = env.get(_ENV_STORE_RECONSIDER_AFTER_DAYS)
+    if reconsider_raw is not None:
+        try:
+            reconsider_after_days = int(reconsider_raw)
+        except ValueError:
+            raise ConfigError(
+                f"{_ENV_STORE_RECONSIDER_AFTER_DAYS} must be a non-negative "
+                f"integer, got {reconsider_raw!r}"
+            ) from None
+        if reconsider_after_days < 0:
+            raise ConfigError(
+                f"{_ENV_STORE_RECONSIDER_AFTER_DAYS} must be a non-negative "
+                f"integer, got {reconsider_raw!r}"
+            )
+        store = replace(store, reconsider_after_days=reconsider_after_days)
 
     ai = config.ai
     provider = env.get(_ENV_AI_PROVIDER)

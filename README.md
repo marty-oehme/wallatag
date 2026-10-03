@@ -145,7 +145,9 @@ With history enabled, wallatag atomically claims an article when processing
 starts.
 When CLI and Prefect runs share the same SQLite store, this prevents them from
 double-processing an article.
-The claim expires after seven days:
+The claim expires after a reconsider cooldown (seven days by default; set
+`[store] reconsider_after_days` or `WALLATAG_STORE_RECONSIDER_AFTER_DAYS` to
+change it, or `0` to disable the cooldown):
 skipped, rejected-wholesale, no-suggestion, interrupted, or deterministically
 failed articles can return to the queue instead of being excluded forever.
 Transient and LLM failures are requeued immediately.
