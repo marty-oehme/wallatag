@@ -1,39 +1,92 @@
-# Official uv image, version-pinned (uv 0.11.19, python 3.13; matches .python-version).
-# Steps share the workspace, so the setup step's .venv persists for the rest.
+# Woodpecker CI. All steps live here in one file: the Forgejo instance this
+# runs on is not known to be configured for multiple pipeline files, and a
+# silently ignored second file would be worse than a longer one.
+#
+# Checks run on pushes to main and on pull requests targeting main. The release
+# steps run only on version tags (e.g. v0.1.0) and publish to PyPI.
+
+# Official uv image, version-pinned (uv 0.12, python 3.13; matches .python-version).
+image: ghcr.io/astral-sh/uv:0.12-alpine3.22
+
+# CI cache and workspace live on different filesystems, so uv's hardlink
+# optimization cannot apply; copy avoids the "Failed to hardlink" warning.
+environment:
+  UV_LINK_MODE: copy
+
 when:
   - event: push
     branch: main
   - event: pull_request
     branch: main
+  - event: tag
+    tag: v*
 
 steps:
   setup:
-    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
-    # CI cache and workspace live on different filesystems, so uv's hardlink
-    # optimization cannot apply; copy avoids the "Failed to hardlink" warning.
-    environment:
-      UV_LINK_MODE: copy
+    # Steps share the workspace, so the setup step's .venv persists for the rest.
     commands:
       - uv sync --all-groups --locked
 
   lint:
-    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv run ruff check .
 
   format:
-    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv run ruff format --check .
 
   typecheck:
-    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       # --all-groups keeps the prefect group installed, which flows.py and
       # blocks.py need to resolve their imports.
       - uv run --all-groups mypy
 
   test:
-    image: ghcr.io/astral-sh/uv:0.12-alpine3.22
     commands:
       - uv run python -m unittest discover -s tests
+
+  # --- release -------------------------------------------------------------
+  # Runs only on v* tags. Before the first release:
+  #   1. Create a PyPI API token at https://pypi.org/manage/account/token/
+  #      (scoped to the `wallatag` project; "any project" only for the very
+  #      first upload, when the project does not exist yet).
+  #   2. Store it as a Woodpecker repository secret named `pypi_token`
+  #      (Settings -> Secrets).
+  #
+  # Trusted Publishing (OIDC) is unavailable: PyPI requires an OIDC identity
+  # provider and Woodpecker issues no machine identity, only static secrets.
+  # See issue bf1b8ea for the investigation.
+
+  release-build:
+    when:
+      - event: tag
+        tag: v*
+    # A tag is a normal commit: gate the release on the same checks that a
+    # push would run, so a broken tag cannot publish.
+    depends_on: [lint, format, typecheck, test]
+    commands:
+      # The tag must name the exact version being published, or the PyPI
+      # release would not describe the bytes it ships. Version is single-sourced
+      # from wallatag/__init__.py.
+      - |
+        TAG_VERSION="${CI_COMMIT_TAG#v}"
+        PKG_VERSION="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' wallatag/__init__.py)"
+        if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+          echo "tag $TAG_VERSION does not match package version $PKG_VERSION" >&2
+          exit 1
+        fi
+        echo "tag and package agree on $PKG_VERSION"
+      - uv build
+
+  release-publish:
+    when:
+      - event: tag
+        tag: v*
+    depends_on: [release-build]
+    environment:
+      UV_PUBLISH_TOKEN:
+        from_secret: pypi_token
+    commands:
+      # --check-url makes a re-run of an already-published version a no-op
+      # instead of a hard "file already exists" failure.
+      - uv publish --check-url https://pypi.org/simple/wallatag/

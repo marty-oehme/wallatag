@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wallatag"
-version = "0.1.0"
+# Single-sourced from wallatag/__init__.py. setuptools reads the attribute
+# via AST, so the build never imports the package or its dependencies.
+dynamic = ["version"]
 description = "AI-assisted auto-tagger for wallabag"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +44,11 @@ wallatag = "wallatag.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["wallatag*"]
+
+[tool.setuptools.dynamic]
+# `${attr}` is parsed from the AST, not imported: no runtime dependency is
+# needed at build time, and there is exactly one place to bump the version.
+version = { attr = "wallatag.__version__" }
 
 [dependency-groups]
 dev = ["ruff>=0.9,<1", "mypy>=2.4,<3"]

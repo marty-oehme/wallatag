@@ -8,7 +8,8 @@ and rules you define, or ask an optional LLM for suggestions.
 Use `run` for a batch job or `manual` to review suggestions in your terminal.
 By default it runs as a command line application, but it can optionally be
 integrated into [Prefect](https://www.prefect.io/) scheduling; see the
-[Prefect integration guide](docs/prefect.md).
+[Prefect integration guide](docs/prefect.md).
+See [CHANGELOG.md](CHANGELOG.md) for what changed between releases.
 
 Minimum requirements:
 

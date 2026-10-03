@@ -1,0 +1,14 @@
+# Source distribution contents beyond the defaults. The wheel is built from
+# the package directory only; these files are for people reading the sdist.
+include CHANGELOG.md
+include LICENSE
+include README.md
+
+# docs are useful context for source releases
+recursive-include docs *.md
+
+# keep build cruft out of the sdist
+global-exclude *.py[cod]
+prune wallatag.egg-info
+prune build
+prune dist
