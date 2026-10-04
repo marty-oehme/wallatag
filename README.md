@@ -1,5 +1,10 @@
 # wallatag
 
+[![status-badge](https://ci.martyoeh.me/api/badges/4/status.svg)](https://ci.martyoeh.me/repos/4)
+![PyPI Version](https://img.shields.io/pypi/v/wallatag)
+![PyPI Python Version](https://img.shields.io/pypi/pyversions/wallatag)
+![PyPI License](https://img.shields.io/pypi/l/wallatag)
+
 **A CLI for finding and tagging your untagged [Wallabag](https://wallabag.org/)
 articles.**
 
