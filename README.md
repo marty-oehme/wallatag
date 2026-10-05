@@ -1,9 +1,9 @@
 # wallatag
 
 [![status-badge](https://ci.martyoeh.me/api/badges/4/status.svg)](https://ci.martyoeh.me/repos/4)
-![PyPI Version](https://img.shields.io/pypi/v/wallatag)
-![PyPI Python Version](https://img.shields.io/pypi/pyversions/wallatag)
-![PyPI License](https://img.shields.io/pypi/l/wallatag)
+[![PyPI Version](https://img.shields.io/pypi/v/wallatag)](https://pypi.org/project/wallatag/)
+[![PyPI Python Version](https://img.shields.io/pypi/pyversions/wallatag)](https://pypi.org/project/wallatag/#files)
+[![PyPI License](https://img.shields.io/pypi/l/wallatag)](https://github.com/marty-oehme/wallatag/blob/main/LICENSE)
 
 **A CLI for finding and tagging your untagged [Wallabag](https://wallabag.org/)
 articles.**
@@ -177,9 +177,9 @@ requeued without changing anything.
 
 Wallabag has native regex tagging rules, but they apply only to new entries and
 cannot be managed through its API.
-wallatag complements them by backfilling existing entries, applying shared
-vocabulary and focus-group rules, offering interactive review, and optionally
-using an LLM.
+wallatag complements them: it backfills existing entries, applies the shared
+vocabulary and focus-group rules, offers an interactive review pass, and keeps
+the LLM optional.
 
 ## Prefect integration
 
